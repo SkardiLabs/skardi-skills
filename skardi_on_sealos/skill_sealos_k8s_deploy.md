@@ -52,6 +52,59 @@ Sealos templates use variables like `${{ defaults.app_name }}`, `${{ SEALOS_CLOU
 
 ---
 
+## 4. Deploying Skardi to Sealos
+
+Use the example manifest at `skardi_on_sealos/skardi-deploy.yaml` as the base.
+
+**Step 1 — resolve the latest stable release tag**
+
+```bash
+IMAGE_TAG=$(gh release view --repo SkardiLabs/skardi --json tagName -q '.tagName | ltrimstr("v")')
+echo $IMAGE_TAG   # e.g. 0.1.1
+```
+
+If `gh` is unavailable, fall back to the GitHub API:
+```bash
+IMAGE_TAG=$(curl -s https://api.github.com/repos/SkardiLabs/skardi/releases/latest | grep '"tag_name"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/')
+echo $IMAGE_TAG
+```
+
+**Step 2 — fill in the remaining placeholders and apply**
+
+```bash
+NS=$(KUBECONFIG=~/.kube/sealos-config.yaml kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}')
+SUBDOMAIN=<YOUR_SUBDOMAIN>
+
+# Prefer inferring CLOUD_DOMAIN from existing ingresses:
+CLOUD_DOMAIN=$(KUBECONFIG=~/.kube/sealos-config.yaml kubectl get ingress -n $NS -o jsonpath='{.items[0].spec.rules[0].host}' 2>/dev/null | cut -d. -f2-)
+# If namespace is fresh (no ingresses yet), derive it from the cluster server URL instead:
+# CLOUD_DOMAIN=$(KUBECONFIG=~/.kube/sealos-config.yaml kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' | sed 's|https://||; s|:.*||; s|sealos\.io|sealos.app|')
+
+sed \
+  -e "s/<IMAGE_TAG>/$IMAGE_TAG/g" \
+  -e "s/<YOUR_NAMESPACE>/$NS/g" \
+  -e "s/<YOUR_SUBDOMAIN>/$SUBDOMAIN/g" \
+  -e "s/<SEALOS_CLOUD_DOMAIN>/$CLOUD_DOMAIN/g" \
+  skardi-deploy.yaml | KUBECONFIG=~/.kube/sealos-config.yaml kubectl apply -f -
+```
+
+**Step 3 — verify**
+
+```bash
+KUBECONFIG=~/.kube/sealos-config.yaml kubectl rollout status deployment/skardi -n $NS
+KUBECONFIG=~/.kube/sealos-config.yaml kubectl get ingress skardi -n $NS
+```
+
+Then hit `https://<YOUR_SUBDOMAIN>.<CLOUD_DOMAIN>/health` — expect `200 OK`.
+
+> **Gotchas from live deployment:**
+> - **Fresh namespace has no ingresses** — inferring `CLOUD_DOMAIN` from existing ingresses fails. Derive it from the cluster server URL instead: `usw-1.sealos.io` → `usw-1.sealos.app`.
+> - **`kubernetes.io/ingress.class` annotation is deprecated** — use `spec.ingressClassName: nginx` in the Ingress spec instead. The manifest already uses this.
+> - **PodSecurity "restricted" warnings** — Sealos enforces `restricted:v1.25`. Apply a `securityContext` with `allowPrivilegeEscalation: false`, `runAsNonRoot: true`, `capabilities.drop: ["ALL"]`, and `seccompProfile.type: RuntimeDefault`. The manifest already includes these. Without them apply still succeeds but kubectl prints warnings.
+> - **`imagePullPolicy: Always`** is set so re-deploying the same tag always pulls fresh. Switch to `IfNotPresent` for production pins.
+
+---
+
 ## 5. Deploying a static frontend via ConfigMaps + nginx
 
 Use `public.ecr.aws/nginx/nginx:alpine` (avoids Docker Hub rate limits).
