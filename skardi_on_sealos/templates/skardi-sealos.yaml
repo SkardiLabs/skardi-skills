@@ -2,7 +2,7 @@
 #
 # Placeholders to fill before applying:
 #   <YOUR_NAMESPACE>      — e.g. ns-bg7m761t
-#   <IMAGE_TAG>           — Skardi server image tag, e.g. 0.1.1
+#   <IMAGE_TAG>           — Skardi server image tag, current: main-test-img-20260408184213
 #   <YOUR_SUBDOMAIN>      — subdomain enabled in Sealos dashboard
 #   <SEALOS_CLOUD_DOMAIN> — infer from existing ingress:
 #                           kubectl get ingress -n <ns> -o jsonpath='{.items[0].spec.rules[0].host}' | cut -d. -f2-
