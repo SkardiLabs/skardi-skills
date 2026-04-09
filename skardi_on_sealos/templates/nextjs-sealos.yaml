@@ -1,0 +1,119 @@
+# Generic Next.js frontend deployment on Sealos
+# Includes SKARDI_UPSTREAM_URL for the server-side CSRF proxy (see nextjs-proxy.ts)
+#
+# Placeholders:
+#   <YOUR_NAMESPACE>      — same namespace as Skardi
+#   <YOUR_IMAGE>          — pushed image, e.g. ghcr.io/you/myapp:latest
+#   <YOUR_APP_SUBDOMAIN>  — subdomain for the Next.js app (different from Skardi's)
+#   <SEALOS_CLOUD_DOMAIN> — same cloud domain used for Skardi ingress
+#   <SKARDI_SERVICE_NAME> — K8s Service name of the Skardi deployment, e.g. skardi
+#
+# Apply:
+#   kubectl apply -f nextjs-sealos.yaml -n <YOUR_NAMESPACE>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nextjs-app
+  namespace: <YOUR_NAMESPACE>
+  labels:
+    app: nextjs-app
+    cloud.sealos.io/app-deploy-manager: nextjs-app
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: nextjs-app
+  template:
+    metadata:
+      labels:
+        app: nextjs-app
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: nextjs
+          image: <YOUR_IMAGE>
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            # Browser calls this path on the Next.js domain → Route Handler proxy strips Origin
+            - name: NEXT_PUBLIC_SKARDI_URL
+              value: https://<YOUR_APP_SUBDOMAIN>.<SEALOS_CLOUD_DOMAIN>/api/skardi
+            # Server-side only: proxy forwards here via internal K8s service (no ingress hop)
+            - name: SKARDI_UPSTREAM_URL
+              value: http://<SKARDI_SERVICE_NAME>:8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 6
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextjs-app
+  namespace: <YOUR_NAMESPACE>
+  labels:
+    app: nextjs-app
+spec:
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
+  selector:
+    app: nextjs-app
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nextjs-app
+  namespace: <YOUR_NAMESPACE>
+  labels:
+    app: nextjs-app
+    cloud.sealos.io/app-deploy-manager: nextjs-app
+    cloud.sealos.io/app-deploy-manager-domain: <YOUR_APP_SUBDOMAIN>
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: <YOUR_APP_SUBDOMAIN>.<SEALOS_CLOUD_DOMAIN>
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: nextjs-app
+                port:
+                  number: 3000
+  tls:
+    - hosts:
+        - <YOUR_APP_SUBDOMAIN>.<SEALOS_CLOUD_DOMAIN>
+      secretName: wildcard-cert

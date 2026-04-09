@@ -1,0 +1,49 @@
+# Multi-stage Next.js Dockerfile for containerised deployment (standalone output)
+#
+# Requires in next.config.mjs:
+#   const nextConfig: NextConfig = { output: 'standalone' };
+#
+# Build and push:
+#   docker build --platform linux/amd64 \
+#     --build-arg NEXT_PUBLIC_SKARDI_URL=https://<app-subdomain>.<cloud-domain>/api/skardi \
+#     -t <registry>/<user>/<app>:latest .
+#   docker push --disable-content-trust <registry>/<user>/<app>:latest
+#
+# Env var rules:
+#   NEXT_PUBLIC_SKARDI_URL — MUST be passed as --build-arg (baked in at build time)
+#   SKARDI_UPSTREAM_URL    — injected at runtime via K8s env (server-side only)
+#
+# Also add .env.local to .dockerignore so localhost URLs are never baked into the image.
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+# NEXT_PUBLIC_* vars are baked at build time — pass the deployed app URL via --build-arg
+ARG NEXT_PUBLIC_SKARDI_URL
+ENV NEXT_PUBLIC_SKARDI_URL=${NEXT_PUBLIC_SKARDI_URL}
+# Server-only placeholder — real value injected at runtime via K8s env
+ENV SKARDI_UPSTREAM_URL=http://placeholder
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN addgroup --system --gid 1001 nodejs \
+ && adduser  --system --uid 1001 nextjs
+
+RUN mkdir -p ./public
+COPY --from=builder /app/public* ./public/
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+EXPOSE 3000
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+CMD ["node", "server.js"]
