@@ -35,8 +35,9 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   return new NextResponse(res.body, { status: res.status, headers: res.headers });
 }
 
-type Ctx = { params: Promise<{ path: string[] }> };
-const handle = (req: NextRequest, { params }: Ctx) => params.then(p => proxy(req, p.path));
+// Next.js 14: params is a plain object. Next.js 15+: params is a Promise — use params.then(p => proxy(req, p.path))
+type Ctx = { params: { path: string[] } };
+const handle = (req: NextRequest, { params }: Ctx) => proxy(req, params.path);
 
 export const GET     = handle;
 export const POST    = handle;

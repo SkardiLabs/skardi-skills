@@ -52,6 +52,17 @@ Pipelines execute through **DataFusion**, not the underlying SQLite engine direc
 | `datetime('now')` | `CAST(now() AS VARCHAR)` |
 | `strftime('%Y-%m-%d', col)` | `date_format(col, '%Y-%m-%d')` |
 
+**DataFusion requires unique column names in SELECT projections.** If the same expression appears more than once (e.g. two `CAST(now() AS VARCHAR)` columns), alias each one:
+```sql
+-- ❌ fails: duplicate expression names
+SELECT {user_id}, CAST(now() AS VARCHAR), CAST(now() AS VARCHAR)
+
+-- ✅ works: aliased
+SELECT {user_id} AS user_id, CAST(now() AS VARCHAR) AS created_at, CAST(now() AS VARCHAR) AS updated_at
+```
+
+**Plain UPDATE silently returns `count: 0` with no error if the WHERE clause matches nothing.** Always ensure the row exists before updating. `ON CONFLICT` / `INSERT OR REPLACE` are **not supported** by DataFusion — the workaround is to guarantee the INSERT pipeline runs first (e.g. call `assign-role` on signup before any role updates).
+
 ### Passing multiple pipelines
 
 Pass a **directory** to `--pipeline` — Skardi loads every `.yaml` file it finds there. On Sealos/K8s, use a single ConfigMap with one data key per pipeline file (not individual `subPath` mounts):
@@ -300,11 +311,42 @@ securityContext:
 
 **→ Templates: `templates/Dockerfile.nextjs`** and **`templates/nextjs-sealos.yaml`**
 
-Requires `output: 'standalone'` in `next.config.ts`. Build and push:
+Requires **Next.js 15** (with React 19) and `output: 'standalone'` in `next.config.mjs`.
+
+**Why Next.js 15:** Route Handler `params` is a `Promise` in v15, matching the proxy template. Next.js 14 uses synchronous params and the template will throw `t.then is not a function` at runtime.
+
+**Prerequisite — confirm registry login and username** (ask the user):
+1. Ask which registry they use (ghcr.io or Docker Hub) and their username
+2. Ask them to run `! docker login ghcr.io` or `! docker login` if not already logged in
+
 ```bash
-docker build -t ghcr.io/<you>/<app>:latest .
-docker push ghcr.io/<you>/<app>:latest
+# GitHub Container Registry
+docker login ghcr.io
+
+# Docker Hub
+docker login
 ```
+
+Build and push — **`NEXT_PUBLIC_SKARDI_URL` must be passed as a build arg** (it is baked in at build time, not injectable at runtime). Always pass the deployed app's public URL, never localhost:
+```bash
+docker build --platform linux/amd64 \
+  --build-arg NEXT_PUBLIC_SKARDI_URL=https://<YOUR_APP_SUBDOMAIN>.<SEALOS_CLOUD_DOMAIN>/api/skardi \
+  -t <registry>/<username>/<app>:latest .
+docker push --disable-content-trust <registry>/<username>/<app>:latest
+```
+
+Also add `.env.local` to `.dockerignore` so local dev values are never baked into the image.
+
+**Common gotchas:**
+- `NEXT_PUBLIC_*` vars are baked at build time — **never** rely on K8s env injection for them; always pass via `--build-arg`
+- `.env.local` must be in `.dockerignore` — otherwise its localhost URLs get baked into the production image
+- Use `next.config.mjs` (not `.ts`) — Next.js does not support TypeScript config files
+- `npm ci` requires a `package-lock.json` — run `npm install` locally first if it doesn't exist
+- Add a `.dockerignore` to exclude `node_modules`, `.next`, `.env.local` (avoids a ~250MB build context)
+- Add `public/` directory to the project even if empty — the Dockerfile copies it and will fail if missing
+- The Skardi container security context requires `runAsUser: 1000` and pod-level `fsGroup: 1000` so the init container can write to the PVC
+- The Next.js container runs as `runAsUser: 1001` (the `nextjs` user created in the Dockerfile)
+- Use `--disable-content-trust` flag on `docker push` if push stalls on large layers
 
 The K8s manifest sets `NEXT_PUBLIC_SKARDI_URL` (browser → proxy on app domain) and `SKARDI_UPSTREAM_URL` (server → internal K8s service). The Route Handler proxy in §4 handles the CSRF stripping.
 
