@@ -387,7 +387,24 @@ Sealos template variables (`${{ defaults.app_name }}`, `${{ SEALOS_CLOUD_DOMAIN 
 
 ---
 
-## 12. Patching a ConfigMap and restarting
+## 12. Adding an interactive demo panel to the frontend
+
+If the user asks to make the app ready for interactive demos, consider adding a **Skardi Inspector** panel — a collapsible in-app frame that shows, in real time, what pipeline call the next action will make before the user clicks.
+
+**High-level idea:**
+- Maintain a central registry (`lib/pipelines.ts` or equivalent) mapping each pipeline name to its description and SQL string.
+- Add a reusable `SkardInspector` component that accepts `{ pipeline, params }` and renders:
+  - The POST endpoint (`/<pipeline-name>/execute`)
+  - The JSON request body (the params object)
+  - The SQL with param placeholders substituted live (highlight substituted values vs. unresolved ones)
+- Wire action buttons with `onMouseEnter`/`onFocus` to set a `focusedAction` state that drives which pipeline the inspector displays.
+- Use a two-column layout on wider screens (form/content on the left, inspector panel on the right).
+
+This makes it immediately visible to an audience that Skardi handles all backend logic as plain SQL pipelines — no custom server code needed.
+
+---
+
+## 13. Patching a ConfigMap and restarting
 
 ```bash
 kubectl patch configmap <name> -n <ns> \
