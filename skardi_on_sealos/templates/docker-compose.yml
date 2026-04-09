@@ -1,0 +1,34 @@
+# Local Skardi development with auth + SQLite
+#
+# Prerequisites:
+#   1. Run init-db.py (or equivalent) to create data/app.db BEFORE starting
+#   2. AUTH_DB_PATH is auto-created by Skardi — do not pre-create it
+#
+# Start:
+#   docker compose up
+#
+# Pipelines are loaded at startup only — restart after editing YAMLs.
+
+services:
+  skardi:
+    image: ghcr.io/skardilabs/skardi/skardi-server:<IMAGE_TAG>
+    platform: linux/amd64   # image is amd64-only; emulated on Apple Silicon
+    ports:
+      - "18080:8080"
+    environment:
+      RUST_LOG: info
+      AUTH_MODE: BETTER_AUTH_DIESEL_SQLITE
+      AUTH_SECRET: your-local-dev-secret-must-be-at-least-32-chars!
+      AUTH_DB_PATH: /data/skardi_auth.db   # auto-created by Skardi
+      AUTH_BASE_URL: http://localhost:18080
+    volumes:
+      - ./data/app.db:/data/app.db            # pre-created; Skardi will NOT create this
+      - ./ctx.yaml:/config/ctx.yaml:ro
+      - ./pipelines:/config/pipelines:ro
+    command:
+      - --ctx
+      - /config/ctx.yaml
+      - --pipeline
+      - /config/pipelines/
+      - --port
+      - "8080"

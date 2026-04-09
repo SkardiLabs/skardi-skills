@@ -1,0 +1,42 @@
+# Multi-stage Next.js Dockerfile for containerised deployment (standalone output)
+#
+# Requires in next.config.ts:
+#   const nextConfig: NextConfig = { output: 'standalone' };
+#
+# Build and push:
+#   docker build -t ghcr.io/<you>/<app>:latest .
+#   docker push ghcr.io/<you>/<app>:latest
+#
+# Server-side env vars are injected at runtime (not baked into image):
+#   SKARDI_UPSTREAM_URL   — internal K8s service URL, e.g. http://skardi:8080
+#   NEXT_PUBLIC_SKARDI_URL — baked at build time if used in client components;
+#                            inject at runtime only works for server components
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+# Provide build-time placeholder for any server-only env vars referenced during build
+ENV SKARDI_UPSTREAM_URL=http://placeholder
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN addgroup --system --gid 1001 nodejs \
+ && adduser  --system --uid 1001 nextjs
+
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+EXPOSE 3000
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+CMD ["node", "server.js"]
