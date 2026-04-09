@@ -1,4 +1,4 @@
-# Generic Skardi deployment on Sealos with auth + SQLite + pipelines
+# Generic Skardi deployment on Sealos — auth + SQLite + pipelines (default)
 #
 # Placeholders to fill before applying:
 #   <YOUR_NAMESPACE>      — e.g. ns-bg7m761t

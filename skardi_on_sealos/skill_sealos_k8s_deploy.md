@@ -89,7 +89,7 @@ data_sources:
 
 Skardi will fail with `"Data source file not found"` if the `.db` file is missing — it does not create the file or schema.
 
-**Local:** run `python3 init-db.py` once before `docker compose up` (see §5).
+**Local:** create and run `init-db.py` once before `docker compose up` — see `templates/init-db.py` for a starting point (§5).
 **Sealos/K8s:** use an init container — see `templates/skardi-auth-sealos.yaml`.
 
 The `IF NOT EXISTS` guards make init idempotent — safe to re-run on every deploy.
@@ -214,14 +214,9 @@ On Sealos, set `SKARDI_UPSTREAM_URL` to the **internal K8s service URL** — avo
 
 Key points:
 - `AUTH_DB_PATH` is **auto-created** by Skardi — do not pre-create it.
-- Your app `.db` file must **exist before** `docker compose up` — run `init-db.py` once:
-  ```python
-  import sqlite3, os
-  db = os.path.join(os.path.dirname(__file__), 'data', 'app.db')
-  os.makedirs(os.path.dirname(db), exist_ok=True)
-  conn = sqlite3.connect(db)
-  conn.executescript('CREATE TABLE IF NOT EXISTS items (...);')
-  conn.commit(); conn.close()
+- Your app `.db` file must **exist before** `docker compose up`. **You must write an `init-db.py` tailored to your own schema** — generate it on the fly based on the tables in your `ctx.yaml`. `templates/init-db.py` is only a structural example; do not use it as-is. Adapt `DB_PATH` and the `executescript()` to your actual tables, then run it once:
+  ```bash
+  python3 init-db.py
   ```
 - Pipelines are loaded at startup only — restart after editing YAMLs.
 - `platform: linux/amd64` avoids silent architecture mismatches on ARM hosts.
@@ -264,13 +259,7 @@ CLOUD_DOMAIN=$(kubectl get ingress -n $NS \
 
 ## 8. Deploying Skardi to Sealos
 
-### Without auth (CSV / read-only data)
-
-Use the existing `skardi-deploy.yaml` in this folder — no auth env vars, no PVC.
-
-### With auth + SQLite
-
-**→ Template: `templates/skardi-auth-sealos.yaml`** — includes PVC, init container, auth env vars, pipelines ConfigMap, Service, and Ingress.
+**→ Template: `templates/skardi-sealos.yaml`** — includes PVC, init container, auth env vars, pipelines ConfigMap, Service, and Ingress.
 
 Step 1 — create the auth secret:
 ```bash
@@ -285,7 +274,7 @@ sed \
   -e "s/<YOUR_NAMESPACE>/$NS/g" \
   -e "s/<YOUR_SUBDOMAIN>/$SUBDOMAIN/g" \
   -e "s/<SEALOS_CLOUD_DOMAIN>/$CLOUD_DOMAIN/g" \
-  templates/skardi-auth-sealos.yaml | kubectl apply -f -
+  templates/skardi-sealos.yaml | kubectl apply -f -
 ```
 
 Step 3 — verify:
