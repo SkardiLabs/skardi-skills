@@ -278,7 +278,7 @@ kubectl create secret generic skardi-auth-secret \
   --from-literal=AUTH_SECRET='<32+-char-secret>' -n $NS
 ```
 
-Step 2 — fill placeholders and apply (current image tag: `main-test-img-20260408184213`):
+Step 2 — fill placeholders and apply (current image tag: `0.2.0`):
 ```bash
 sed \
   -e "s/<IMAGE_TAG>/$IMAGE_TAG/g" \
