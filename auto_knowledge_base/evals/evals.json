@@ -1,0 +1,27 @@
+{
+  "skill_name": "auto_knowledge_base",
+  "description": "Tests exercise the end-to-end flow: the agent must build a working KB over the rag_test_corpus directory and answer a question grounded in one of the sample texts. Each eval is scored on both process (did a KB get built with the right shape?) and output (is the answer grounded in the correct source file with a citation?).",
+  "evals": [
+    {
+      "id": 0,
+      "name": "alice-white-rabbit-factual",
+      "prompt": "I have a small set of markdown files at ./rag_test_corpus. Build me a searchable knowledge base over these files (use whatever tooling is appropriate), then answer this question using retrieved passages from the corpus: what was unusual about the White Rabbit's appearance that Alice noticed, and what did it take out of its pocket? Cite which file the answer came from.",
+      "expected_output": "A knowledge-base workspace was created (files and data ingested via Skardi), at least one search was executed through skardi grep/vec/fts, and the final answer correctly identifies the pink eyes and the watch from alice_sample.md with a citation to that file.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "art-of-war-strategy-conceptual",
+      "prompt": "Index the directory ./rag_test_corpus as a knowledge base I can query. Then answer: according to the texts in this corpus, what does Sun Tzu say about knowing the enemy versus knowing yourself? Quote the key passage and tell me which file it came from.",
+      "expected_output": "A KB workspace was built, a search was executed, and the answer quotes or paraphrases Sun Tzu's 'know the enemy and know yourself' teaching from art_of_war_sample.md with that filename cited.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "jane-eyre-bessie-dialogue-multi-query",
+      "prompt": "I want to turn ./rag_test_corpus into something an agent can retrieve from. Set that up and then answer: who is Bessie in the text, and quote one of her exchanges with Jane (or with someone about Jane). Cite the source file for each detail.",
+      "expected_output": "A KB workspace was built, at least one search was executed against it, and the answer identifies Bessie as the nurse (or similar role) from jane_eyre_sample.md with at least one quoted or paraphrased line she speaks (e.g., 'Hold her arms, Miss Abbot: she's like a mad cat' or 'If you don't sit still, you must be tied down'), properly cited.",
+      "files": []
+    }
+  ]
+}
