@@ -1,0 +1,13 @@
+.DS_Store
+./*/.DS_Store
+.cursor/
+.claude/
+
+# Per-skill iteration workspaces — eval outputs, embedding model weights,
+# server.log files, ingest progress manifests. By-product of skill-creator
+# runs; not part of the shipped skill.
+*-workspace/
+
+# Python bytecode cache from running skill scripts in-place.
+__pycache__/
+*.pyc
