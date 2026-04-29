@@ -1,0 +1,26 @@
+{
+  "skill_name": "auto_rag",
+  "evals": [
+    {
+      "id": 0,
+      "name": "white_rabbit_alice",
+      "prompt": "Our team just spun up a Postgres+pgvector instance for a RAG service we want to expose internally — the server is running locally on localhost:5436 against database `ragtest` with user `ragtest_user` / password `ragtest_pass`. The schema is already in place: a `documents` table with columns `(id BIGINT PK, source TEXT, chunk_idx INT, content TEXT, embedding vector(384))`, plus an HNSW index on embedding (cosine) and a GIN FTS index on content. The corpus I want to index lives at /Users/weixin/workspace/skardi-skills/rag_test_corpus/ — it's a few markdown files with public-domain literary excerpts. The Skardi binaries are at /Users/weixin/.local/bin/skardi-server (release, built with --features candle) and /usr/local/bin/skardi (CLI). Please ingest that corpus through skardi-server and then answer this question, grounded in retrieved chunks with citations: **Who is the White Rabbit, and what specifically about him makes Alice notice him?** Use port 8085 for the server. Save the final answer as a markdown file at outputs/answer.md.",
+      "expected_output": "A grounded markdown answer at outputs/answer.md citing alice_sample.md, mentioning the pink eyes, the waistcoat-pocket watch, and the catchphrase 'Oh dear! Oh dear! I shall be late!'",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "bessie_jane_eyre",
+      "prompt": "I have a Postgres+pgvector database running on localhost:5437 (db `ragtest`, user `ragtest_user`, password `ragtest_pass`). The `documents` table has already been created with `(id BIGINT PK, source TEXT, chunk_idx INT, content TEXT, embedding vector(384))`, an HNSW cosine index on embedding, and a GIN FTS index on content — same shape across all our RAG tables. The corpus is at /Users/weixin/workspace/skardi-skills/rag_test_corpus/ (literary excerpts in markdown). Skardi binaries at /Users/weixin/.local/bin/skardi-server (release, built with --features candle) and /usr/local/bin/skardi (CLI). Please ingest the corpus via skardi-server and answer this with retrieval-grounded citations: **What role does Bessie play in Jane Eyre, and quote a passage that mentions her or shows her interacting with Jane.** Use port 8086 for the server. Save the answer as outputs/answer.md.",
+      "expected_output": "A grounded answer at outputs/answer.md identifying Bessie as the nurse, with a verbatim quote from jane_eyre_sample.md (likely chapter I or II) that names her, and citation to chunk indices.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "art_of_war_translation_history",
+      "prompt": "We want to set up a hybrid-search service over our public-domain corpus, served from skardi-server on top of a Postgres+pgvector DB we've already provisioned. The DB is at localhost:5438, database `ragtest`, user `ragtest_user`, password `ragtest_pass`. The `documents` table already exists with shape `(id BIGINT PK, source TEXT, chunk_idx INT, content TEXT, embedding vector(384))` and the right indices (HNSW cosine on embedding, GIN FTS on content). The corpus lives at /Users/weixin/workspace/skardi-skills/rag_test_corpus/. Skardi binaries: /Users/weixin/.local/bin/skardi-server (release, --features candle) and /usr/local/bin/skardi. Ingest the corpus via skardi-server (port 8087) and answer this from retrieved chunks with citations: **How was The Art of War first introduced to Europe, and which English translation does the preface call 'excessively bad'?** Save as outputs/answer.md.",
+      "expected_output": "A grounded answer at outputs/answer.md naming Joseph Amiot's 1782 French translation as the first European introduction and Capt. E. F. Calthrop's 1905 English translation as the one labelled 'excessively bad', with citations to art_of_war_sample.md chunks.",
+      "files": []
+    }
+  ]
+}
