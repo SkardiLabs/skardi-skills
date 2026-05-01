@@ -7,22 +7,29 @@ perspective: this script never runs DDL. If the schema is missing, the
 caller has to create it themselves first.
 
 Flow:
-  1. Validate `skardi` CLI is on PATH (used for the SELECT 1 health probe).
+  1. Validate `skardi` CLI is on PATH and >= 0.4.0 (the chunk() UDF and
+     `kind: semantics` overlay both landed in 0.4.0; the rendered pipelines
+     and the auto-discovered semantics file both depend on them).
   2. Resolve the embedding UDF + model path / remote args based on flags.
-  3. Render <workspace>/ctx.yaml + <workspace>/pipelines/*.yaml from
+  3. Render <workspace>/{ctx.yaml, semantics.yaml, pipelines/*.yaml} from
      ../assets/postgres/ templates, substituting connection string, table
-     name, embedding call, and dim.
+     name, embedding call, and dim. Embedding now happens server-side
+     inside the rendered pipelines (chunk → embed → write all in one
+     INSERT for ingest-chunked; embed inline for search-{vector,hybrid}),
+     so this requires the skardi-server-rag image (or a server build
+     with --features rag).
   4. Run `skardi query --sql "SELECT 1 FROM <table> LIMIT 1"` against the
      rendered ctx to surface auth / network / table-missing errors at
      setup time. If this fails, print the error and exit non-zero — do not
      leave a half-finished workspace that will fail noisily at ingest time.
 
-Output: <workspace>/{ctx.yaml, pipelines/*.yaml}, and a `.embedding.txt`
-breadcrumb so http_ingest.py / start_server.py know what the rendered
-pipelines target without re-parsing the YAML.
+Output: <workspace>/{ctx.yaml, semantics.yaml, pipelines/*.yaml}, plus a
+`.embedding.txt` breadcrumb so ingest_corpus.py / start_server.py know
+what the rendered pipelines target without re-parsing the YAML.
 """
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +40,9 @@ ASSETS = SKILL_DIR / "assets"
 
 DEFAULT_MODEL_FILES = ["model.safetensors", "config.json", "tokenizer.json"]
 
+MIN_SKARDI_MAJOR = 0
+MIN_SKARDI_MINOR = 4
+
 
 def die(msg, code=1):
     print(f"ERROR: {msg}", file=sys.stderr)
@@ -40,23 +50,46 @@ def die(msg, code=1):
 
 
 def check_skardi():
+    """Verify the skardi CLI exists AND is >= 0.4.0.
+
+    The CLI is used here only for the SELECT 1 health probe, but the
+    server (skardi-server-rag) must also be >= 0.4.0 — we use the CLI
+    version as a proxy because most users build / install both binaries
+    from the same source. If the user has a mixed install we'll fail
+    later at ingest time with "Invalid function 'chunk'", which the
+    troubleshooting guide names explicitly."""
     if shutil.which("skardi") is None:
         die(
             "`skardi` CLI not found on PATH. The skill uses it for the "
-            "pre-flight `SELECT 1` health probe. Install with "
+            "pre-flight `SELECT 1` health probe. Install >= 0.4.0 with "
             "`cargo install --locked --git https://github.com/SkardiLabs/skardi "
             "--branch main skardi-cli --features candle`."
+        )
+    out = subprocess.run(["skardi", "--version"], capture_output=True, text=True)
+    raw = (out.stdout or out.stderr).strip()
+    print(f"  found: {raw or 'skardi (version unknown)'}")
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", raw)
+    if not m:
+        print(
+            "  warning: could not parse version; auto_rag needs >= 0.4.0 "
+            "for the chunk() UDF and the kind: semantics overlay.",
+            file=sys.stderr,
+        )
+        return
+    major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if (major, minor) < (MIN_SKARDI_MAJOR, MIN_SKARDI_MINOR):
+        die(
+            f"Skardi {major}.{minor}.{patch} is too old for this skill. "
+            f"auto_rag requires >= {MIN_SKARDI_MAJOR}.{MIN_SKARDI_MINOR}.0 "
+            f"because it uses the chunk() UDF (server-side ingest) and "
+            f"the kind: semantics overlay (catalog descriptions). "
+            f"Reinstall with `cargo install --locked --git "
+            f"https://github.com/SkardiLabs/skardi --branch main skardi-cli "
+            f"--features candle`."
         )
 
 
 def resolve_candle_model(cli_path, workspace):
-    """Return abs path to a candle-compatible model directory.
-
-    If the caller passed --model-path, use it (must contain the three
-    canonical files). Otherwise auto-download is *not* performed: candle
-    has many compatible models and picking one silently is exactly the
-    behaviour the SKILL.md tells us to avoid.
-    """
     if not cli_path:
         die(
             "--embedding-udf candle requires --model-path. The skill does "
@@ -99,21 +132,22 @@ def resolve_gguf_model(cli_path):
 
 
 def build_embedding_calls(udf, args, model_path):
-    """Returns (call_with_content_param, call_with_query_param) — the SQL
-    fragments substituted into the ingest pipeline (over the {content}
-    parameter) and into the search pipelines (over the {query} parameter).
+    """Return a dict of SQL fragments keyed by which column / parameter
+    the call wraps.
+
+    The same UDF gets called over three different column references in
+    the rendered pipelines, so we render three variants up front rather
+    than parameterising the column name at call time:
+
+      - `content`     — used by `ingest` (caller-supplied chunk text)
+      - `chunk_text`  — used by `ingest-chunked` (UNNEST(chunk(...)) output)
+      - `{query}`     — used by `search-vector` / `search-hybrid` (pipeline param)
     """
     if udf == "candle":
-        return (
-            f"candle('{model_path}', {{content}})",
-            f"candle('{model_path}', {{query}})",
-        )
-    if udf == "gguf":
-        return (
-            f"gguf('{model_path}', {{content}})",
-            f"gguf('{model_path}', {{query}})",
-        )
-    if udf == "remote_embed":
+        head = f"candle('{model_path}',"
+    elif udf == "gguf":
+        head = f"gguf('{model_path}',"
+    elif udf == "remote_embed":
         if not args:
             die(
                 "--embedding-udf remote_embed requires --embedding-args. "
@@ -125,11 +159,14 @@ def build_embedding_calls(udf, args, model_path):
                 "MISTRAL_API_KEY) must be in the server's environment "
                 "when it starts."
             )
-        return (
-            f"remote_embed({args}, {{content}})",
-            f"remote_embed({args}, {{query}})",
-        )
-    die(f"Unsupported --embedding-udf: {udf}")
+        head = f"remote_embed({args},"
+    else:
+        die(f"Unsupported --embedding-udf: {udf}")
+    return {
+        "content":    f"{head} content)",
+        "chunk_text": f"{head} chunk_text)",
+        "query":      f"{head} {{query}})",
+    }
 
 
 def render_templates(backend, workspace, subs):
@@ -137,23 +174,29 @@ def render_templates(backend, workspace, subs):
     if not src_dir.is_dir():
         die(f"No template directory for backend {backend!r} at {src_dir}")
 
+    def _render(src, dst):
+        text = src.read_text()
+        for k, v in subs.items():
+            text = text.replace(k, v)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(text)
+
     # ctx.yaml
     ctx_tpl = src_dir / "ctx.yaml.tpl"
     if not ctx_tpl.is_file():
         die(f"Missing template {ctx_tpl}")
-    text = ctx_tpl.read_text()
-    for k, v in subs.items():
-        text = text.replace(k, v)
-    (workspace / "ctx.yaml").write_text(text)
+    _render(ctx_tpl, workspace / "ctx.yaml")
+
+    # semantics.yaml — auto-discovered by skardi-server / skardi query --schema.
+    sem_tpl = src_dir / "semantics.yaml.tpl"
+    if sem_tpl.is_file():
+        _render(sem_tpl, workspace / "semantics.yaml")
 
     # pipelines/*.yaml
     pipelines_out = workspace / "pipelines"
     pipelines_out.mkdir(parents=True, exist_ok=True)
     for tpl in (src_dir / "pipelines").glob("*.yaml.tpl"):
-        text = tpl.read_text()
-        for k, v in subs.items():
-            text = text.replace(k, v)
-        (pipelines_out / tpl.name[:-4]).write_text(text)
+        _render(tpl, pipelines_out / tpl.name[:-4])
 
 
 def health_check(workspace, table):
@@ -205,8 +248,10 @@ def main():
         choices=["candle", "gguf", "remote_embed"],
         help=(
             "Which Skardi UDF to use for embedding. The Skardi server must "
-            "be built with the matching feature flag (--features candle / "
-            "gguf / remote-embed)."
+            "be built with the matching feature flag — most users want the "
+            "skardi-server-rag image (which bundles --features rag = "
+            "chunking + embedding) plus an additional --features for the "
+            "specific UDF if it's not already in the rag bundle."
         ),
     )
     ap.add_argument(
@@ -258,21 +303,18 @@ def main():
     else:
         model_path = ""  # remote_embed has no local model
         print(f"  remote_embed args: {args.embedding_args!r}")
-    embed_call_content, embed_call_query = build_embedding_calls(
-        args.embedding_udf, args.embedding_args, model_path
-    )
+    embed_calls = build_embedding_calls(args.embedding_udf, args.embedding_args, model_path)
 
     print(f"[3/4] Rendering {args.backend} templates into {workspace} ...")
     subs = {
-        "{{CONNECTION_STRING}}": args.connection_string,
-        "{{TABLE}}": args.table,
-        "{{SCHEMA}}": args.schema,
-        "{{EMBED_CALL_CONTENT}}": embed_call_content,
-        "{{EMBED_CALL_QUERY}}": embed_call_query,
+        "{{CONNECTION_STRING}}":             args.connection_string,
+        "{{TABLE}}":                         args.table,
+        "{{SCHEMA}}":                        args.schema,
+        "{{EMBED_CALL_OVER_CONTENT}}":       embed_calls["content"],
+        "{{EMBED_CALL_OVER_CHUNK_TEXT}}":    embed_calls["chunk_text"],
+        "{{EMBED_CALL_OVER_QUERY}}":         embed_calls["query"],
     }
     render_templates(args.backend, workspace, subs)
-    # Breadcrumb: helpful for downstream scripts and for the agent to
-    # introspect what was rendered without re-parsing YAML.
     (workspace / ".embedding.txt").write_text(
         f"udf={args.embedding_udf}\n"
         f"model_path={model_path}\n"
@@ -281,7 +323,7 @@ def main():
         f"table={args.table}\n"
         f"schema={args.schema}\n"
     )
-    print(f"  wrote ctx.yaml, pipelines/{{ingest,search_vector,search_fulltext,search_hybrid}}.yaml")
+    print(f"  wrote ctx.yaml, semantics.yaml, pipelines/{{ingest,ingest_chunked,search_vector,search_fulltext,search_hybrid}}.yaml")
 
     print(f"[4/4] Pre-flight connection check ...")
     if args.skip_health_check:
@@ -293,22 +335,14 @@ def main():
     print("=" * 72)
     print("Workspace ready. Next steps:")
     print()
-    print(f"  # 1. Make sure the embedding feature is built into skardi-server.")
-    feature = {"candle": "candle", "gguf": "gguf", "remote_embed": "remote-embed"}[
-        args.embedding_udf
-    ]
-    print(f"  #    e.g. cargo build --release -p skardi-server --features {feature}")
-    print()
-    print(f"  # 2. Start the server (it will load the embedding model on first call):")
+    print(f"  # 1. Start the server (use skardi-server-rag image — bundles chunk + embedding):")
     print(f"  python {SKILL_DIR}/scripts/start_server.py --workspace {workspace} --port 8080")
     print()
-    print(f"  # 3. Chunk a corpus and POST it through /ingest/execute:")
-    print(f"  python {SKILL_DIR}/scripts/chunk_corpus.py \\")
-    print(f"    --corpus <path/to/docs> --out {workspace}/chunks.json")
-    print(f"  python {SKILL_DIR}/scripts/http_ingest.py \\")
-    print(f"    --workspace {workspace} --chunks {workspace}/chunks.json")
+    print(f"  # 2. Ingest the corpus end-to-end (server chunks + embeds inline):")
+    print(f"  python {SKILL_DIR}/scripts/ingest_corpus.py \\")
+    print(f"    --workspace {workspace} --corpus <path/to/docs>")
     print()
-    print(f"  # 4. Query:")
+    print(f"  # 3. Query (server embeds the question inline; pass plain text):")
     print(f"  curl -X POST http://localhost:8080/search-hybrid/execute \\")
     print(f"    -H 'Content-Type: application/json' \\")
     print(f"    -d '{{\"query\":\"...\",\"text_query\":\"...\",\"vector_weight\":0.5,\"text_weight\":0.5,\"limit\":5}}'")

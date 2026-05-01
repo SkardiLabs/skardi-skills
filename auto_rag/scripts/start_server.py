@@ -10,11 +10,11 @@ environment for the agent the RAG service will sit behind:
       --skardi-source. Right for laptops, dev work, single-user RAG.
 
   --runtime docker
-      Run via `docker run` against the official embedding image
-      (ghcr.io/skardilabs/skardi/skardi-server-embedding:latest). Right
-      for shipping RAG to teammates without asking them to compile
-      Skardi, and for keeping the server isolated from the host's
-      Python / OpenSSL / libsqlite versions.
+      Run via `docker run` against the official RAG image
+      (ghcr.io/skardilabs/skardi/skardi-server-rag:latest, --features rag —
+      bundles chunk() + the embedding UDFs). Right for shipping RAG to
+      teammates without asking them to compile Skardi, and for keeping the
+      server isolated from the host's Python / OpenSSL / libsqlite versions.
 
   --runtime kubernetes
       Render Deployment + Service + ConfigMap + (Secret) into
@@ -42,7 +42,10 @@ from pathlib import Path
 
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_DOCKER_IMAGE = "ghcr.io/skardilabs/skardi/skardi-server-embedding:latest"
+# v0.4.0+ ships skardi-server-rag (chunk + embedding bundled via --features rag).
+# Older skardi-server-embedding images do NOT register chunk() and break
+# ingest-chunked / search-{vector,hybrid} (which now embed inline server-side).
+DEFAULT_DOCKER_IMAGE = "ghcr.io/skardilabs/skardi/skardi-server-rag:latest"
 DEFAULT_K8S_NAMESPACE = "skardi-rag"
 
 
@@ -102,7 +105,7 @@ def list_pipelines(host, port):
 
 def report_pipelines(host, port, log_hint):
     pipelines_resp = list_pipelines(host, port)
-    expected = {"ingest", "search-vector", "search-fulltext", "search-hybrid"}
+    expected = {"ingest", "ingest-chunked", "search-vector", "search-fulltext", "search-hybrid"}
     if pipelines_resp is None:
         print("  warning: /pipelines did not respond", file=sys.stderr)
         return
@@ -227,10 +230,10 @@ def start_local_process(workspace, port, feature, skardi_source, health_timeout)
 # -- Docker runtime ---------------------------------------------------------
 
 def start_docker(workspace, port, breadcrumb, image, container_name, health_timeout):
-    """Run the official skardi-server-embedding image with the workspace
-    mounted at the same absolute path so the rendered candle/gguf model
-    paths in the pipelines resolve unchanged. Postgres credentials and any
-    embedding API keys are forwarded as env vars."""
+    """Run the official skardi-server-rag image (chunk + embedding bundled)
+    with the workspace mounted at the same absolute path so the rendered
+    candle/gguf model paths in the pipelines resolve unchanged. Postgres
+    credentials and any embedding API keys are forwarded as env vars."""
     if shutil.which("docker") is None:
         die("docker not found on PATH. Install Docker Desktop / engine and retry.")
 

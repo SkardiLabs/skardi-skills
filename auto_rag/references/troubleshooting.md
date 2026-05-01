@@ -22,9 +22,11 @@ fault.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `unknown function: candle` (or `gguf` / `remote_embed`) at INSERT or query time | skardi-server was built without the matching feature | Rebuild from the Skardi source tree: `cargo build --release -p skardi-server --features <candle\|gguf\|remote-embed>`. Multiple features can be enabled at once. |
-| `skardi-server: command not found` | No release binary on PATH | Either install one (`cargo install --locked --path crates/server --features <...>` from a Skardi clone) or pass `--skardi-source <path>` to `start_server.py` so it can fall back to `cargo run --release`. |
-| Server starts but `/pipelines` is empty | The pipeline directory is wrong, or every YAML failed to load | Read `<workspace>/server.log` — the loader is strict and rejects any file missing `kind: pipeline` at the root. Common causes: stale `*.tpl` files in `<workspace>/pipelines/` (the renderer drops `.tpl` from the filename — if you see a `.tpl` extension in the workspace, setup_rag.py didn't run cleanly). |
+| `unknown function: chunk` at ingest time | Server is on Skardi < 0.4.0, or built without `--features chunking` / `--features rag`. The pre-built `skardi-server-embedding` image does NOT register chunk(). | Switch to `skardi-server-rag:latest` (the v0.4.0+ image that bundles chunk + embedding via `--features rag`), or rebuild your binary with `cargo build --release -p skardi-server --features rag`. |
+| `unknown function: candle` (or `gguf` / `remote_embed`) at INSERT or query time | skardi-server was built without the matching feature | Use the `skardi-server-rag` image (candle is bundled in the `rag` feature umbrella), or rebuild: `cargo build --release -p skardi-server --features <candle\|gguf\|remote-embed>`. Multiple features can be enabled at once. |
+| `skardi-server: command not found` | No release binary on PATH | Either install one (`cargo install --locked --path crates/server --features rag` from a Skardi clone) or pass `--skardi-source <path>` to `start_server.py` so it can fall back to `cargo run --release`. |
+| `Skardi X.Y.Z is too old for this skill` from setup_rag.py | The host CLI is < 0.4.0; the server may also be too old | Reinstall: `cargo install --locked --git https://github.com/SkardiLabs/skardi --branch main skardi-cli --features candle`. Update the server image too if you're using docker / k8s. |
+| Server starts but `/pipelines` is missing `ingest-chunked` (or any other expected name) | A pipeline YAML failed to load | Read `<workspace>/server.log` — the loader is strict and rejects any file missing `kind: pipeline` at the root. Common causes: stale `*.tpl` files in `<workspace>/pipelines/` (the renderer drops `.tpl` from the filename — if you see a `.tpl` extension in the workspace, setup_rag.py didn't run cleanly). |
 | `embedding column has dimension 384, expected 1024` (or similar) on every INSERT | Schema's `vector(N)` doesn't match the embedding model's output | Pick a model with the matching dim, OR drop and recreate the table with the right dim. There is no in-place fix once rows have been written with a different dim. |
 
 ## Embedding-specific
@@ -34,7 +36,9 @@ fault.
 | First INSERT takes 30+ seconds, subsequent ones are fast | Candle/GGUF model load on first call (lazy) | Expected. Pre-warm by hitting a search endpoint once before bulk ingest if latency matters. Use `RUST_LOG=info` to see load timing in `server.log`. |
 | Every embedding is all zeros | Model loaded but tokenizer/architecture mismatch (e.g. picked a non-encoder model) | Pick a model from a documented family — BERT/RoBERTa/DistilBERT/Jina for candle, llama.cpp-supported encoders for GGUF, or use `remote_embed`. The Skardi source tree's `docs/embeddings/{candle,gguf,remote}/README.md` lists tested models. |
 | `remote_embed` errors with `401 Unauthorized` | API key env var not in skardi-server's environment | The relevant `OPENAI_API_KEY` / `VOYAGE_API_KEY` / `GEMINI_API_KEY` / `MISTRAL_API_KEY` must be exported *before* `start_server.py` runs. Restart the server after exporting. |
-| `remote_embed` errors with `429 Too Many Requests` | Provider rate-limit during bulk ingest | Lower `--concurrency` on `http_ingest.py` (try 1–2) or wait a minute. The progress manifest means resuming after a pause loses no work. |
+| `remote_embed` errors with `429 Too Many Requests` | Provider rate-limit during bulk ingest | Lower `--concurrency` on `ingest_corpus.py` (try 1–2) or wait a minute. The progress manifest means resuming after a pause loses no work. |
+| `chunk: 'overlap' (N) must be strictly less than 'size' (M)` from /ingest-chunked/execute | The user passed `overlap >= chunk_size` | Pass `--overlap` < `--chunk-size` to `ingest_corpus.py`. `--overlap 0` is always safe. |
+| `chunk: unsupported mode '<x>'` | The `ingest_chunked` pipeline references a chunk mode the server doesn't know | Only `'character'` and `'markdown'` are supported in 0.4.0. The skill's templates default to `'markdown'`; if you hand-edited the pipeline, restore one of those values. |
 
 ## Pipeline / search-time
 
