@@ -5,19 +5,25 @@ Idempotent: re-running against an existing workspace recreates the DB (with
 --force) but otherwise exits cleanly.
 
 Flow:
-  1. Check skardi CLI is on PATH.
-  2. Ensure sqlite_vec and (if downloading the model) huggingface_hub are importable.
+  1. Check skardi CLI is on PATH and >= 0.4.0 (chunk() UDF is a hard
+     requirement; ingest_corpus.py runs the chunk → embed → write loop in
+     one SQL statement).
+  2. Ensure sqlite_vec and (if downloading the model) huggingface_hub are
+     importable.
   3. Resolve or download the embedding model.
-  4. Create workspace dir; render ctx.yaml, aliases.yaml, and pipelines/*.yaml
-     from templates in ../assets, substituting absolute paths so `skardi`
-     works regardless of CWD.
-  5. Create kb.db with documents + documents_fts + documents_vec + triggers.
+  4. Create workspace dir; render ctx.yaml, semantics.yaml, aliases.yaml,
+     and pipelines/*.yaml from templates in ../assets, substituting
+     absolute paths so `skardi` works regardless of CWD.
+  5. Write a `.embedding.txt` breadcrumb so ingest_corpus.py can rebuild
+     the same embedding call without re-parsing the YAML.
+  6. Create kb.db with documents + documents_fts + documents_vec + triggers.
 
-After this runs, the caller should export SKARDICONFIG=<workspace> and proceed
-to chunk_corpus.py + bulk_ingest.py.
+After this runs, the caller exports SKARDICONFIG=<workspace> and proceeds
+to ingest_corpus.py.
 """
 import argparse
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -30,6 +36,10 @@ ASSETS = SKILL_DIR / "assets"
 DEFAULT_MODEL_REPO = "BAAI/bge-small-en-v1.5"
 DEFAULT_MODEL_FILES = ["model.safetensors", "config.json", "tokenizer.json"]
 DEFAULT_EMBEDDING_DIM = 384
+DEFAULT_CHUNK_MODE = "markdown"
+
+MIN_SKARDI_MAJOR = 0
+MIN_SKARDI_MINOR = 4
 
 
 def die(msg, code=1):
@@ -38,14 +48,42 @@ def die(msg, code=1):
 
 
 def check_skardi():
+    """Verify the skardi CLI exists AND is >= 0.4.0.
+
+    The chunk() UDF (used by ingest_chunked / ingest_corpus.py) was added
+    in 0.4.0; an older binary fails late at INSERT time with an opaque
+    "Invalid function 'chunk'" error. Catching this at setup is much
+    friendlier."""
     if shutil.which("skardi") is None:
         die(
-            "`skardi` CLI not found on PATH. Install from "
-            "https://github.com/SkardiLabs/skardi (cargo install --locked --path "
-            "crates/cli --features candle)."
+            "`skardi` CLI not found on PATH. Install >= 0.4.0 from "
+            "https://github.com/SkardiLabs/skardi (cargo install --locked "
+            "--git https://github.com/SkardiLabs/skardi --branch main "
+            "skardi-cli --features candle)."
         )
     out = subprocess.run(["skardi", "--version"], capture_output=True, text=True)
-    print(f"  found: {out.stdout.strip() or 'skardi (version unknown)'}")
+    raw = (out.stdout or out.stderr).strip()
+    print(f"  found: {raw or 'skardi (version unknown)'}")
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", raw)
+    if not m:
+        # Don't hard-fail — version parsing fragility shouldn't block setup
+        # when the binary is otherwise functional. We'll get a clear error
+        # at ingest time if chunk() is missing.
+        print(
+            "  warning: could not parse version; auto_knowledge_base needs "
+            ">= 0.4.0 for the chunk() UDF.",
+            file=sys.stderr,
+        )
+        return
+    major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if (major, minor) < (MIN_SKARDI_MAJOR, MIN_SKARDI_MINOR):
+        die(
+            f"Skardi {major}.{minor}.{patch} is too old for this skill. "
+            f"auto_knowledge_base requires >= {MIN_SKARDI_MAJOR}.{MIN_SKARDI_MINOR}.0 "
+            f"because it uses the chunk() UDF added in 0.4.0. Reinstall with "
+            f"`cargo install --locked --git https://github.com/SkardiLabs/skardi "
+            f"--branch main skardi-cli --features candle`."
+        )
 
 
 def ensure_pkg(pkg, import_name=None):
@@ -57,10 +95,6 @@ def ensure_pkg(pkg, import_name=None):
         pass
 
     print(f"  installing {pkg} ...")
-    # Try a plain --user install first. Homebrew / Debian-style Pythons reject
-    # that under PEP 668; if we detect that, retry with --break-system-packages
-    # (still --user, so we don't touch the system site-packages). Failing
-    # that, suggest a venv.
     attempts = [
         [sys.executable, "-m", "pip", "install", "--user", "--quiet", pkg],
         [sys.executable, "-m", "pip", "install", "--user", "--break-system-packages", "--quiet", pkg],
@@ -72,7 +106,6 @@ def ensure_pkg(pkg, import_name=None):
             break
         last_err = (proc.stdout or "") + (proc.stderr or "")
         if "externally-managed-environment" not in last_err:
-            # Not a PEP 668 issue — no point retrying with --break-system-packages.
             break
     else:
         die(
@@ -80,9 +113,6 @@ def ensure_pkg(pkg, import_name=None):
             f"Install it manually (e.g. create a venv, or `pipx install {pkg}`) "
             f"and re-run setup_kb.py."
         )
-    # After install, Python's import machinery still has cached state from
-    # before the new site-packages path was populated. Refresh it so the
-    # newly-installed module is discoverable without a restart.
     import importlib
     import site
     site.main()
@@ -97,9 +127,6 @@ def resolve_sqlite_vec():
     ensure_pkg("sqlite-vec", "sqlite_vec")
     import sqlite_vec
 
-    # loadable_path() returns an extensionless stem (e.g. .../sqlite_vec/vec0);
-    # SQLite's load_extension resolves the platform suffix (.dylib / .so / .dll)
-    # automatically. Validate by checking the parent dir has a vec0.* file.
     path = sqlite_vec.loadable_path()
     parent = Path(path).parent
     stem = Path(path).name
@@ -121,7 +148,6 @@ def resolve_model(cli_path, workspace):
         print(f"  using model at {p}")
         return str(p)
 
-    # No explicit path — download into <workspace>/models/<repo-basename>/
     ensure_pkg("huggingface_hub")
     from huggingface_hub import hf_hub_download
 
@@ -138,29 +164,26 @@ def resolve_model(cli_path, workspace):
 
 
 def build_embedding_calls(udf, args, model_path):
-    """Returns (ingest_call, query_call) strings embedded in pipeline SQL.
+    """Returns (ingest_call, query_call) — the SQL fragments substituted
+    into the rendered pipelines.
 
-    ingest_call is evaluated over the `content` column during INSERT.
-    query_call is evaluated over the pipeline parameter `{query}` at search
-    time.
+    ingest_call wraps the row's `content` column. query_call wraps the
+    pipeline parameter `{query}` at search time. The wrapping argument
+    differs because chunk() emits one row per chunk in the ingest path,
+    so the embedding sees `content` (the chunk_text), while the search
+    path embeds the user's query string directly.
     """
     if udf == "candle":
-        # candle(model_dir, text) — local HuggingFace SafeTensors.
         return (
             f"candle('{model_path}', content)",
             f"candle('{model_path}', {{query}})",
         )
     if udf == "gguf":
-        # gguf(model_dir, text) — local llama.cpp-format quantised model.
-        # Same signature as candle; --model-path points at a dir containing
-        # the .gguf file (or the file itself, depending on the Skardi build).
         return (
             f"gguf('{model_path}', content)",
             f"gguf('{model_path}', {{query}})",
         )
     if udf == "remote_embed":
-        # remote_embed(provider, model, text) — args is the provider/model head,
-        # e.g. "'openai','text-embedding-3-small'" or "'voyage','voyage-3'".
         if not args:
             die(
                 "--embedding-udf remote_embed requires --embedding-args "
@@ -175,7 +198,7 @@ def build_embedding_calls(udf, args, model_path):
     die(f"Unsupported --embedding-udf: {udf}")
 
 
-def render_templates(workspace, db_abs_path, ingest_call, query_call):
+def render_templates(workspace, db_abs_path, ingest_call, query_call, chunk_mode):
     def render_file(src, dst, subs):
         text = src.read_text()
         for k, v in subs.items():
@@ -186,13 +209,36 @@ def render_templates(workspace, db_abs_path, ingest_call, query_call):
     ctx_subs = {"{{DB_PATH}}": db_abs_path}
     render_file(ASSETS / "ctx.yaml.tpl", workspace / "ctx.yaml", ctx_subs)
     render_file(ASSETS / "aliases.yaml.tpl", workspace / "aliases.yaml", {})
+    render_file(ASSETS / "semantics.yaml.tpl", workspace / "semantics.yaml", {})
 
     pipeline_subs = {
         "{{EMBEDDING_CALL}}": ingest_call,
+        "{{EMBEDDING_CALL_INGEST}}": ingest_call,
         "{{EMBEDDING_CALL_QUERY}}": query_call,
+        # chunk() needs the mode as a single-quoted string literal in SQL.
+        # We render it here (rather than at pipeline-call time) because the
+        # mode is a deployment choice tied to the corpus, not a per-call knob.
+        "{{CHUNK_MODE}}": f"'{chunk_mode}'",
     }
     for tpl in (ASSETS / "pipelines").glob("*.yaml.tpl"):
         render_file(tpl, workspace / "pipelines" / tpl.name[:-4], pipeline_subs)
+
+
+def write_breadcrumb(workspace, udf, args, model_path, dim, chunk_mode):
+    """Stash setup-time choices for ingest_corpus.py to read.
+
+    ingest_corpus.py rebuilds the inline embedding call from these values so
+    we don't ship two copies of the substitution logic. The breadcrumb is
+    plain key=value (not JSON) so it can be cat'd / grep'd by humans without
+    pulling in jq."""
+    body = (
+        f"udf={udf}\n"
+        f"model_path={model_path}\n"
+        f"embedding_args={args or ''}\n"
+        f"dim={dim}\n"
+        f"chunk_mode={chunk_mode}\n"
+    )
+    (workspace / ".embedding.txt").write_text(body)
 
 
 def create_db(db_path, dim, sqlite_vec_path, force=False):
@@ -293,6 +339,16 @@ def main():
         default=DEFAULT_EMBEDDING_DIM,
         help="Dimension of the embedding vector (default: 384 for bge-small).",
     )
+    ap.add_argument(
+        "--chunk-mode",
+        default=DEFAULT_CHUNK_MODE,
+        choices=["markdown", "character"],
+        help=(
+            "Splitter mode for chunk(). 'markdown' for .md / structured "
+            "corpora (default); 'character' for unstructured prose. "
+            "Baked into the rendered ingest_chunked pipeline."
+        ),
+    )
     ap.add_argument("--force", action="store_true", help="Overwrite existing kb.db.")
     args = ap.parse_args()
 
@@ -300,14 +356,14 @@ def main():
     workspace.mkdir(parents=True, exist_ok=True)
     db_path = workspace / "kb.db"
 
-    print(f"[1/5] Checking skardi CLI ...")
+    print(f"[1/6] Checking skardi CLI ...")
     check_skardi()
 
-    print(f"[2/5] Resolving sqlite-vec ...")
+    print(f"[2/6] Resolving sqlite-vec ...")
     sqlite_vec_path = resolve_sqlite_vec()
     print(f"  sqlite_vec loadable at {sqlite_vec_path}")
 
-    print(f"[3/5] Resolving embedding model ...")
+    print(f"[3/6] Resolving embedding model ...")
     if args.embedding_udf == "candle":
         model_path = resolve_model(args.model_path, workspace)
     elif args.embedding_udf == "gguf":
@@ -328,28 +384,28 @@ def main():
         model_path = ""  # unused for remote_embed
         print(f"  using remote_embed UDF with args {args.embedding_args!r}")
 
-    print(f"[4/5] Rendering templates into {workspace} ...")
+    print(f"[4/6] Rendering templates into {workspace} ...")
     ingest_call, query_call = build_embedding_calls(
         args.embedding_udf, args.embedding_args, model_path
     )
-    render_templates(workspace, str(db_path), ingest_call, query_call)
-    print(f"  wrote ctx.yaml, aliases.yaml, pipelines/*.yaml")
+    render_templates(workspace, str(db_path), ingest_call, query_call, args.chunk_mode)
+    write_breadcrumb(workspace, args.embedding_udf, args.embedding_args,
+                     model_path, args.embedding_dim, args.chunk_mode)
+    print(f"  wrote ctx.yaml, semantics.yaml, aliases.yaml, pipelines/*.yaml, .embedding.txt")
 
-    print(f"[5/5] Creating {db_path} (dim={args.embedding_dim}) ...")
+    print(f"[5/6] Creating {db_path} (dim={args.embedding_dim}) ...")
     create_db(db_path, args.embedding_dim, sqlite_vec_path, force=args.force)
 
+    print(f"[6/6] Workspace ready.")
     print()
     print("=" * 72)
-    print("Workspace ready. Next steps:")
+    print("Next steps:")
     print()
     print(f"  export SKARDICONFIG={workspace}")
     print(f"  export SQLITE_VEC_PATH={sqlite_vec_path}")
     print()
-    print(f"  python {SKILL_DIR}/scripts/chunk_corpus.py \\")
-    print(f"    --corpus <path/to/docs> --out {workspace}/chunks.csv")
-    print()
-    print(f"  python {SKILL_DIR}/scripts/bulk_ingest.py \\")
-    print(f"    --workspace {workspace} --chunks {workspace}/chunks.csv")
+    print(f"  python {SKILL_DIR}/scripts/ingest_corpus.py \\")
+    print(f"    --workspace {workspace} --corpus <path/to/docs>")
     print()
     print(f"  skardi grep \"your question\" --limit=5")
     print("=" * 72)

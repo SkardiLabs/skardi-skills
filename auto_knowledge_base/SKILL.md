@@ -1,11 +1,13 @@
 ---
 name: auto_knowledge_base
-description: Autonomously build and query a knowledge base from a directory of documents (markdown, text, code, PDFs-as-text) using the Skardi data platform. The skill handles the full pipeline end-to-end with no human-in-the-loop — prerequisite detection, embedding model download, schema creation, chunking, ingestion, and hybrid (vector + full-text) retrieval. Use this skill whenever the user asks to build a RAG system, index a corpus for search, create a local knowledge base, make documents queryable by an agent, answer questions over a document set, turn a folder of files into something the agent can retrieve from, or set up vector + full-text search over text — even if they don't say "Skardi" or "RAG" explicitly. Also trigger this skill when the user mentions embedding documents, chunking text for retrieval, grounding LLM answers in a document set, or building an agent-native wiki.
+description: Autonomously build and query a knowledge base from a directory of documents (markdown, text, code, PDFs-as-text) using the Skardi data platform. The skill handles the full pipeline end-to-end with no human-in-the-loop — prerequisite detection, embedding model download, schema creation, server-side chunking via Skardi 0.4.0's chunk() UDF, ingestion, and hybrid (vector + full-text) retrieval. Use this skill whenever the user asks to build a RAG system, index a corpus for search, create a local knowledge base, make documents queryable by an agent, answer questions over a document set, turn a folder of files into something the agent can retrieve from, or set up vector + full-text search over text — even if they don't say "Skardi" or "RAG" explicitly. Also trigger this skill when the user mentions embedding documents, chunking text for retrieval, grounding LLM answers in a document set, or building an agent-native wiki.
 ---
 
 # auto_knowledge_base — agent-autonomous KB construction over Skardi
 
-Your job: turn a directory of documents into a working knowledge base the agent (you) can query, with zero human intervention. Default stack is **Skardi CLI + local SQLite + sqlite-vec + FTS5 + local candle embeddings**, because that path has no server, no Docker, no API keys, and the same `skardi grep` verb serves vector, keyword, and hybrid search. Other backends (Postgres+pgvector, Lance) are supported as overrides — see [references/backends.md](references/backends.md).
+Your job: turn a directory of documents into a working knowledge base the agent (you) can query, with zero human intervention. Default stack is **Skardi CLI (≥ 0.4.0) + local SQLite + sqlite-vec + FTS5 + local candle embeddings**, because that path has no server, no Docker, no API keys, and the same `skardi grep` verb serves vector, keyword, and hybrid search. Other backends (Postgres+pgvector, Lance) are supported as overrides — see [references/backends.md](references/backends.md).
+
+> **Skardi 0.4.0+ required.** The skill chunks corpus text inside SQL via the `chunk()` UDF that landed in 0.4.0; an older binary fails late at INSERT time with an opaque "Invalid function 'chunk'" error. `setup_kb.py` checks this for you and prints a clear install command if the version is too old.
 
 ## Two orthogonal choices
 
@@ -40,34 +42,32 @@ If the user gives no signal about a backend or embedding, use **SQLite + sqlite-
 
 ## The end-to-end flow (default path)
 
-Five steps. Steps 1–3 are one-time setup per corpus. Steps 4–5 are the per-question loop.
+Four steps. Steps 1–2 are one-time setup per corpus. Steps 3–4 are the per-question loop.
 
 ```
-1. python SKILL_DIR/scripts/setup_kb.py --workspace ./kb     # optionally --model-path <abs-path>, --embedding-udf gguf, etc.
-2. python SKILL_DIR/scripts/chunk_corpus.py --corpus ./path/to/docs --out ./kb/chunks.json
-3. python SKILL_DIR/scripts/bulk_ingest.py  --workspace ./kb --chunks ./kb/chunks.json
-4. SKARDICONFIG=./kb skardi grep "your question" --limit=5   # (and/or `vec` / `fts`, possibly multiple)
-5. Synthesise a grounded, cited answer from the retrieved rows (see Step 5 for structure).
+1. python SKILL_DIR/scripts/setup_kb.py    --workspace ./kb     # optionally --model-path <abs-path>, --embedding-udf gguf, --chunk-mode character, ...
+2. python SKILL_DIR/scripts/ingest_corpus.py --workspace ./kb --corpus ./path/to/docs
+3. SKARDICONFIG=./kb skardi grep "your question" --limit=5    # (and/or `vec` / `fts`, possibly multiple)
+4. Synthesise a grounded, cited answer from the retrieved rows (see Step 4 for structure).
 ```
 
 Read `SKILL_DIR` as the absolute path to the directory containing this SKILL.md. Resolve it once from the path you got when this skill was invoked and reuse.
 
-The chunks file in step 2 is **NDJSON** (newline-delimited JSON objects, one per chunk) with a `.json` extension — that's the only extension DataFusion's JSON reader recognises, and JSON survives embedded newlines inside chunk content where CSV does not. Don't rename it to `.ndjson`.
-
-Steps 4 and 5 are the retrieval loop the agent runs for each question. Step 5 is where most of the answer quality comes from — don't skip it.
+The big change vs. older versions of this skill: there is no separate chunking step. `chunk()` is a Skardi UDF — chunking happens inside the same SQL statement that embeds and inserts, so the embedding model loads once for the whole corpus instead of once per file. Two scripts now do the work the previous three did.
 
 ### Step 1 — Initialize the workspace
 
 `scripts/setup_kb.py` is idempotent. It:
 
-1. Checks `skardi --version` is on PATH (fails with a clear install hint if not).
+1. Verifies `skardi --version >= 0.4.0` is on PATH (fails with a clear install hint if not — chunk() is a hard requirement).
 2. Ensures `sqlite_vec` and `huggingface_hub` Python packages are importable (installs them with `pip install --user` if missing).
 3. Resolves the embedding model — either uses a pre-existing path passed via `--model-path`, or downloads `BAAI/bge-small-en-v1.5` (≈130 MB of safetensors + tokenizer) into `<workspace>/models/bge-small-en-v1.5/`.
-4. Creates `<workspace>/kb.db` with three tables joined by `AFTER INSERT`/`UPDATE`/`DELETE` triggers:
+4. Renders `ctx.yaml`, `semantics.yaml`, `aliases.yaml`, and `pipelines/{ingest,ingest_chunked,search_vector,search_fulltext,search_hybrid}.yaml` from the `.tpl` files in `SKILL_DIR/assets/`, substituting **absolute** paths for the DB and the embedding model. Absolute paths matter because `skardi` resolves `candle()` model paths relative to its CWD — hard-coding absolutes removes a common foot-gun.
+5. Writes a `.embedding.txt` breadcrumb so `ingest_corpus.py` can rebuild the same embedding call without re-parsing YAML.
+6. Creates `<workspace>/kb.db` with three tables joined by `AFTER INSERT`/`UPDATE`/`DELETE` triggers:
    - `documents(id, source, chunk_idx, content, embedding BLOB)` — canonical row store
    - `documents_fts` — FTS5 mirror (content indexed, metadata UNINDEXED)
    - `documents_vec` — `vec0` mirror, `float[384]` (swap dim if you change the embedding model)
-5. Renders `ctx.yaml`, `aliases.yaml`, and `pipelines/{ingest,search_vector,search_fulltext,search_hybrid}.yaml` from the `.tpl` files in `SKILL_DIR/assets/`, substituting **absolute** paths for the DB and the embedding model. Absolute paths matter because `skardi` resolves `candle()` model paths relative to its CWD — hard-coding absolutes removes a common foot-gun.
 
 Typical invocation:
 
@@ -75,43 +75,54 @@ Typical invocation:
 # Default: auto-download BAAI/bge-small-en-v1.5 into <workspace>/models/.
 python SKILL_DIR/scripts/setup_kb.py --workspace ./kb
 
-# If a compatible model is already on disk, point at it with an absolute path
-# to skip the download (any HuggingFace BERT-family model dir with
-# model.safetensors + config.json + tokenizer.json works):
+# If a compatible model is already on disk, point at it with an absolute path:
 python SKILL_DIR/scripts/setup_kb.py --workspace ./kb \
   --model-path /abs/path/to/bge-small-en-v1.5
+
+# For unstructured prose, switch the chunk mode (default is markdown):
+python SKILL_DIR/scripts/setup_kb.py --workspace ./kb --chunk-mode character
 ```
 
-The script prints the final `SKARDICONFIG` the agent should export.
+The script prints the final `SKARDICONFIG` to export.
 
-### Step 2 — Chunk the corpus
+### Step 2 — Ingest the corpus (one shot, server-side chunking)
 
-`scripts/chunk_corpus.py` walks a directory (respecting `--include "*.md,*.txt,*.rst"` globs) and produces an NDJSON file with fields `id`, `source`, `chunk_idx`, `content`. The default chunker is markdown-aware:
-
-- Splits on `## ` and `### ` headings first (keeps semantic units together).
-- Within each heading section, packs paragraphs into chunks of ≤ `--max-chars` (default 1200) with `--overlap` char overlap (default 200).
-- Strips front-matter, trims trailing whitespace, and preserves the heading trail as a prefix on each chunk so dense-retrieval scores aren't throwing away section titles.
-
-For plain text it falls back to paragraph-packing with the same char budget. Non-text files are skipped.
-
-Output uses NDJSON (not CSV) because DataFusion's CSV reader tokenises by line and mis-splits any cell containing embedded newlines — and real-world chunks routinely contain paragraph breaks. JSON escapes `\n` inside strings, so multi-paragraph chunks round-trip cleanly. A single SQL statement then embeds + inserts every chunk in one shot (Step 3).
-
-### Step 3 — Bulk-ingest via one SQL statement
-
-`scripts/bulk_ingest.py` runs one `skardi query` against the workspace ctx:
+`scripts/ingest_corpus.py` walks the corpus directory, builds an NDJSON manifest (`{doc_id, source, content}`, one row per file), and runs **one** `skardi query` whose INSERT does the whole chunk → embed → write loop:
 
 ```sql
 INSERT INTO kb.main.documents (id, source, chunk_idx, content, embedding)
-SELECT CAST(id AS BIGINT), source, CAST(chunk_idx AS BIGINT), content,
-       vec_to_binary(candle('<abs-model-path>', content))
-FROM './kb/chunks.json'
+SELECT id, source, chunk_idx, content, vec_to_binary(candle('<abs-model-path>', content))
+FROM (
+  SELECT
+    CAST(doc_id AS BIGINT) * 1000 + chunk_idx AS id,
+    source, chunk_idx, content
+  FROM (
+    SELECT
+      doc_id, source,
+      ROW_NUMBER() OVER (PARTITION BY doc_id ORDER BY 1) - 1 AS chunk_idx,
+      chunk_text                                              AS content
+    FROM (
+      SELECT
+        CAST(doc_id AS BIGINT) AS doc_id, source,
+        UNNEST(chunk('markdown', content, 1200, 200)) AS chunk_text
+      FROM './kb/manifest.json'
+    ) c
+  ) c2
+) AS t
 ```
 
-A single statement embeds every row and commits; the `AFTER INSERT` trigger fans each row to `documents_fts` and `documents_vec` atomically, so the corpus becomes queryable both ways in one pass. For a 300-chunk corpus this runs in a handful of seconds; for 50k chunks, batch it in groups of ~5000 — the script handles the batching automatically via `--batch-size`.
+The `chunk()` UDF (Skardi 0.4.0+) replaces the old Python chunker entirely. Two splitter modes:
 
-> **Why not call `skardi run ingest` in a loop?** Correct but slow — each call re-initialises the DataFusion context and reloads the embedding model. The single-statement path over the NDJSON file loads the model once.
+- `'markdown'` — prefers heading / paragraph / code-block boundaries. Right for `.md` and structured `.txt`.
+- `'character'` — generic recursive splitter (paragraph → sentence → word → grapheme). Right for unstructured prose.
 
-### Step 4 — Retrieve
+`UNNEST(chunk(...))` expands the splitter's `List<Utf8>` output into one row per chunk; the embedding UDF then runs over each chunk's `content`. The `AFTER INSERT` trigger fans every new row to `documents_fts` and `documents_vec` atomically — so the corpus becomes searchable both ways in one pass.
+
+Stable ids: `doc_id` is a 53-bit blake2b hash of the relative path, and per-chunk id is `doc_id * 1000 + chunk_idx`. Re-ingesting the same file produces the same ids, which means a second run rejects with `UNIQUE constraint failed`. Fix by either re-running `setup_kb.py --force` (rebuild from scratch) or `DELETE FROM kb.main.documents WHERE source = '<path>'` first (incremental).
+
+> **Why one bulk INSERT instead of one per file?** The embedding model loads once per `skardi` process. Running per-file would reload it every time. For a 100-file corpus that's a 100x cold-start tax — most of which is wasted because the splitter and embedder both warm up after the first batch.
+
+### Step 3 — Retrieve
 
 ```bash
 export SKARDICONFIG=./kb
@@ -126,11 +137,11 @@ skardi vec "a creature that checks its pocket watch" --limit=5
 skardi fts '"Rabbit-Hole"' --limit=5
 ```
 
-Each returned row has `id`, `source`, `chunk_idx`, `content`, and a score column. Pass these into Step 5.
+Each returned row has `id`, `source`, `chunk_idx`, `content`, and a score column. Pass these into Step 4.
 
 > **FTS5 syntax gotcha:** FTS5 treats `?`, `"`, `+`, `-`, `~`, `^`, and `()` as operators. A bare `"What is X?"` will raise `fts5: syntax error`. Either strip punctuation for the `--text_query`, phrase-quote the whole thing (`'"what is x"'`), or pass plain words. The hybrid alias uses the raw query for vector side and the same string for FTS side, so a bad punctuation in one query will only degrade the FTS half — the vector half still works, so don't panic if you see an FTS error; search still functions.
 
-### Step 5 — Synthesise the answer
+### Step 4 — Synthesise the answer
 
 Retrieval gives you candidate passages. The answer is your synthesis of them, and this is where the retrieval loop earns its keep — a thin answer leaves value on the floor even when the top chunk is correct.
 
@@ -150,29 +161,35 @@ Retrieval gives you candidate passages. The answer is your synthesis of them, an
 [1–3 sentences synthesising what the chunks say.]
 > [Verbatim or near-verbatim quote from a retrieved chunk.]
 
-Citation: `<source>`, chunk <chunk_idx> (section: *<heading if inferable>*).
+Citation: `<source>`, chunk <chunk_idx>.
 
 ## [Sub-claim 2]
 ...
 
 ## Citations
 
-| Claim | Source | Section |
+| Claim | Source | Chunk |
 |---|---|---|
-| Short restatement of claim 1 | `source_file.md` | Chapter I |
-| Short restatement of claim 2 | `source_file.md` | Chapter III |
+| Short restatement of claim 1 | `source_file.md` | 3 |
+| Short restatement of claim 2 | `source_file.md` | 7 |
 ```
 
 **Grounding principle: don't synthesise past the retrieval.** If a fact isn't in a chunk you retrieved, it doesn't belong in the answer — even if you "know" it from pretraining. The reason is concrete: users trust the answer because it was retrieved from *their* corpus. Side observations that feel like padding ("she is paired with Miss Abbot; less obnoxious than Abbot") are fine only if the chunks you're citing actually say that, *and* they add to the user's understanding of the specific question asked. If a sentence doesn't pass both tests, delete it.
 
 **If the corpus genuinely doesn't answer the question**, say so plainly. Report what you searched for and what you found *instead* — don't invent a plausible-sounding quote from memory. Agents that hallucinate citations destroy trust in the entire retrieval system; agents that honestly flag absence preserve it. Cite the closest passage that *is* in the corpus to show the search actually ran.
 
+## Catalog semantics
+
+`setup_kb.py` also renders a `semantics.yaml` next to `ctx.yaml`. Skardi auto-discovers it (see `docs/semantics.md` in the source tree) and surfaces the table + column descriptions in `skardi query --schema --all` output. That's the channel through which an agent peering into an unfamiliar workspace sees what `documents.embedding` is for or how `chunk_idx` is assigned. The file is regenerated on every `setup_kb.py` run — if the user wants hand-curated descriptions, drop a second `kind: semantics` file (any name) into a `semantics/` directory next to `ctx.yaml`; both are merged at load time.
+
 ## Customising the defaults
 
 Most agents won't need to. But when they do:
 
 - **Different embedding model.** Swap `--model-path` and set `--embedding-dim` on `setup_kb.py` to match the model's output dim (bge-small is 384, bge-base is 768, OpenAI `text-embedding-3-small` is 1536). The script rewrites the `float[N]` clause of the `vec0` table to match. If you change models *after* the DB exists, rebuild from scratch — dim mismatches are unrecoverable.
-- **Different chunker.** Write your own NDJSON file (one object per line, fields `id`, `source`, `chunk_idx`, `content`) and skip `chunk_corpus.py`. Skardi doesn't care how the text was chunked — any NDJSON with those fields and a `.json` extension works with `bulk_ingest.py`.
+- **Different chunk mode.** Pass `--chunk-mode character` to `setup_kb.py` for unstructured prose where heading-aware splitting buys nothing.
+- **Different chunk size / overlap.** Pass `--chunk-size 800 --overlap 100` (or whatever) to `ingest_corpus.py`. The constraint is `overlap < chunk_size`; both must be positive integers. There's no "right" answer — 1200/200 (the default) suits most prose; tighter chunks (500/50) help when the corpus has dense factual passages and queries target single sentences.
+- **Custom chunker.** If `chunk('markdown' | 'character', ...)` doesn't fit your corpus (token-based splitting, code-aware splitting, semantic chunking), build your own NDJSON file with fields `id`, `source`, `chunk_idx`, `content` and skip `ingest_corpus.py`. Then run a single INSERT through the simpler `ingest` pipeline (still rendered by `setup_kb.py`, used as `skardi ingest <id> <source> <chunk_idx> <content>`) — Skardi does not care how the chunks were produced.
 - **GGUF quantised model.** Pass `--embedding-udf gguf --model-path /abs/path/to/model.gguf` (or a directory containing one). Skardi must be built with `--features gguf`. Great for squeezing a larger embedding model onto a modest machine — often faster than the equivalent candle model at similar accuracy.
 - **Remote embeddings (no local compute).** Pass `--embedding-udf remote_embed` and `--embedding-args` naming the provider and model. Examples: `"'openai','text-embedding-3-small'"`, `"'voyage','voyage-3'"`, `"'gemini','text-embedding-004'"`, `"'mistral','mistral-embed'"`. Each needs the matching API-key env var (`OPENAI_API_KEY`, `VOYAGE_API_KEY`, `GOOGLE_API_KEY`, `MISTRAL_API_KEY`) and Skardi built with `--features remote-embed`.
 - **Postgres backend.** Use [references/backends.md](references/backends.md) — the same pipeline shape, but `sqlite_knn`/`sqlite_fts`/`vec_to_binary` become `pg_knn`/`pg_fts` and the embedding writes directly as `vector(384)` without binary packing. Requires Postgres + pgvector running somewhere.
@@ -189,19 +206,19 @@ SELECT COUNT(*) AS rows,
 FROM kb.main.documents"
 ```
 
-If `rows` is 0 or far less than the number of objects in `kb/chunks.json`, the embedding UDF probably isn't available in this Skardi build. Verify by running it directly — `skardi query --sql "SELECT candle('...', 'hi')"` (or `gguf(...)` / `remote_embed(...)` depending on what you chose) will error if the matching feature wasn't compiled in. Rebuild Skardi with the right `--features` flag, or re-run `setup_kb.py` with a different `--embedding-udf`.
+If `rows` is 0 or far less than what you'd expect from the corpus, the embedding UDF probably isn't available in this Skardi build. Verify by running it directly — `skardi query --sql "SELECT candle('...', 'hi')"` (or `gguf(...)` / `remote_embed(...)` depending on what you chose) will error if the matching feature wasn't compiled in. Rebuild Skardi with the right `--features` flag, or re-run `setup_kb.py` with a different `--embedding-udf`.
 
 Then do one test retrieval and eyeball the output — scores should range across at least two orders of magnitude, and the top chunk should be visibly related to the query. If every chunk has the same score, the trigger probably didn't fire (check `SELECT COUNT(*) FROM documents_vec` — it should equal `documents`).
 
 ## Troubleshooting
 
-If something goes wrong, read [references/troubleshooting.md](references/troubleshooting.md) — it covers: missing `sqlite_vec` extension path, candle feature not compiled, FTS5 syntax errors, embedding dim mismatch, empty result sets, and how to rebuild a corrupted workspace. Don't speculate — look up the symptom in that file and apply the prescribed fix.
+If something goes wrong, read [references/troubleshooting.md](references/troubleshooting.md) — it covers: missing `sqlite_vec` extension path, candle / chunk feature not compiled, FTS5 syntax errors, embedding dim mismatch, empty result sets, and how to rebuild a corrupted workspace. Don't speculate — look up the symptom in that file and apply the prescribed fix.
 
 ## When a single KB isn't enough
 
 If the agent needs to maintain many KBs (one per project, per user, per tenant), just pick a different `--workspace` per KB and switch `SKARDICONFIG` between them. Each workspace is self-contained: one SQLite file, one ctx, one pipelines dir. Nothing global, nothing to clean up except the directory.
 
-If the agent needs to keep a KB *updated* as new files land (incremental ingest), re-run steps 2–3 on just the new files (append rows; the `id` column should remain unique — include the file path + chunk index in the id derivation). The `documents_vec` trigger handles inserts fine; if you need to re-embed a changed file, `DELETE FROM documents WHERE source = '<path>'` first, then re-ingest.
+If the agent needs to keep a KB *updated* as new files land (incremental ingest), `DELETE FROM documents WHERE source IN (...)` for the changed files first, then rerun `ingest_corpus.py` — it will re-walk the corpus and re-emit stable ids, so only the changed files actually move. The triggers handle the FTS + vec mirror updates automatically.
 
 ## Pattern reference
 

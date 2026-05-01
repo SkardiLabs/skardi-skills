@@ -13,7 +13,17 @@ spec:
       - source
       - chunk_idx
       - content
-    description: Insert one chunk; the AFTER INSERT trigger mirrors it into FTS + vec.
+    description: Insert one pre-chunked row; the AFTER INSERT trigger mirrors it into FTS + vec.
+  ingest-doc:
+    pipeline: ingest-chunked
+    positional:
+      - doc_id
+      - source
+      - content
+    defaults:
+      chunk_size: "1200"
+      overlap: "200"
+    description: Chunk a whole document inline, embed each chunk, and insert one row per chunk.
   grep:
     pipeline: search-hybrid
     positional:
