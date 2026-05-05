@@ -1,0 +1,29 @@
+{
+  "name": "skardi-skills",
+  "owner": {
+    "name": "Skardi Labs",
+    "url": "https://github.com/SkardiLabs"
+  },
+  "metadata": {
+    "description": "Agent Skills for working with Skardi — SQL pipelines as HTTP endpoints. Distributes plugins that teach AI coding agents Skardi's patterns for RAG, hybrid search, and pipeline deployment.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "auto-knowledge-base",
+      "source": "./auto_knowledge_base",
+      "description": "Build a hybrid-search (vector + FTS) knowledge base over a folder of docs using Skardi CLI + SQLite + sqlite-vec. No servers, no API keys.",
+      "version": "0.1.0",
+      "category": "rag",
+      "keywords": ["rag", "knowledge-base", "sqlite", "embeddings", "hybrid-search"]
+    },
+    {
+      "name": "auto-rag",
+      "source": "./auto_rag",
+      "description": "Server-backed RAG over a user-supplied datastore (Postgres+pgvector, MongoDB, or Lance) via skardi-server. Exposes hybrid search as REST endpoints.",
+      "version": "0.1.0",
+      "category": "rag",
+      "keywords": ["rag", "skardi-server", "pgvector", "mongodb", "lance", "rest"]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "auto-knowledge-base",
+  "version": "0.1.0",
+  "description": "Agent-autonomous knowledge-base construction with Skardi: turn a directory of docs into a hybrid (vector + FTS) queryable KB using Skardi CLI + SQLite + sqlite-vec, no servers or API keys. Postgres+pgvector and Lance supported as overrides.",
+  "author": { "name": "Skardi Labs" },
+  "homepage": "https://github.com/SkardiLabs/skardi-skills",
+  "repository": "https://github.com/SkardiLabs/skardi-skills",
+  "license": "Apache-2.0",
+  "keywords": ["skardi", "rag", "knowledge-base", "sqlite", "sqlite-vec", "embeddings", "hybrid-search"]
+}
