@@ -16,15 +16,16 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 
 ### Claude Code (plugin marketplace, recommended)
 
-`auto_knowledge_base` and `auto_rag` are published as plugins in this repo. From inside any Claude Code session:
+All three skills are published as plugins in this repo. From inside any Claude Code session:
 
 ```text
 /plugin marketplace add SkardiLabs/skardi-skills
+/plugin install skardi-deploy-and-patterns@skardi-skills
 /plugin install auto-knowledge-base@skardi-skills
 /plugin install auto-rag@skardi-skills
 ```
 
-That's it — the skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions. (`skardi-deploy-and-patterns` is still on the manual-copy path below; it'll move to a plugin in a follow-up.)
+That's it — the skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
 
 ### Claude Code (manual copy)
 
@@ -32,9 +33,7 @@ If you'd rather not use the plugin marketplace, copy the skill(s) into your pers
 
 ```bash
 # skardi-deploy-and-patterns (deployment + core concepts)
-mkdir -p ~/.claude/skills/skardi-deploy-and-patterns
-cp skardi_on_sealos/skill_sealos_k8s_deploy.md ~/.claude/skills/skardi-deploy-and-patterns/SKILL.md
-cp -r skardi_on_sealos/templates ~/.claude/skills/skardi-deploy-and-patterns/templates
+cp -r skardi_on_sealos/skills/skardi-deploy-and-patterns ~/.claude/skills/skardi-deploy-and-patterns
 
 # auto_knowledge_base (agent-autonomous KB construction)
 cp -r auto_knowledge_base/skills/auto_knowledge_base ~/.claude/skills/auto_knowledge_base
@@ -57,9 +56,7 @@ Copy the skill(s) into the project-level skills directory:
 
 ```bash
 # skardi-deploy-and-patterns
-mkdir -p .cursor/skills/skardi-deploy-and-patterns
-cp skardi_on_sealos/skill_sealos_k8s_deploy.md .cursor/skills/skardi-deploy-and-patterns/SKILL.md
-cp -r skardi_on_sealos/templates .cursor/skills/skardi-deploy-and-patterns/templates
+cp -r skardi_on_sealos/skills/skardi-deploy-and-patterns .cursor/skills/skardi-deploy-and-patterns
 
 # auto_knowledge_base
 cp -r auto_knowledge_base/skills/auto_knowledge_base .cursor/skills/auto_knowledge_base
@@ -74,7 +71,7 @@ The `SKILL.md` files follow the [Agent Skills open standard](https://agentskills
 
 ## Bundled resources per skill
 
-### `skardi_on_sealos/templates/`
+### `skardi_on_sealos/skills/skardi-deploy-and-patterns/templates/`
 
 Ready-to-use files referenced by `skardi-deploy-and-patterns`:
 

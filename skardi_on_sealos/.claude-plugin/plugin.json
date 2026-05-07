@@ -1,0 +1,10 @@
+{
+  "name": "skardi-deploy-and-patterns",
+  "version": "0.1.0",
+  "description": "Core Skardi concepts (auth, SQLite, pipelines, CSRF, DataFusion SQL dialect) plus deploying Skardi to Sealos via kubectl. Includes ready-to-use templates: K8s manifest, Dockerfiles, Next.js proxy, docker-compose for local dev, and an init-db scaffold.",
+  "author": { "name": "Skardi Labs" },
+  "homepage": "https://github.com/SkardiLabs/skardi-skills",
+  "repository": "https://github.com/SkardiLabs/skardi-skills",
+  "license": "Apache-2.0",
+  "keywords": ["skardi", "sealos", "kubernetes", "deployment", "auth", "datafusion", "nextjs"]
+}
