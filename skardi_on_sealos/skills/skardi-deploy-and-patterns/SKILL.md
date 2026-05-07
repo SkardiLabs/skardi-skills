@@ -1,10 +1,6 @@
 ---
 name: skardi-deploy-and-patterns
-description: >
-  End-to-end reference for Skardi: core concepts (auth, SQLite, pipelines, CSRF),
-  local Docker development, and deploying to Sealos via kubectl.
-  Emphasis on auth setup and cross-origin client patterns applicable to any frontend.
-type: feedback
+description: End-to-end reference for Skardi — core concepts (auth, SQLite ctx, pipeline YAMLs, CSRF, DataFusion SQL dialect), local Docker development, and deploying to Sealos via kubectl. Use when the user is wiring auth, debugging cross-origin frontend calls (the CSRF/Origin-stripping proxy pattern), writing pipeline YAMLs and hitting DataFusion vs SQLite syntax differences, JOINing project tables against `auth.users` and `auth.sessions`, deploying the Skardi image (current tag 0.2.0) to Sealos K8s with PVC + init container + ConfigMap-mounted pipelines, or shipping a Next.js frontend that proxies to Skardi. Triggers on phrases like "deploy Skardi", "Sealos", "Skardi auth", "AUTH_BASE_URL", "CSRF_ERROR cross-site request blocked", "DataFusion datetime", "pipelines ConfigMap", "skardi-sealos.yaml", "init-db.py", or any Skardi pipeline/ctx authoring question. Bundled templates next to this file in `templates/` — `skardi-sealos.yaml`, `nextjs-sealos.yaml`, `Dockerfile.nextjs`, `nextjs-proxy.ts`, `docker-compose.yml`, `init-db.py`.
 ---
 
 # Skardi — Patterns & Sealos Deployment Guide

@@ -1,0 +1,10 @@
+{
+  "name": "auto-rag",
+  "version": "0.1.0",
+  "description": "Stand up server-backed hybrid-search RAG with skardi-server in front of a user-supplied datastore (Postgres+pgvector, MongoDB, or Lance). Renders ctx + ingest/search-vector/search-fulltext/search-hybrid pipelines, drives ingestion and querying over HTTP. Never creates schema for the user.",
+  "author": { "name": "Skardi Labs" },
+  "homepage": "https://github.com/SkardiLabs/skardi-skills",
+  "repository": "https://github.com/SkardiLabs/skardi-skills",
+  "license": "Apache-2.0",
+  "keywords": ["skardi", "rag", "skardi-server", "pgvector", "mongodb", "lance", "hybrid-search", "rest"]
+}

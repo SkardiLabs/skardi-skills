@@ -14,21 +14,32 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 
 ## Installation
 
-### Claude Code
+### Claude Code (plugin marketplace, recommended)
 
-Copy the skill(s) into your personal skills directory so they're available across all projects:
+All three skills are published as plugins in this repo. From inside any Claude Code session:
+
+```text
+/plugin marketplace add SkardiLabs/skardi-skills
+/plugin install skardi-deploy-and-patterns@skardi-skills
+/plugin install auto-knowledge-base@skardi-skills
+/plugin install auto-rag@skardi-skills
+```
+
+That's it — the skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
+
+### Claude Code (manual copy)
+
+If you'd rather not use the plugin marketplace, copy the skill(s) into your personal skills directory so they're available across all projects:
 
 ```bash
 # skardi-deploy-and-patterns (deployment + core concepts)
-mkdir -p ~/.claude/skills/skardi-deploy-and-patterns
-cp skardi_on_sealos/skill_sealos_k8s_deploy.md ~/.claude/skills/skardi-deploy-and-patterns/SKILL.md
-cp -r skardi_on_sealos/templates ~/.claude/skills/skardi-deploy-and-patterns/templates
+cp -r skardi_on_sealos/skills/skardi-deploy-and-patterns ~/.claude/skills/skardi-deploy-and-patterns
 
 # auto_knowledge_base (agent-autonomous KB construction)
-cp -r auto_knowledge_base ~/.claude/skills/auto_knowledge_base
+cp -r auto_knowledge_base/skills/auto_knowledge_base ~/.claude/skills/auto_knowledge_base
 
 # auto_rag (server-backed RAG over a user-supplied datastore)
-cp -r auto_rag ~/.claude/skills/auto_rag
+cp -r auto_rag/skills/auto_rag ~/.claude/skills/auto_rag
 ```
 
 Claude Code will automatically load the relevant skill when your request matches it — e.g. deployment/auth/pipelines for `skardi-deploy-and-patterns`, "index these docs" / "build a RAG" / "make this folder searchable" for `auto_knowledge_base`, or "expose hybrid search as HTTP" / "RAG service over our pgvector DB" / "skardi-server with MongoDB" for `auto_rag`. You can also invoke any of them directly:
@@ -45,15 +56,13 @@ Copy the skill(s) into the project-level skills directory:
 
 ```bash
 # skardi-deploy-and-patterns
-mkdir -p .cursor/skills/skardi-deploy-and-patterns
-cp skardi_on_sealos/skill_sealos_k8s_deploy.md .cursor/skills/skardi-deploy-and-patterns/SKILL.md
-cp -r skardi_on_sealos/templates .cursor/skills/skardi-deploy-and-patterns/templates
+cp -r skardi_on_sealos/skills/skardi-deploy-and-patterns .cursor/skills/skardi-deploy-and-patterns
 
 # auto_knowledge_base
-cp -r auto_knowledge_base .cursor/skills/auto_knowledge_base
+cp -r auto_knowledge_base/skills/auto_knowledge_base .cursor/skills/auto_knowledge_base
 
 # auto_rag
-cp -r auto_rag .cursor/skills/auto_rag
+cp -r auto_rag/skills/auto_rag .cursor/skills/auto_rag
 ```
 
 ### Other Agent Skills-compatible tools
@@ -62,7 +71,7 @@ The `SKILL.md` files follow the [Agent Skills open standard](https://agentskills
 
 ## Bundled resources per skill
 
-### `skardi_on_sealos/templates/`
+### `skardi_on_sealos/skills/skardi-deploy-and-patterns/templates/`
 
 Ready-to-use files referenced by `skardi-deploy-and-patterns`:
 

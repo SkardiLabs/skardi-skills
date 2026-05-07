@@ -1,0 +1,34 @@
+{
+  "name": "skardi-skills",
+  "owner": {
+    "name": "Skardi Labs",
+    "url": "https://github.com/SkardiLabs"
+  },
+  "metadata": {
+    "description": "Agent Skills for working with Skardi — SQL pipelines as HTTP endpoints. Distributes plugins that teach AI coding agents Skardi's patterns for RAG, hybrid search, and pipeline deployment.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "skardi-deploy-and-patterns",
+      "source": "./skardi_on_sealos",
+      "description": "Core Skardi concepts (auth, SQLite, pipelines, CSRF, DataFusion SQL dialect) plus deploying Skardi to Sealos via kubectl. Includes ready-to-use K8s manifest, Dockerfiles, Next.js proxy, docker-compose for local dev, and an init-db scaffold.",
+      "category": "deployment",
+      "keywords": ["skardi", "sealos", "kubernetes", "deployment", "auth", "datafusion", "nextjs"]
+    },
+    {
+      "name": "auto-knowledge-base",
+      "source": "./auto_knowledge_base",
+      "description": "Build a hybrid-search (vector + FTS) knowledge base over a folder of docs using Skardi CLI + SQLite + sqlite-vec. No servers, no API keys.",
+      "category": "rag",
+      "keywords": ["rag", "knowledge-base", "sqlite", "embeddings", "hybrid-search"]
+    },
+    {
+      "name": "auto-rag",
+      "source": "./auto_rag",
+      "description": "Server-backed RAG over a user-supplied datastore (Postgres+pgvector, MongoDB, or Lance) via skardi-server. Exposes hybrid search as REST endpoints.",
+      "category": "rag",
+      "keywords": ["rag", "skardi-server", "pgvector", "mongodb", "lance", "rest"]
+    }
+  ]
+}
