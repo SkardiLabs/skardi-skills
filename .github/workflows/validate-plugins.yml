@@ -1,0 +1,41 @@
+name: Validate plugins
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Validate marketplace manifest
+        run: claude plugin validate .
+
+      - name: Validate every plugin manifest
+        shell: bash
+        run: |
+          set -e
+          # Find every <plugin>/.claude-plugin/plugin.json (excluding the
+          # root marketplace manifest) and validate the plugin directory.
+          mapfile -t manifests < <(find . -path ./.claude-plugin -prune -o -path '*/.claude-plugin/plugin.json' -print)
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "No plugin manifests found — nothing to validate." >&2
+            exit 1
+          fi
+          for manifest in "${manifests[@]}"; do
+            plugin_dir=$(dirname "$(dirname "$manifest")")
+            echo "::group::$(basename "$plugin_dir")"
+            claude plugin validate "$plugin_dir"
+            echo "::endgroup::"
+          done
