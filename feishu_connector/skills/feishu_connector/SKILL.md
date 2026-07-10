@@ -1,6 +1,6 @@
 ---
 name: feishu_connector
-description: Sync a Feishu/Lark Bitable (multi-dimensional table / 多维表格) into a local SQLite database via the official lark-cli, then register that SQLite as a Skardi data source so the agent can query Feishu table data with plain SQL (skardi query). Use whenever the user wants an AI agent to read / query / analyze data living in a Feishu (Lark) Bitable — e.g. "让 AI 查飞书多维表格", "把飞书表接进来给 agent", "query my Feishu base", "analyze a Lark bitable". v1 scope: Bitable only (not Docs/IM), manual one-shot sync, special fields (select/date/link) stored as text.
+description: 'Sync a Feishu/Lark Bitable (multi-dimensional table / 多维表格) into a local SQLite database via the official lark-cli, then register that SQLite as a Skardi data source so the agent can query Feishu table data with plain SQL (skardi query). Use whenever the user wants an AI agent to read / query / analyze data living in a Feishu (Lark) Bitable — e.g. "让 AI 查飞书多维表格" / "把飞书表接进来给 agent" / "query my Feishu base" / "analyze a Lark bitable". v1 scope — Bitable only (not Docs/IM), manual one-shot sync, special fields (select/date/link) stored as text.'
 ---
 
 # feishu_connector — query a Feishu Bitable through Skardi
