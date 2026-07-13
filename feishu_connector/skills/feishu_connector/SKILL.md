@@ -8,7 +8,9 @@ description: 'Sync a Feishu/Lark Bitable (multi-dimensional table / 多维表格
 Turn a Feishu (Lark) Bitable into something the agent can query with SQL: (1) sync it to a local SQLite file via `lark-cli`, (2) register that file as a Skardi data source. No server, no extra API keys beyond the user's existing lark-cli auth.
 
 ## Prerequisites
-- `lark-cli` — the official Lark CLI ([@larksuite/cli](https://github.com/larksuite/cli)). If it's not already on PATH, install it first: `npm install -g @larksuite/cli`. Then authenticate as the user (`lark-cli auth login`) with Base read scope; the user must have read access to the target Bitable.
+- `lark-cli` — the official Lark CLI ([@larksuite/cli](https://github.com/larksuite/cli)). If it's not already on PATH, install it first: `npm install -g @larksuite/cli`. Then authenticate with **least-privilege scope** — this skill only reads Bitables, so request just the `base` domain:
+  `lark-cli auth login --domain base`
+  Do NOT run a bare `lark-cli auth login`: without `--domain` it requests every domain the app supports (calendar / mail / docs / …), which is the "asks for a lot of unrelated permissions" consent screen. The user must have read access to the target Bitable.
 - `skardi` CLI >= 0.4.0 on PATH.
 - `python3` (stdlib `sqlite3` only — no extra deps).
 
