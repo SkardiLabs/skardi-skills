@@ -5,7 +5,13 @@ description: 'Sync Feishu/Lark data into a local SQLite database via the officia
 
 # feishu_connector — query Feishu Bitables & cloud docs through Skardi
 
-Turn Feishu (Lark) data into something an agent can query with SQL: (1) sync it to a local SQLite file via `lark-cli`, (2) register that file as a Skardi data source. Works for **Bitables** (多维表格 → rows/columns) and **cloud docs** (云文档 → one row per doc with the full markdown body). No server, no extra API keys beyond the user's existing lark-cli auth.
+Turn Feishu (Lark) data into something an agent can query with SQL: (1) sync it to a local SQLite file via `lark-cli`, (2) register that file as a Skardi data source. Works for **Bitables** (多维表格 → rows/columns), **cloud docs** (云文档 → one row per doc), and **chats** (聊天记录 → one row per message). No server, no extra API keys beyond the user's existing lark-cli auth.
+
+## ⚠️ Security & data boundary (read first)
+This makes a **local snapshot** of Feishu content in a plain SQLite file. It does **NOT** inherit Feishu's access controls:
+- Once synced, **anything that can read the `.db` sees all synced content** — it is never re-checked against Feishu. If access is later revoked in Feishu, the local copy is unaffected until you re-sync.
+- The sync tightens the `.db` to **owner-only (`0600`)**, but that is not a substitute for judgment: **don't sync onto shared machines or into a shared/multi-user agent**, and be especially careful with **1:1 chats** and other private content.
+- Treat the `.db` as sensitive at rest. This is a convenience/query cache, **not** a governance boundary.
 
 ## Prerequisites
 - `lark-cli` — the official Lark CLI ([@larksuite/cli](https://github.com/larksuite/cli)). If it's not already on PATH, install it first: `npm install -g @larksuite/cli`. Then authenticate with **least-privilege scope for the mode you use** — request only what's needed, NOT a bare `lark-cli auth login` (which asks for every domain — the "lots of unrelated permissions" consent screen):
@@ -37,7 +43,7 @@ Ask for: a set of **doc URLs / tokens**, or a **wiki node token + space id** (to
 - **Sync** an explicit list:
   `python scripts/sync_docs.py --doc <url_or_token> [--doc <url_or_token> …] --out feishu.db --table-name feishu_docs`
   …or a whole wiki subtree: `python scripts/sync_docs.py --node <node_token> --space <space_id> --out feishu.db --table-name feishu_docs`
-  Fetches each doc's full markdown via `lark-cli docs`. Wiki links auto-resolve to their docx; inaccessible docs are skipped (logged), not fatal.
+  Fetches each doc's full markdown via `lark-cli docs`. Wiki links auto-resolve to their docx. **Any failure (inaccessible doc, failed subtree page) aborts the sync without touching the existing table** — pass `--allow-partial` to instead sync what succeeded and list what failed. The `url` column stores the input URL for `--doc` items, and a `wiki/<node_token>` reference for subtree items (not a full clickable link).
 - Then **Register & query** (below). Sample queries:
   ```bash
   skardi query --ctx ctx.yaml --sql "SELECT title, url FROM feishu_docs WHERE title LIKE '%任务%'"
@@ -46,7 +52,7 @@ Ask for: a set of **doc URLs / tokens**, or a **wiki node token + space id** (to
 
 ### C) Chat (聊天记录 / IM) — one row per message; group **or** 1:1
 For when the user wants the agent to read / search a Feishu chat — a **group** or a **1:1 (P2P)** conversation (who said what, when, decisions, discussion). Reads **your own** chats via `lark-cli im --as user` — **no bot needs to join the chat** (unlike server/bot integrations). Each message → one row `(chat_id, chat_name, message_id, sender, send_time, msg_type, content)`; text is decoded plain text, images/files/audio are stored as `[image]` / `[file]` placeholders (not downloaded).
-Ask for: which chat (by **`--chat-id`** `oc_...`, or **`--chat-name`** — matches both group names and 1:1 chats by the other person's name, e.g. `--chat-name "张三"`), and a time window (default last 30 days; `--days 0` = all). Chat resolution lists both groups and 1:1s.
+Ask for: which chat (by **`--chat-id`** `oc_...`, or **`--chat-name`** — matches group names and 1:1s by the other person's name, e.g. `--chat-name "张三"`; **it must match exactly one chat, otherwise it lists candidates and exits asking for `--chat-id`** — chat data is sensitive, so it never guesses), and a time window (default last 30 days; `--days 0` = all). The sync verifies the collected count against the server's reported total and **aborts rather than write a partial table** if messages were dropped (e.g. rate-limited).
 - **Sync**: `python scripts/sync_chat.py --chat-id <oc_...> [--days 30] --out feishu.db --table-name feishu_chat`
   (or `--chat-name "群名"`). Fetches messages via `lark-cli im` (paginated with `--order desc`; the IM endpoint rate-limits, so calls retry with backoff).
 - Then **Register & query** (below). Sample queries:
