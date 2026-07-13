@@ -8,7 +8,7 @@ description: 'Sync a Feishu/Lark Bitable (multi-dimensional table / 多维表格
 Turn a Feishu (Lark) Bitable into something the agent can query with SQL: (1) sync it to a local SQLite file via `lark-cli`, (2) register that file as a Skardi data source. No server, no extra API keys beyond the user's existing lark-cli auth.
 
 ## Prerequisites
-- `lark-cli` installed and authenticated as the user (`lark-cli auth login`) with Base read scope; the user must have read access to the target Bitable.
+- `lark-cli` — the official Lark CLI ([@larksuite/cli](https://github.com/larksuite/cli)). If it's not already on PATH, install it first: `npm install -g @larksuite/cli`. Then authenticate as the user (`lark-cli auth login`) with Base read scope; the user must have read access to the target Bitable.
 - `skardi` CLI >= 0.4.0 on PATH.
 - `python3` (stdlib `sqlite3` only — no extra deps).
 
@@ -22,8 +22,16 @@ Turn a Feishu (Lark) Bitable into something the agent can query with SQL: (1) sy
    `python scripts/sync_bitable.py --base-token <app_token> --table-id <tbl...> --out feishu.db --table-name <name>`
    Pulls fields + all records (paginated) via `lark-cli base` and writes one SQLite table. numbers -> REAL, checkbox -> 0/1, select/multi-select/link -> text (v1).
 2. **Render `ctx.yaml`** from `assets/ctx.yaml.tpl`: fill `{{DB_PATH}}` (absolute path to feishu.db) and `{{TABLE_NAME}}`.
-3. **Query** via Skardi:
-   `skardi query --ctx ctx.yaml --sql "SELECT ... FROM <name> ..."`
+3. **Query** via Skardi. Sample queries (from the work-log Base used in verification — columns keep their Feishu field names, so wrap them in double quotes; `feishu_table` is the default `--table-name`):
+   ```bash
+   # aggregate: total hours per work-stream
+   skardi query --ctx ctx.yaml --sql \
+     'SELECT "工作方向", ROUND(SUM("用时(h)"),1) AS 总时长 FROM feishu_table GROUP BY "工作方向" ORDER BY 总时长 DESC'
+
+   # filter: items flagged as report highlights
+   skardi query --ctx ctx.yaml --sql \
+     'SELECT "日期", "事项", "用时(h)" FROM feishu_table WHERE "汇报亮点"=1'
+   ```
    The same source works over `skardi-server` too if a REST endpoint is wanted.
 
 ## v1 limitations (by design)
@@ -33,5 +41,5 @@ Turn a Feishu (Lark) Bitable into something the agent can query with SQL: (1) sy
 - Column names keep their Chinese field names — quote them in SQL (`"用时(h)"`); use single quotes for string literals (`状态='完成'`).
 
 ## Notes
-- Verified end-to-end (2026-07) on a real work-log Base: 32 rows / 9 cols synced; `skardi query` aggregation + filter both work.
+- Verified end-to-end on a real work-log Base (9 cols): sync + `skardi query` aggregation + filter all work. The two step-3 samples were re-run 2026-07-11 and return correctly.
 - Reuse: the doc-backup repo's `_export_base.sh` does a similar Bitable->JSON export.
