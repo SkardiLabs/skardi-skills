@@ -1,0 +1,10 @@
+{
+  "name": "feishu-connector",
+  "version": "0.1.0",
+  "description": "Sync a Feishu/Lark Bitable into a local SQLite DB via lark-cli, then register it as a Skardi data source so an AI agent can query Feishu table data with SQL. v1: manual one-shot sync, Bitable only, special fields stored as text.",
+  "author": { "name": "Skardi Labs" },
+  "homepage": "https://github.com/SkardiLabs/skardi-skills",
+  "repository": "https://github.com/SkardiLabs/skardi-skills",
+  "license": "Apache-2.0",
+  "keywords": ["skardi", "feishu", "lark", "bitable", "sqlite", "connector"]
+}

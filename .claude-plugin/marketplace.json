@@ -29,6 +29,13 @@
       "description": "Server-backed RAG over a user-supplied datastore (Postgres+pgvector, MongoDB, or Lance) via skardi-server. Exposes hybrid search as REST endpoints.",
       "category": "rag",
       "keywords": ["rag", "skardi-server", "pgvector", "mongodb", "lance", "rest"]
+    },
+    {
+      "name": "feishu-connector",
+      "source": "./feishu_connector",
+      "description": "Sync a Feishu/Lark Bitable into local SQLite via lark-cli, then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync, Bitable only.",
+      "category": "connector",
+      "keywords": ["skardi", "feishu", "lark", "bitable", "sqlite", "connector"]
     }
   ]
 }
