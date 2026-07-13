@@ -144,7 +144,10 @@ def main():
         if not d.get("has_more") or not page:
             break
 
-    # 完整性校验:收集数应等于服务端 total,否则(限流空返回/丢页)明确失败、不覆盖旧表
+    # 完整性校验:收集数应等于服务端 total,少了(丢页 / 限流空返回)就明确失败、不覆盖旧表。
+    # 已知残留边角(有意不额外加固):若"首次请求"就被限流、连 total 也返回 0,这里会误判为"本就空"。
+    # 但无证据该"ok=true 却空返回"的限流真会发生(此前疑似的空返回实为字段名读错的 bug,已修),
+    # 按"不为未证实的失败模式过度设计"留白;真要更保险再加"首页空则退避重试"。
     if isinstance(total, int) and len(msgs) < total:
         sys.exit(f"incomplete sync: collected {len(msgs)} messages but server total={total} "
                  f"(likely rate-limited or a dropped page). Aborting to keep the previous table intact; retry later.")
