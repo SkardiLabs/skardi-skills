@@ -53,10 +53,13 @@ def list_all_chats():
             break
     return chats
 
-def resolve_chat(chat_id, chat_name):
+def resolve_chat(chat_id, chat_name, chat_type=None):
     """→ (chat_id, chat_name)。--chat-id 直接用并反查名。--chat-name 只用于定位:
-    唯一命中才继续,否则列出候选并退出、要求 --chat-id(聊天敏感,绝不猜哪个)。"""
+    唯一命中才继续。歧义时(如群聊与私聊同名)先用 --chat-type group|p2p 收窄——
+    这样 agent 只需问用户"群聊还是私聊",不必让人去找 chat_id;仍歧义(同类型重名)才要 --chat-id。"""
     chats = list_all_chats()
+    if chat_type:
+        chats = [c for c in chats if c.get("chat_mode") == chat_type]
     if chat_id:
         name = next((c.get("name") for c in chats if c.get("chat_id") == chat_id), None)
         return chat_id, name or chat_id
@@ -66,15 +69,18 @@ def resolve_chat(chat_id, chat_name):
     if not cands:
         sr = lark_retry(["im", "+chat-search", "--query", chat_name])
         found = sr.get("chats") or sr.get("items") or []
+        if chat_type:
+            found = [c for c in found if c.get("chat_mode") == chat_type]
         ex = [c for c in found if c.get("name") == chat_name]
         cands = ex or found
     uniq = {c.get("chat_id"): c for c in cands if c.get("chat_id")}
     if not uniq:
-        sys.exit(f"chat not found: {chat_name}")
+        sys.exit(f"chat not found: {chat_name}" + (f" [chat-type={chat_type}]" if chat_type else ""))
     if len(uniq) > 1:
         lines = "\n".join(f"    {c.get('chat_id')}  {c.get('name')}  [{c.get('chat_mode')}]"
                           for c in uniq.values())
-        sys.exit(f"'{chat_name}' 匹配到多个会话，请改用 --chat-id 指定其一:\n{lines}")
+        sys.exit(f"'{chat_name}' 匹配到多个会话。加 --chat-type group|p2p 区分(群聊 / 私聊),"
+                 f"若同类型仍重名再用 --chat-id 精确指定:\n{lines}")
     c = next(iter(uniq.values()))
     return c.get("chat_id"), c.get("name") or chat_name
 
@@ -103,7 +109,9 @@ def extract_text(m):
 def main():
     ap = argparse.ArgumentParser(description="Sync a Feishu chat's messages into a local SQLite table (one message per row).")
     ap.add_argument("--chat-id", help="chat id (oc_...)")
-    ap.add_argument("--chat-name", help="chat name — used only to locate; must match exactly one chat, else it exits and asks for --chat-id")
+    ap.add_argument("--chat-name", help="chat name — used only to locate; must match exactly one chat, else it lists candidates and exits")
+    ap.add_argument("--chat-type", choices=["group", "p2p"],
+                    help="narrow a --chat-name that matches both a group and a 1:1 chat (group = 群聊, p2p = 私聊)")
     ap.add_argument("--days", type=int, default=30, help="only messages from the last N days (default 30; 0 = all)")
     ap.add_argument("--out", default="feishu.db")
     ap.add_argument("--table-name", default="feishu_chat")
@@ -114,7 +122,7 @@ def main():
     if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', tbl):
         sys.exit("--table-name must be a simple identifier (letters/digits/underscore)")
 
-    chat_id, chat_name = resolve_chat(a.chat_id, a.chat_name)
+    chat_id, chat_name = resolve_chat(a.chat_id, a.chat_name, a.chat_type)
     start_iso = None
     if a.days and a.days > 0:
         start_iso = (datetime.now() - timedelta(days=a.days)).replace(microsecond=0).isoformat()
