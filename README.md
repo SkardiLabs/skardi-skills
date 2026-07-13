@@ -91,8 +91,7 @@ Executable scripts, YAML templates, and reference docs the skill invokes:
 | Path | Purpose |
 |---|---|
 | `scripts/setup_kb.py` | Creates a KB workspace — checks prereqs, installs missing Python deps, resolves/downloads the embedding model, renders the ctx + pipeline YAMLs with absolute paths, and initialises the SQLite schema with FTS5 + `vec0` mirrors and triggers |
-| `scripts/chunk_corpus.py` | Walks a corpus directory and emits NDJSON chunks (markdown-aware heading splitting with paragraph-packed overlap; falls back to plain-text paragraph packing) |
-| `scripts/bulk_ingest.py` | Embeds and inserts every chunk in a single `skardi query` — reuses the rendered ingest pipeline so `candle` / `gguf` / `remote_embed` all work without per-row overhead |
+| `scripts/ingest_corpus.py` | Walks a corpus directory and ingests every file in one bulk `skardi query`. Chunking (via the 0.4.0 `chunk()` UDF) and embedding both happen inline in SQL, so `candle` / `gguf` / `remote_embed` all work with the model loaded once. (Replaces the old `chunk_corpus.py` + `bulk_ingest.py` pair.) |
 | `assets/ctx.yaml.tpl`, `assets/aliases.yaml.tpl` | Skardi v0.3 ctx + aliases templates (rendered with absolute DB path at setup) |
 | `assets/pipelines/*.yaml.tpl` | The four pipelines: `ingest`, `search_vector`, `search_fulltext`, `search_hybrid` (RRF over sqlite_knn + sqlite_fts) |
 | `references/backends.md` | Trade-offs and migration notes for Postgres + pgvector and Lance overrides |

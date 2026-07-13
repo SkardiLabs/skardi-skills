@@ -293,6 +293,16 @@ END;
 """
 
     db = sqlite3.connect(str(db_path))
+    if not hasattr(db, "enable_load_extension"):
+        db.close()
+        die(
+            "This Python build cannot load SQLite extensions, which sqlite-vec needs.\n"
+            "  This is the default on macOS system Python (/usr/bin/python3).\n"
+            "  Fix: use a Python compiled with extension support and re-run this script with it, e.g.\n"
+            "    brew install python   # then run with /opt/homebrew/bin/python3\n"
+            "  Verify any Python with:\n"
+            "    <python> -c \"import sqlite3; print(hasattr(sqlite3.connect(':memory:'), 'enable_load_extension'))\"   # must print True"
+        )
     db.enable_load_extension(True)
     db.load_extension(sqlite_vec_path)
     db.enable_load_extension(False)
