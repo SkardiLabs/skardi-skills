@@ -3,7 +3,7 @@
 import argparse, json, subprocess, sqlite3, sys
 
 def lark(args):
-    r = subprocess.run(["lark-cli","base"]+args+["--as","user"], capture_output=True, text=True)
+    r = subprocess.run(["lark-cli","base"]+args+["--as","user","--json"], capture_output=True, text=True)
     out = "".join(l for l in (r.stdout+r.stderr).splitlines() if not l.startswith("[page"))
     d = json.loads(out)
     if not d.get("ok"): sys.exit(f"lark-cli error: {json.dumps(d,ensure_ascii=False)[:300]}")
@@ -24,7 +24,8 @@ def main():
     ap.add_argument("--limit", type=int, default=100)
     a = ap.parse_args()
 
-    ftype = {f["field_name"]: f["type"] for f in lark(["+field-list","--base-token",a.base_token,"--table-id",a.table_id])["items"]}
+    fl = lark(["+field-list","--base-token",a.base_token,"--table-id",a.table_id])
+    ftype = {f.get("field_name") or f["name"]: f["type"] for f in fl.get("items") or fl["fields"]}
 
     rows, cols, offset = [], None, 0
     while True:
