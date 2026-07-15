@@ -43,6 +43,16 @@ MIN_SKARDI_MAJOR = 0
 MIN_SKARDI_MINOR = 4
 
 
+class StepWarn:
+    """Returned by a step fn that succeeded but with a caveat to surface in the
+    health report as WARN (not a clean OK). `value` is the step's normal return
+    value (threaded on to later steps); `note` is the short reason shown."""
+
+    def __init__(self, value, note):
+        self.value = value
+        self.note = note
+
+
 def die(msg, code=1):
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(code)
@@ -68,14 +78,16 @@ def check_skardi():
     m = re.search(r"(\d+)\.(\d+)\.(\d+)", raw)
     if not m:
         # Don't hard-fail — version parsing fragility shouldn't block setup
-        # when the binary is otherwise functional. We'll get a clear error
-        # at ingest time if chunk() is missing.
+        # when the binary is otherwise functional. But DON'T report a clean OK
+        # either: an unverified version is exactly the case that passes setup
+        # and then fails at ingest with "Invalid function 'chunk'". Surface it
+        # as WARN so the report doesn't over-promise.
         print(
             "  warning: could not parse version; auto_knowledge_base needs "
             ">= 0.4.0 for the chunk() UDF.",
             file=sys.stderr,
         )
-        return
+        return StepWarn(None, "version unverified — needs >= 0.4.0 for chunk()")
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
     if (major, minor) < (MIN_SKARDI_MAJOR, MIN_SKARDI_MINOR):
         die(
@@ -321,29 +333,43 @@ def _fmt_secs(sec):
 def print_health_report(steps, total, ok, planned):
     """Print the end-of-run health check: per-step status + timing + verdict.
 
-    `steps` is a list of {label, ok, seconds} for the steps that actually ran;
-    `planned` is the total number of steps expected. This is the "did it
-    install + how long" summary — the answer to "本次部署成功没 + 单次耗时". On
-    failure it is printed *before* the process exits so the failing step is
-    visible even though the ERROR (with its fix) was already printed above.
+    `steps` is a list of {label, status, seconds[, note]} for the steps that
+    actually ran, where status is 'ok' | 'warn' | 'fail'; `planned` is the
+    total number of steps expected. This is the "did it install + how long"
+    summary — the answer to "本次部署成功没 + 单次耗时". On failure it is printed
+    *before* the process exits so the failing step is visible even though the
+    ERROR (with its fix) was already printed above.
+
+    WARN = the step ran but couldn't be fully verified (e.g. an unparseable
+    skardi version), so it is NOT counted as a clean pass — otherwise the
+    report would over-promise on exactly the cases that fail later at ingest.
 
     The denominator is `planned` (not len(steps)) so a failure that stopped
     early reads honestly — "2/5", not a misleading "2/3"."""
-    n_ok = sum(1 for s in steps if s["ok"])
+    n_ok = sum(1 for s in steps if s["status"] == "ok")
+    n_warn = sum(1 for s in steps if s["status"] == "warn")
     print()
     print("=" * 72)
-    if ok:
-        head = f"OK  Setup complete  —  {n_ok}/{planned} checks passed"
+    if not ok:
+        head = f"XX  Setup FAILED  —  stopped at step {len(steps)}/{planned} ({n_ok} ok, {n_warn} warn)"
+    elif n_warn:
+        head = f"!!  Setup complete WITH {n_warn} WARNING(S)  —  {n_ok} ok, {n_warn} warn / {planned}"
     else:
-        head = f"XX  Setup FAILED  —  stopped at step {len(steps)}/{planned} ({n_ok} passed)"
+        head = f"OK  Setup complete  —  {n_ok}/{planned} checks passed"
     print(f"{head}  ·  {_fmt_secs(total)} total")
     print("-" * 72)
+    marks = {"ok": "  ok ", "warn": "warn ", "fail": " FAIL"}
     for s in steps:
-        mark = "  ok " if s["ok"] else " FAIL"
-        print(f"  [{mark}]  {s['label']:<24}{_fmt_secs(s['seconds']):>9}")
+        line = f"  [{marks[s['status']]}]  {s['label']:<24}{_fmt_secs(s['seconds']):>9}"
+        if s.get("note"):
+            line += f"   {s['note']}"
+        print(line)
     if not ok:
         print("-" * 72)
         print("  Fix the failing step above (see the ERROR message), then re-run.")
+    elif n_warn:
+        print("-" * 72)
+        print("  Warnings are non-fatal but may bite at ingest/query time — see the note above.")
     print("=" * 72)
 
 
@@ -401,6 +427,18 @@ def main():
     workspace.mkdir(parents=True, exist_ok=True)
     db_path = workspace / "kb.db"
 
+    # Pre-flight BEFORE any step runs: bail on an existing kb.db unless --force,
+    # so a re-run can't overwrite ctx.yaml / .embedding.txt (step 4) with new,
+    # possibly dim-mismatched values and then only fail at step 5 — leaving the
+    # workspace inconsistent (breadcrumb dim != existing vec0 table dim).
+    # create_db repeats this check as a safety net; this one prevents the
+    # side effects. Nothing has been written yet at this point.
+    if db_path.exists() and not args.force:
+        die(
+            f"{db_path} already exists. Re-run with --force to recreate (this "
+            f"drops every row and re-applies the schema). Nothing was changed."
+        )
+
     # Each numbered step is wrapped by step() so we time it and record pass/fail.
     # On die() (a SystemExit) we print the health report first — otherwise a
     # failure would exit with no "how far did it get / how long" summary.
@@ -420,10 +458,14 @@ def main():
             # failure, then re-raise to preserve the traceback / exit code.
             # KeyboardInterrupt (BaseException, not Exception) is intentionally
             # not caught — a Ctrl-C shouldn't be logged as a failed step.
-            steps.append({"label": label, "ok": False, "seconds": time.perf_counter() - start})
+            steps.append({"label": label, "status": "fail", "seconds": time.perf_counter() - start})
             print_health_report(steps, time.perf_counter() - t_total, ok=False, planned=n_planned)
             raise
-        steps.append({"label": label, "ok": True, "seconds": time.perf_counter() - start})
+        elapsed = time.perf_counter() - start
+        if isinstance(result, StepWarn):
+            steps.append({"label": label, "status": "warn", "seconds": elapsed, "note": result.note})
+            return result.value
+        steps.append({"label": label, "status": "ok", "seconds": elapsed})
         return result
 
     step(1, "Checking skardi CLI", "skardi CLI (>=0.4.0)", check_skardi)

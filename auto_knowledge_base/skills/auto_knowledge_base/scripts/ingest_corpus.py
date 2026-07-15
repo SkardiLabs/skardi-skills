@@ -176,13 +176,15 @@ def main():
     )
     ap.add_argument(
         "--chunk-mode",
-        default=DEFAULT_CHUNK_MODE,
+        default=None,
         choices=["markdown", "character"],
         help=(
             "Splitter mode passed to chunk(). 'markdown' prefers heading / "
             "paragraph / code-block boundaries (good for .md and structured "
             ".txt). 'character' is a generic recursive splitter — paragraph → "
-            "sentence → word — for unstructured prose. Default: markdown."
+            "sentence → word — for unstructured prose. If omitted, inherits "
+            "the mode chosen at setup_kb.py time (from .embedding.txt); "
+            "falls back to markdown."
         ),
     )
     ap.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE,
@@ -229,7 +231,17 @@ def main():
     embed_expr = build_embedding_expr(breadcrumb, "content")
     print(f"  udf={breadcrumb.get('udf')}  expr over `content`: {embed_expr}")
 
-    sql = bulk_ingest_sql(manifest, embed_expr, args.chunk_mode, args.chunk_size, args.overlap)
+    # Chunk mode: an explicit --chunk-mode wins; otherwise inherit the mode
+    # chosen at setup (baked into the breadcrumb) so `setup_kb --chunk-mode
+    # character` actually takes effect at bulk ingest instead of silently
+    # reverting to markdown here. Fall back to markdown if neither is set.
+    chunk_mode = args.chunk_mode or breadcrumb.get("chunk_mode") or DEFAULT_CHUNK_MODE
+    if chunk_mode not in ("markdown", "character"):
+        die(f"invalid chunk_mode {chunk_mode!r} (from breadcrumb); expected 'markdown' or 'character'")
+    origin = "--chunk-mode" if args.chunk_mode else "setup breadcrumb"
+    print(f"  chunk_mode={chunk_mode} (from {origin})")
+
+    sql = bulk_ingest_sql(manifest, embed_expr, chunk_mode, args.chunk_size, args.overlap)
 
     env = os.environ.copy()
     env["SKARDICONFIG"] = str(workspace)
