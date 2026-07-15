@@ -28,6 +28,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -312,6 +313,33 @@ END;
     print(f"  created {db_path} with documents/documents_fts/documents_vec (dim={dim})")
 
 
+def _fmt_secs(sec):
+    """Human-friendly duration: ms under a second, else one-decimal seconds."""
+    return f"{sec * 1000:.0f}ms" if sec < 1 else f"{sec:.1f}s"
+
+
+def print_health_report(steps, total, ok):
+    """Print the end-of-run health check: per-step status + timing + verdict.
+
+    `steps` is a list of {label, ok, seconds}. This is the "did it install +
+    how long" summary — the answer to "本次部署成功没 + 单次耗时". On failure it
+    is printed *before* the process exits so the failing step is visible even
+    though the ERROR (with its fix) was already printed above by die()."""
+    n_ok = sum(1 for s in steps if s["ok"])
+    print()
+    print("=" * 72)
+    verdict = "OK  Setup complete" if ok else "XX  Setup FAILED"
+    print(f"{verdict}  —  {n_ok}/{len(steps)} checks passed  ·  {_fmt_secs(total)} total")
+    print("-" * 72)
+    for s in steps:
+        mark = "  ok " if s["ok"] else " FAIL"
+        print(f"  [{mark}]  {s['label']:<24}{_fmt_secs(s['seconds']):>9}")
+    if not ok:
+        print("-" * 72)
+        print("  Fix the failing step above (see the ERROR message), then re-run.")
+    print("=" * 72)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--workspace", required=True, help="Directory to create (e.g. ./kb)")
@@ -366,47 +394,70 @@ def main():
     workspace.mkdir(parents=True, exist_ok=True)
     db_path = workspace / "kb.db"
 
-    print(f"[1/6] Checking skardi CLI ...")
-    check_skardi()
+    # Each numbered step is wrapped by step() so we time it and record pass/fail.
+    # On die() (a SystemExit) we print the health report first — otherwise a
+    # failure would exit with no "how far did it get / how long" summary.
+    steps = []
+    t_total = time.perf_counter()
 
-    print(f"[2/6] Resolving sqlite-vec ...")
-    sqlite_vec_path = resolve_sqlite_vec()
-    print(f"  sqlite_vec loadable at {sqlite_vec_path}")
+    def step(idx, header, label, fn):
+        print(f"[{idx}/6] {header} ...")
+        start = time.perf_counter()
+        try:
+            result = fn()
+        except SystemExit:
+            steps.append({"label": label, "ok": False, "seconds": time.perf_counter() - start})
+            print_health_report(steps, time.perf_counter() - t_total, ok=False)
+            raise
+        steps.append({"label": label, "ok": True, "seconds": time.perf_counter() - start})
+        return result
 
-    print(f"[3/6] Resolving embedding model ...")
-    if args.embedding_udf == "candle":
-        model_path = resolve_model(args.model_path, workspace)
-    elif args.embedding_udf == "gguf":
-        if not args.model_path:
-            die(
-                "--embedding-udf gguf requires --model-path pointing at a "
-                "local .gguf file or a directory containing one. The skill "
-                "does not auto-download GGUF models — pick one from "
-                "HuggingFace (search for 'gguf' quantisations of your target "
-                "embedding model) and pass its absolute path."
-            )
-        p = Path(args.model_path).expanduser().resolve()
-        if not (p.is_file() or p.is_dir()):
-            die(f"--model-path {p} does not exist")
-        model_path = str(p)
-        print(f"  using gguf model at {model_path}")
-    else:
-        model_path = ""  # unused for remote_embed
-        print(f"  using remote_embed UDF with args {args.embedding_args!r}")
+    step(1, "Checking skardi CLI", "skardi CLI (>=0.4.0)", check_skardi)
 
-    print(f"[4/6] Rendering templates into {workspace} ...")
-    ingest_call, query_call = build_embedding_calls(
-        args.embedding_udf, args.embedding_args, model_path
-    )
-    render_templates(workspace, str(db_path), ingest_call, query_call, args.chunk_mode)
-    write_breadcrumb(workspace, args.embedding_udf, args.embedding_args,
-                     model_path, args.embedding_dim, args.chunk_mode)
-    print(f"  wrote ctx.yaml, semantics.yaml, aliases.yaml, pipelines/*.yaml, .embedding.txt")
+    def _resolve_sqlite_vec():
+        p = resolve_sqlite_vec()
+        print(f"  sqlite_vec loadable at {p}")
+        return p
+    sqlite_vec_path = step(2, "Resolving sqlite-vec", "sqlite-vec extension", _resolve_sqlite_vec)
 
-    print(f"[5/6] Creating {db_path} (dim={args.embedding_dim}) ...")
-    create_db(db_path, args.embedding_dim, sqlite_vec_path, force=args.force)
+    def _resolve_model():
+        if args.embedding_udf == "candle":
+            return resolve_model(args.model_path, workspace)
+        elif args.embedding_udf == "gguf":
+            if not args.model_path:
+                die(
+                    "--embedding-udf gguf requires --model-path pointing at a "
+                    "local .gguf file or a directory containing one. The skill "
+                    "does not auto-download GGUF models — pick one from "
+                    "HuggingFace (search for 'gguf' quantisations of your target "
+                    "embedding model) and pass its absolute path."
+                )
+            p = Path(args.model_path).expanduser().resolve()
+            if not (p.is_file() or p.is_dir()):
+                die(f"--model-path {p} does not exist")
+            mp = str(p)
+            print(f"  using gguf model at {mp}")
+            return mp
+        else:
+            print(f"  using remote_embed UDF with args {args.embedding_args!r}")
+            return ""  # unused for remote_embed
+    model_path = step(3, "Resolving embedding model", "embedding model", _resolve_model)
+
+    def _render():
+        ingest_call, query_call = build_embedding_calls(
+            args.embedding_udf, args.embedding_args, model_path
+        )
+        render_templates(workspace, str(db_path), ingest_call, query_call, args.chunk_mode)
+        write_breadcrumb(workspace, args.embedding_udf, args.embedding_args,
+                         model_path, args.embedding_dim, args.chunk_mode)
+        print(f"  wrote ctx.yaml, semantics.yaml, aliases.yaml, pipelines/*.yaml, .embedding.txt")
+    step(4, f"Rendering templates into {workspace}", "workspace files", _render)
+
+    step(5, f"Creating {db_path} (dim={args.embedding_dim})", "kb.db + ext-load",
+         lambda: create_db(db_path, args.embedding_dim, sqlite_vec_path, force=args.force))
 
     print(f"[6/6] Workspace ready.")
+    print_health_report(steps, time.perf_counter() - t_total, ok=True)
     print()
     print("=" * 72)
     print("Next steps:")
