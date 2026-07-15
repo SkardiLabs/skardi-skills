@@ -234,11 +234,17 @@ def main():
     # Chunk mode: an explicit --chunk-mode wins; otherwise inherit the mode
     # chosen at setup (baked into the breadcrumb) so `setup_kb --chunk-mode
     # character` actually takes effect at bulk ingest instead of silently
-    # reverting to markdown here. Fall back to markdown if neither is set.
-    chunk_mode = args.chunk_mode or breadcrumb.get("chunk_mode") or DEFAULT_CHUNK_MODE
+    # reverting to markdown here. Resolve in three explicit branches so the
+    # logged source is always accurate (an old breadcrumb without chunk_mode
+    # falls back to default — and must SAY "default", not "setup breadcrumb").
+    if args.chunk_mode:
+        chunk_mode, origin = args.chunk_mode, "--chunk-mode"
+    elif breadcrumb.get("chunk_mode"):
+        chunk_mode, origin = breadcrumb["chunk_mode"], "setup breadcrumb"
+    else:
+        chunk_mode, origin = DEFAULT_CHUNK_MODE, "default"
     if chunk_mode not in ("markdown", "character"):
-        die(f"invalid chunk_mode {chunk_mode!r} (from breadcrumb); expected 'markdown' or 'character'")
-    origin = "--chunk-mode" if args.chunk_mode else "setup breadcrumb"
+        die(f"invalid chunk_mode {chunk_mode!r} (from {origin}); expected 'markdown' or 'character'")
     print(f"  chunk_mode={chunk_mode} (from {origin})")
 
     sql = bulk_ingest_sql(manifest, embed_expr, chunk_mode, args.chunk_size, args.overlap)

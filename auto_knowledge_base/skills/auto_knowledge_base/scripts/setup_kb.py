@@ -466,9 +466,15 @@ def main():
     # ctx.yaml/.embedding.txt with dim-mismatched values and leave the workspace
     # inconsistent (create_db repeats this check as a safety net). Wrapped so a
     # failure here also prints the report — keeping "any failure reports" true.
+    preflight_start = time.perf_counter()
     try:
         workspace = Path(args.workspace).expanduser().resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
+        try:
+            workspace.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            # Turn a raw filesystem error into a user-facing ERROR instead of a
+            # bare traceback (e.g. permission denied, path is a file).
+            die(f"could not create workspace {workspace}: {e}")
         db_path = workspace / "kb.db"
         if db_path.exists() and not args.force:
             die(
@@ -476,6 +482,11 @@ def main():
                 f"drops every row and re-applies the schema). Nothing was changed."
             )
     except (SystemExit, Exception):
+        # Record the pre-flight as an explicit failing row so the report isn't an
+        # empty table, and the "failing step above" footer has something to point
+        # at. This is NOT one of the 5 timed steps; the success path stays 5/5.
+        steps.append({"label": "workspace pre-flight", "status": "fail",
+                      "seconds": time.perf_counter() - preflight_start})
         print_health_report(steps, time.perf_counter() - t_total, ok=False, planned=n_planned)
         raise
 
