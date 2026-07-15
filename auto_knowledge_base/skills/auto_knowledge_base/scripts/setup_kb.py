@@ -318,18 +318,25 @@ def _fmt_secs(sec):
     return f"{sec * 1000:.0f}ms" if sec < 1 else f"{sec:.1f}s"
 
 
-def print_health_report(steps, total, ok):
+def print_health_report(steps, total, ok, planned):
     """Print the end-of-run health check: per-step status + timing + verdict.
 
-    `steps` is a list of {label, ok, seconds}. This is the "did it install +
-    how long" summary — the answer to "本次部署成功没 + 单次耗时". On failure it
-    is printed *before* the process exits so the failing step is visible even
-    though the ERROR (with its fix) was already printed above by die()."""
+    `steps` is a list of {label, ok, seconds} for the steps that actually ran;
+    `planned` is the total number of steps expected. This is the "did it
+    install + how long" summary — the answer to "本次部署成功没 + 单次耗时". On
+    failure it is printed *before* the process exits so the failing step is
+    visible even though the ERROR (with its fix) was already printed above.
+
+    The denominator is `planned` (not len(steps)) so a failure that stopped
+    early reads honestly — "2/5", not a misleading "2/3"."""
     n_ok = sum(1 for s in steps if s["ok"])
     print()
     print("=" * 72)
-    verdict = "OK  Setup complete" if ok else "XX  Setup FAILED"
-    print(f"{verdict}  —  {n_ok}/{len(steps)} checks passed  ·  {_fmt_secs(total)} total")
+    if ok:
+        head = f"OK  Setup complete  —  {n_ok}/{planned} checks passed"
+    else:
+        head = f"XX  Setup FAILED  —  stopped at step {len(steps)}/{planned} ({n_ok} passed)"
+    print(f"{head}  ·  {_fmt_secs(total)} total")
     print("-" * 72)
     for s in steps:
         mark = "  ok " if s["ok"] else " FAIL"
@@ -398,6 +405,7 @@ def main():
     # On die() (a SystemExit) we print the health report first — otherwise a
     # failure would exit with no "how far did it get / how long" summary.
     steps = []
+    n_planned = 5  # timed work steps; the [6/6] line below is just the done marker
     t_total = time.perf_counter()
 
     def step(idx, header, label, fn):
@@ -405,9 +413,15 @@ def main():
         start = time.perf_counter()
         try:
             result = fn()
-        except SystemExit:
+        except (SystemExit, Exception):
+            # die() raises SystemExit (NOT an Exception subclass); real errors
+            # (model download, template read, sqlite-vec extension load) raise
+            # Exception. Catch both so the health report always prints on
+            # failure, then re-raise to preserve the traceback / exit code.
+            # KeyboardInterrupt (BaseException, not Exception) is intentionally
+            # not caught — a Ctrl-C shouldn't be logged as a failed step.
             steps.append({"label": label, "ok": False, "seconds": time.perf_counter() - start})
-            print_health_report(steps, time.perf_counter() - t_total, ok=False)
+            print_health_report(steps, time.perf_counter() - t_total, ok=False, planned=n_planned)
             raise
         steps.append({"label": label, "ok": True, "seconds": time.perf_counter() - start})
         return result
@@ -457,7 +471,7 @@ def main():
          lambda: create_db(db_path, args.embedding_dim, sqlite_vec_path, force=args.force))
 
     print(f"[6/6] Workspace ready.")
-    print_health_report(steps, time.perf_counter() - t_total, ok=True)
+    print_health_report(steps, time.perf_counter() - t_total, ok=True, planned=n_planned)
     print()
     print("=" * 72)
     print("Next steps:")
