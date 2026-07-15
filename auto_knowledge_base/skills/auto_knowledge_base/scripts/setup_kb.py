@@ -73,15 +73,24 @@ def check_skardi():
             "skardi-cli --features candle)."
         )
     out = subprocess.run(["skardi", "--version"], capture_output=True, text=True)
+    if out.returncode != 0:
+        # On PATH but `--version` itself errors → the binary is broken, not just
+        # unparseable. That's a hard FAIL (the CLI is unusable), not a WARN.
+        die(
+            f"`skardi --version` exited {out.returncode} — the binary is on PATH "
+            f"but not runnable, so the install looks broken. Reinstall with "
+            f"`cargo install --locked --git https://github.com/SkardiLabs/skardi "
+            f"--branch main skardi-cli --features candle`.\n"
+            f"  stderr: {(out.stderr or '').strip()[:300]}"
+        )
     raw = (out.stdout or out.stderr).strip()
     print(f"  found: {raw or 'skardi (version unknown)'}")
     m = re.search(r"(\d+)\.(\d+)\.(\d+)", raw)
     if not m:
-        # Don't hard-fail — version parsing fragility shouldn't block setup
-        # when the binary is otherwise functional. But DON'T report a clean OK
-        # either: an unverified version is exactly the case that passes setup
-        # and then fails at ingest with "Invalid function 'chunk'". Surface it
-        # as WARN so the report doesn't over-promise.
+        # Ran fine (exit 0) but the version string didn't parse. Don't hard-fail
+        # on parsing fragility, but DON'T report a clean OK either — an unverified
+        # version is exactly the case that passes setup and then fails at ingest
+        # with "Invalid function 'chunk'". Surface it as WARN.
         print(
             "  warning: could not parse version; auto_knowledge_base needs "
             ">= 0.4.0 for the chunk() UDF.",
@@ -423,31 +432,15 @@ def main():
     ap.add_argument("--force", action="store_true", help="Overwrite existing kb.db.")
     args = ap.parse_args()
 
-    workspace = Path(args.workspace).expanduser().resolve()
-    workspace.mkdir(parents=True, exist_ok=True)
-    db_path = workspace / "kb.db"
-
-    # Pre-flight BEFORE any step runs: bail on an existing kb.db unless --force,
-    # so a re-run can't overwrite ctx.yaml / .embedding.txt (step 4) with new,
-    # possibly dim-mismatched values and then only fail at step 5 — leaving the
-    # workspace inconsistent (breadcrumb dim != existing vec0 table dim).
-    # create_db repeats this check as a safety net; this one prevents the
-    # side effects. Nothing has been written yet at this point.
-    if db_path.exists() and not args.force:
-        die(
-            f"{db_path} already exists. Re-run with --force to recreate (this "
-            f"drops every row and re-applies the schema). Nothing was changed."
-        )
-
-    # Each numbered step is wrapped by step() so we time it and record pass/fail.
-    # On die() (a SystemExit) we print the health report first — otherwise a
-    # failure would exit with no "how far did it get / how long" summary.
+    # Timer + step recorder set up FIRST — before workspace creation and the
+    # pre-flight guard below — so that EVERY failure path (not just in-step
+    # ones) prints the health report before exiting.
     steps = []
-    n_planned = 5  # timed work steps; the [6/6] line below is just the done marker
+    n_planned = 5  # timed work steps; the final "Workspace ready" line is just a marker
     t_total = time.perf_counter()
 
     def step(idx, header, label, fn):
-        print(f"[{idx}/6] {header} ...")
+        print(f"[{idx}/{n_planned}] {header} ...")
         start = time.perf_counter()
         try:
             result = fn()
@@ -467,6 +460,24 @@ def main():
             return result.value
         steps.append({"label": label, "status": "ok", "seconds": elapsed})
         return result
+
+    # Pre-flight (before any timed step): resolve the workspace and bail on an
+    # existing kb.db unless --force, so a re-run can't overwrite
+    # ctx.yaml/.embedding.txt with dim-mismatched values and leave the workspace
+    # inconsistent (create_db repeats this check as a safety net). Wrapped so a
+    # failure here also prints the report — keeping "any failure reports" true.
+    try:
+        workspace = Path(args.workspace).expanduser().resolve()
+        workspace.mkdir(parents=True, exist_ok=True)
+        db_path = workspace / "kb.db"
+        if db_path.exists() and not args.force:
+            die(
+                f"{db_path} already exists. Re-run with --force to recreate (this "
+                f"drops every row and re-applies the schema). Nothing was changed."
+            )
+    except (SystemExit, Exception):
+        print_health_report(steps, time.perf_counter() - t_total, ok=False, planned=n_planned)
+        raise
 
     step(1, "Checking skardi CLI", "skardi CLI (>=0.4.0)", check_skardi)
 
@@ -512,7 +523,7 @@ def main():
     step(5, f"Creating {db_path} (dim={args.embedding_dim})", "kb.db + ext-load",
          lambda: create_db(db_path, args.embedding_dim, sqlite_vec_path, force=args.force))
 
-    print(f"[6/6] Workspace ready.")
+    print("[done] Workspace ready.")
     print_health_report(steps, time.perf_counter() - t_total, ok=True, planned=n_planned)
     print()
     print("=" * 72)
