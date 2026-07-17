@@ -112,6 +112,12 @@ Check in order:
 
 The chunk() UDF rejects `overlap >= size` to avoid infinite loops. Pass `--overlap` < `--chunk-size` to `ingest_corpus.py` (or `--chunk-size 1200 --overlap 200`, the defaults). `--overlap 0` is always safe.
 
+## `Embedding failed: Model forward pass failed: index-select invalid index 512 with dim size 512`
+
+A chunk tokenized to more tokens than the embedding model's max sequence length (512 for the bge / e5 / BERT / DistilBERT families), and candle does **not** auto-truncate. The trap: `--chunk-size` counts **characters, not tokens**. Prose runs ~4 chars/token, so the 1200-char default lands around ~300 tokens — safe. But **code is denser (~2.5–3 chars/token** — camelCase, symbols, and unknown identifiers all split into multiple word-pieces), so a 1200-char code chunk can exceed 512 tokens. Because only the *largest* files trip this, they fail and drop out while the run still reports mostly-success — a silently incomplete KB.
+
+Fix: lower `--chunk-size` so the worst-case chunk stays under the token cap. For a 512-token model over a **code** corpus, `--chunk-size 800 --overlap 120` is a safe starting point (go lower for minified/single-line files). Or switch to a long-context model (`nomic-embed-text`, 8k). Re-run `ingest_corpus.py` after lowering — files already `ok` are skipped, the failed ones retry.
+
 ## `chunk: unsupported mode '<x>'`
 
 Only `'character'` and `'markdown'` are supported in 0.4.0. Token-based / code-aware splitters are roadmap items. Pass `--chunk-mode markdown` (default) or `--chunk-mode character` to `setup_kb.py`.
