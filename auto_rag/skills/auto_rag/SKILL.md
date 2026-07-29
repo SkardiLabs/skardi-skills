@@ -197,17 +197,20 @@ SELECT
   candle('<abs-model-path>', chunk_text)            AS embedding
 FROM (
   SELECT
-    ROW_NUMBER() OVER (ORDER BY 1) - 1              AS chunk_idx,
-    chunk_text
+    UNNEST(generate_series(CAST(0 AS BIGINT),
+                           CAST(array_length(chunks) AS BIGINT) - 1)) AS chunk_idx,
+    UNNEST(chunks)                                                    AS chunk_text
   FROM (
-    SELECT UNNEST(chunk('markdown', {content}, {chunk_size}, {overlap})) AS chunk_text
+    SELECT chunk('markdown', {content}, {chunk_size}, {overlap}) AS chunks
   ) c
 ) r
 ```
 
 That is one statement, one transaction: chunk → embed → write per chunk for the entire document. The embedding model loads once per server process, so the first POST pays the cold-start cost (~5–30 s depending on model size) and every subsequent POST runs at the throughput of the embedding inference itself.
 
-**Resumability.** The progress manifest at `<workspace>/ingest_progress.json` is keyed by source path with `ok` or `err: ...` values. On retry, already-ok files are skipped — important because stable doc_ids mean a re-POST of the same file collides on the primary key, which Postgres rejects loudly.
+**Why `chunk_idx` is derived this way (determinism).** `chunk()` returns an *ordered* `List<Utf8>`. The pipeline enumerates it with `generate_series(0 … array_length-1)` and unnests that index list in the **same projection** as `UNNEST(chunks)`; DataFusion zips two unnests in one projection positionally, so index *i* is paired with chunk *i* by construction. This matters: an earlier version numbered chunks with `ROW_NUMBER() OVER (ORDER BY 1)`, but `ORDER BY 1` orders by the constant literal `1` — every row is a peer, so the executor was free to assign `chunk_idx` in any order, and the same chunk could land at a different `chunk_idx` (hence a different `id`) on every run. That is the classic cause of "the same files produce different chunks/ids each time." `UNNEST … WITH ORDINALITY` would be the tidy fix but DataFusion 52 rejects it (`not_impl`), which is why the index is generated explicitly.
+
+**Resumability.** The progress manifest at `<workspace>/ingest_progress.json` is keyed by source path; each value records `{status, hash}` where `status` is `ok` or `err: ...` and `hash` is a SHA-256 of the file body. On retry, unchanged already-ok files are skipped — important because stable doc_ids mean a re-POST of the same file collides on the primary key, which Postgres rejects loudly. Files whose content changed since they were ingested are detected via the hash and surfaced (see *Reproducibility* below), not silently skipped. (Manifests written by older versions stored a bare `ok`/`err` string with no hash; those are read back as `hash: null` and backfilled on the next run.)
 
 **Concurrency.** `--concurrency 1` is the default. The bottleneck for self-hosted candle/gguf is single-thread embedding throughput, so going wider rarely helps; `remote_embed` benefits from 4–8 inflight POSTs because each one is mostly waiting on network. Tune to taste.
 
@@ -249,6 +252,24 @@ curl -s -X POST http://localhost:8080/search-fulltext/execute \
 ## Catalog semantics
 
 `setup_rag.py` also renders a `semantics.yaml` next to `ctx.yaml`. Skardi auto-discovers it on startup and surfaces the table + column descriptions on `GET /data_source` (the catalog endpoint agents inspect when picking a tool) and inside `skardi query --schema --all`. That's the channel through which an unfamiliar agent learns what `documents.embedding` is for or how `chunk_idx` is assigned. The file is regenerated on every `setup_rag.py` run; for hand-curated descriptions, drop a second `kind: semantics` file (any name) into a `semantics/` directory next to `ctx.yaml` and both will be merged at load time.
+
+## Reproducibility — same corpus in, same index out
+
+If the goal is a stable reference library (e.g. a code-search index rebuilt as connected repos change), the same input files must produce the same chunks, ids, and — as far as the stack allows — the same retrieval order. What the skill guarantees, and what you have to hold fixed:
+
+- **`chunk_idx` and `id` are deterministic by construction** (see the ingest SQL above). Re-ingesting the same file body yields the identical `(chunk_idx, content)` pairs and identical ids. This is the fix for "different chunks/datasets every run."
+- **Hold the chunk parameters fixed.** `--chunk-size` / `--overlap` change chunk boundaries, so changing them changes every chunk, id, and embedding. Pin them per library. `chunk()` itself (text-splitter) is deterministic for a given mode + size + overlap.
+- **Pin a *local* embedding model for reproducible vectors.** `candle` / `gguf` over fixed local weights are deterministic (CPU inference, no dropout), so identical chunk text → identical embedding. `remote_embed` is **not** reproducible over time: hosted providers silently reversion models and may return slightly different vectors, which can reorder near-tie neighbours. For a library that must reproduce exactly, prefer a pinned local model (e.g. `jina-embeddings-v2-base-code` for code) and record the model + dim.
+- **HNSW is approximate and insertion-order-sensitive.** pgvector's HNSW graph depends on insert order, so top-k and recall can differ slightly across a full rebuild even with identical rows. For byte-identical retrieval on smaller corpora, either accept the small variance, raise `ef_search`, or use exact search. The search pipelines already break score ties on `id` so *equal-score* rows no longer reorder run to run — but ANN candidate selection itself is still approximate.
+- **Changed files are surfaced, not silently skipped.** `ingest_corpus.py` records a content hash per source. A re-run skips unchanged files, ingests new/errored ones, and prints a warning listing files whose content changed since ingest (with the `DELETE FROM <table> WHERE source = '…'` + re-run steps) — it does not auto-delete user rows.
+
+## Building a code reference library over multiple repos
+
+This is a common use of the skill; a few things that are easy to get wrong:
+
+- **Include code extensions.** `ingest_corpus.py`'s default `--include` is `*.md,*.markdown,*.txt,*.rst` — pass code globs explicitly, e.g. `--include "*.py,*.ts,*.tsx,*.go,*.rs,*.java,*.rb,*.md"`. Without this, a code repo ingests almost nothing.
+- **Chunk mode is `markdown`.** The pipeline chunks with `chunk('markdown', …)`, which splits on prose/markdown structure, not code structure — deterministic, but boundaries can straddle functions. For code-heavy corpora consider a code-embedding model (`voyage-code-3` remote, or `jina-embeddings-v2-base-code` local) so the vectors at least understand code, and keep chunk size generous. A code-aware chunk mode is a Skardi-side enhancement, not something this skill can do client-side today.
+- **Keep `source` stable across rebuilds.** `source` (and therefore `doc_id`/`id`) is the path **relative to `--corpus`**. If you point `--corpus` at a repo root one run and at a parent directory-of-repos the next, every `source` shifts and all ids change. For a multi-repo library, ingest each repo from a fixed layout (e.g. always `--corpus <root>` where `<root>/<repo>/…`) so `source` reads as `repo/path/within/repo` consistently. If you re-clone repos to fresh temp dirs, normalise to that same relative layout before ingesting.
 
 ## Scaling ingest
 

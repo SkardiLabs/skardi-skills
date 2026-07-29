@@ -19,4 +19,4 @@ spec:
     FROM pg_knn('{{TABLE}}', 'embedding',
                 {{EMBED_CALL_OVER_QUERY}}, '<=>', {limit}) k
     JOIN {{TABLE}} d ON d.id = k.id
-    ORDER BY k._score
+    ORDER BY k._score, k.id   -- id breaks score ties so equal-distance rows keep a stable order across runs

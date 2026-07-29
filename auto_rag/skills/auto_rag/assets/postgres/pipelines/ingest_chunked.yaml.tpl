@@ -12,9 +12,23 @@ metadata:
     where both chunk() and the chosen embedding UDF are registered.
 
     Synthesised chunk ids: `id = doc_id * 1000 + chunk_idx` (0-based), so
-    callers must pick `doc_id` values whose chunks won't collide. ROW_NUMBER
-    drives chunk_idx and matches text-splitter's emission order. `source` is
-    recorded verbatim for citation.
+    callers must pick `doc_id` values whose chunks won't collide. `chunk_idx`
+    is derived from an explicit positional index (see below), NOT from row
+    order, so the same document always yields the same (chunk_idx, content)
+    pairs and the same ids on every run. `source` is recorded verbatim for
+    citation.
+
+    Determinism note: chunk() returns an ORDERED List<Utf8>. We enumerate it
+    with generate_series(0 .. array_length-1) and unnest that index list in
+    the SAME projection as UNNEST(chunks); DataFusion zips two unnests in a
+    projection positionally, so index i is paired with chunk i by
+    construction. The earlier `ROW_NUMBER() OVER (ORDER BY 1)` form was
+    non-deterministic: `ORDER BY 1` orders by the constant literal 1, making
+    every row a peer, so DataFusion was free to number chunks in any order —
+    the same chunk could get a different chunk_idx (and therefore a different
+    id) on each run. DataFusion 52 does not support `UNNEST ... WITH
+    ORDINALITY` (it errors `not_impl`), which is why the index is generated
+    explicitly rather than via ordinality.
 
 # Parameters:
 #   {doc_id}     - Source-doc id (BIGINT); used as the prefix for synthesised chunk ids
@@ -34,9 +48,10 @@ spec:
       {{EMBED_CALL_OVER_CHUNK_TEXT}}                    AS embedding
     FROM (
       SELECT
-        ROW_NUMBER() OVER (ORDER BY 1) - 1              AS chunk_idx,
-        chunk_text
+        UNNEST(generate_series(CAST(0 AS BIGINT),
+                               CAST(array_length(chunks) AS BIGINT) - 1)) AS chunk_idx,
+        UNNEST(chunks)                                                    AS chunk_text
       FROM (
-        SELECT UNNEST(chunk('markdown', {content}, {chunk_size}, {overlap})) AS chunk_text
+        SELECT chunk('markdown', {content}, {chunk_size}, {overlap}) AS chunks
       ) c
     ) r
