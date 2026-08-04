@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """把飞书云文档(docx)同步成本地 SQLite，一篇一行(整篇正文按 markdown 存)。
 v1（路线 A）：agent 用 SQL 按标题/关键词筛出相关文档，再读 content_md 自己抽内容。
-不做切块/向量——少量文档时 agent 本身就是语义层;大规模语义检索请用 auto_knowledge_base。
+不做切块/向量——少量文档时 agent 本身就是语义层;大规模语义检索请用 auto_context。
 
 安全/完整性:
 - 本地快照不继承飞书 ACL——见 SKILL.md 边界说明;db 文件收紧为仅当前用户可读(0600)。

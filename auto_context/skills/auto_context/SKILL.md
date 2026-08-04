@@ -1,0 +1,193 @@
+---
+name: auto_context
+description: 'Turn a folder of documents, or a datastore the user already runs, into governed searchable context an agent can query — hybrid search (vector + full-text) served over HTTP by skardi-server. Two storage paths, one flow. Default path: the skill creates and owns a local SQLite file, so the user supplies nothing but a corpus. Override path: point it at a database the user already runs (PostgreSQL+pgvector, MongoDB, or Lance), where the user owns the schema and the skill never creates it. Use this skill whenever the user wants to build a knowledge base, index a corpus for search, make documents queryable by an agent, answer questions over a document set, set up RAG or hybrid search, expose retrieval as a REST endpoint, share retrieval across several agents or processes, or plug Skardi into an existing production datastore. Trigger on phrases like build a RAG system, index my docs, local knowledge base, make this folder searchable, agent-native wiki, search API over my postgres, hybrid search service, expose vector search as HTTP, production RAG on our existing DB, or ground answers in a document set. Requires Skardi >= 0.4.0 and a running skardi-server — the CLI holds no engine of its own.'
+---
+
+# auto_context — build searchable context an agent can query
+
+Your job: turn a corpus into a working retrieval surface, then answer questions from it. One flow, two storage choices.
+
+> **A server is not optional.** Since the CLI was reframed as a thin HTTP client (skardi PR #170) it holds no query engine, no data-source registration, and no local execution mode. Every path in this skill starts a `skardi-server`. Do not look for a CLI-only shortcut — there isn't one, and earlier versions of this skill that promised "no server, no Docker" are obsolete.
+
+> **Skardi 0.4.0+ required.** Ingest and search each do their work inside one server-side SQL statement: chunking via `chunk()`, embedding via `candle()` / `gguf()` / `remote_embed()`, and writing — one INSERT for ingest, inline embedding for vector and hybrid search. The image that bundles all of it is `ghcr.io/skardilabs/skardi/skardi-server-rag:latest` (`--features rag`); the older `skardi-server-embedding` image does not register `chunk()` and breaks the rendered pipelines.
+
+## The two storage paths
+
+Decide this first. It is the only structural choice; everything downstream is identical.
+
+| | **Local (default)** | **Bring your own datastore** |
+|---|---|---|
+| When | The user hands you a folder and wants it searchable. No mention of existing infra. | The user says "use our Postgres / Mongo / Lance", or wants several agents and processes hitting one shared surface. |
+| Storage | A SQLite file **this skill creates and owns**, inside the workspace (`<workspace>/kb.db`) — canonical rows plus an FTS5 mirror plus a sqlite-vec `vec0` mirror, kept in sync by triggers. | A table, collection or dataset **the user created**. |
+| User supplies | A corpus path. Nothing about storage. | Connection string, table name, credentials via env vars, and the schema itself. |
+| Flag | nothing (`--backend sqlite` is the default) | `--backend postgres --connection-string ... --table ...` |
+
+**Do not ask which backend the user wants when they have not raised the topic.** The local path exists so that "make this folder searchable" needs exactly one answer from them: where the folder is. Branch to the override path only when the user names existing infrastructure.
+
+## What this skill will and will not do
+
+**Will do.** Render `ctx.yaml` + `semantics.yaml` + the five pipeline YAMLs, start `skardi-server`, ingest a corpus over HTTP (the server chunks and embeds inline), and route each question through `/search-hybrid/execute` or its single-signal siblings to a grounded answer.
+
+**Will not do — in a datastore the user owns.** Create databases, create schemas, run `CREATE EXTENSION`, install drivers, or hand out credentials. On the override path the user provides every connection string, every credential, and the schema. If the schema does not exist, print the SQL the user must run in their own session and stop. *Never run schema-creation DDL against a user-supplied connection without the user explicitly asking.* A stray `DROP` can lose hours of someone else's work, and `CREATE EXTENSION` on managed Postgres often needs superuser the agent does not have anyway.
+
+**That limit does not apply to the local path.** There the `.db` file is a workspace artifact this skill created; making tables, triggers and indexes inside it is the skill doing its own job, not touching the user's data. Deleting the workspace is a complete undo.
+
+For testing **the skill itself** during development, disposable Docker containers are fine — that is not "the user's data".
+
+## What to confirm before starting
+
+Local path — one question, sometimes zero:
+
+1. **Where is the corpus?** If the user already said, do not ask again.
+2. **Embedding backend.** See below. Do not pick silently; it drives cost and the vector dimension.
+
+Override path — the two above, plus:
+
+3. **Backend type**: `postgres` (pgvector + pg_fts), `mongo` (mongo_knn + mongo_fts), or `lance` (lance_knn + lance_fts).
+4. **Connection details.** Postgres: connection string plus `PG_USER` / `PG_PASSWORD` in the environment. Mongo: URI, DB and collection, `MONGO_USER` / `MONGO_PASS`. Lance: absolute path or `s3://` URL.
+5. **Table / collection / dataset name.** One combined table holding both `content` (indexed for FTS) and `embedding` (vector type), so a single INSERT keeps both signals on the same row.
+6. **Is the schema already in place?** If not, print the SQL block from [references/schemas.md](references/schemas.md) and wait for confirmation.
+
+### Choosing the embedding backend
+
+Three UDFs, all returning `List<Float32>`, all slotting into the same pipeline shape. The right one depends on the deployment, not on habit. Skardi's own `docs/embeddings/{candle,gguf,remote}/README.md` is authoritative; the table is the shortcut.
+
+| UDF | Signature | Reach for it when | Server build feature |
+|---|---|---|---|
+| `candle(model_dir, text)` | local HuggingFace SafeTensors (BERT / RoBERTa / DistilBERT / Jina) | Local, simple deps, general English text. The default for self-hosted when the corpus fits on one box. Common: `bge-small-en-v1.5` (384-d, ~130 MB), `bge-base-en-v1.5` (768-d), `bge-large-en-v1.5` (1024-d), `all-MiniLM-L6-v2` (384-d, tiny), `multilingual-e5-large` (1024-d), `jina-embeddings-v2-base-code` (768-d) for code. | bundled in `--features rag`, or `--features candle` |
+| `gguf(model_dir, text)` | local llama.cpp quantised weights | Local, RAM-constrained, or the model only ships as GGUF. Common: `embeddinggemma-300m-qat-Q8_0.gguf` (256-d), `nomic-embed-text-v1.5` GGUF (768-d). | `--features gguf` |
+| `remote_embed(provider, model, text)` | hosted API | No local compute, top-tier quality, willing to pay per call. `('openai','text-embedding-3-small')` 1536-d, `('openai','text-embedding-3-large')` 3072-d, `('voyage','voyage-3')` 1024-d, `('voyage','voyage-code-3')` 1024-d for code, `('gemini','text-embedding-004')` 768-d, `('mistral','mistral-embed')` 1024-d. Each needs its key in the server environment. | `--features remote-embed` |
+
+**Decision rule.** Local-only, or is a hosted API acceptable? If local, choose candle vs gguf on memory budget. Code corpus → `voyage-code-3` or `jina-embeddings-v2-base-code`. Multilingual → `multilingual-e5-large` or `text-embedding-3-large`. Chunks over 512 tokens → `nomic-embed-text`. Otherwise bge on candle.
+
+**State the choice in one sentence**, then move on — e.g. *"Using `candle('bge-small-en-v1.5')` (384-d, local, ~130 MB) because your corpus is English markdown and you said no remote APIs."*
+
+**The dimension must match the schema** on the override path. If the user already created `vector(1024)`, a 384-d model makes every INSERT fail. Once the table holds rows, changing the dim means rebuilding — there is no in-place fix. On the local path this cannot bite: the skill creates the table at the right dim.
+
+## Where the server runs
+
+Three runtimes, chosen by where the agent lives. Full detail in [references/runtimes.md](references/runtimes.md).
+
+- `--runtime local-process` (default) — `skardi-server` as a host process; prefers a release binary on PATH, falls back to `cargo run`. Laptops, dev, single user.
+- `--runtime docker` — the official `skardi-server-rag` image. Ships to teammates without asking them to compile Skardi. **Only for the override path.** `--backend sqlite --runtime docker` is refused, and that is a real incompatibility, not a missing flag: the container would need a Linux build of the sqlite-vec extension, the image does not ship one (verified 2026-08-04), and the host's copy is the wrong platform to mount in. Local storage means local process.
+- `--runtime kubernetes` — renders Deployment + Service + ConfigMap into `<workspace>/k8s/`, optionally applies them. Right when the agent already runs in a cluster.
+
+## Chunking and embedding happen on the server
+
+One SQL statement per document does the whole job: `chunk()` splits, the embedding UDF embeds each chunk, and the INSERT commits them together. Nothing is embedded client-side, so a document either lands completely or not at all.
+
+**Chunk mode is fixed at setup time**, baked into the rendered ingest pipeline by `--chunk-mode` (`markdown` by default, `character` for unstructured prose) and recorded in the workspace breadcrumb. It is deliberately *not* a per-request parameter: an earlier version let ingest re-choose it, which silently reverted the user's setup choice to the default. Do not reintroduce that.
+
+## Two prerequisites the local path needs — check these first
+
+Both were verified the hard way on 2026-08-04. Neither is optional, and both fail late and confusingly if skipped.
+
+**1. Run the scripts with a Python that can load SQLite extensions.** The local path creates the `vec0` virtual table, which needs the sqlite-vec extension, which needs `sqlite3.Connection.enable_load_extension`. **macOS system Python (`/usr/bin/python3`) does not have it** and setup dies at the schema step. Check before you start, and use the interpreter that passes:
+
+```bash
+python3 -c "import sqlite3; print(hasattr(sqlite3.connect(':memory:'), 'enable_load_extension'))"   # must print True
+# on macOS this usually means: brew install python  → /opt/homebrew/bin/python3
+```
+
+**2. Export `SQLITE_VEC_PATH` before starting the server.** `setup_context.py` prints the exact line at the end — carry it into the shell that runs `start_server.py`. The server reads that variable to load sqlite-vec (see `options.extensions_env` in the rendered `ctx.yaml`); without it the server starts but every vector query fails.
+
+```bash
+export SQLITE_VEC_PATH=<the path setup_context.py printed>
+```
+
+The override path needs neither of these — no local extension is involved. It needs the datastore credentials in the environment instead (`PG_USER` / `PG_PASSWORD`, etc.).
+
+## The end-to-end flow
+
+### Step 1 — Render the workspace
+
+Local path:
+
+```bash
+python scripts/setup_context.py \
+  --workspace ./context \
+  --embedding-udf candle --model-path /abs/path/bge-small-en-v1.5 --embedding-dim 384
+```
+
+Override path adds the storage arguments:
+
+```bash
+python scripts/setup_context.py \
+  --workspace ./context --backend postgres \
+  --connection-string "postgresql://localhost:5432/ragdb?sslmode=disable" --table kb_chunks \
+  --embedding-udf candle --model-path /abs/path/bge-small-en-v1.5 --embedding-dim 384
+```
+
+Writes `ctx.yaml`, `semantics.yaml`, `pipelines/{ingest,ingest_chunked,search_vector,search_fulltext,search_hybrid}.yaml`, and `.embedding.txt` — the breadcrumb later steps read.
+
+**There is no pre-flight connectivity probe.** There used to be one that ran a local CLI query before anything started; that is impossible now. Server startup is the check — `skardi-server` loads `ctx.yaml` and fails naming the source it could not open.
+
+**Re-running against an existing local workspace stops with an error**, because recreating `kb.db` would drop everything already ingested. Pass `--force` only when losing the ingested rows is intended; otherwise reuse the workspace as-is and skip to Step 2.
+
+### Step 2 — Start the server
+
+```bash
+python scripts/start_server.py --workspace ./context --port 8080
+```
+
+Polls `/health`, then lists `/pipelines` and warns if any of the five are missing. On failure the reason is in `<workspace>/server.log`; on the override path it is usually the connection string, a missing credentials env var, or the schema not existing yet.
+
+> **"All five registered" does not prove ingest works.** Load-time validation is not uniform: the SELECT pipelines get planned, so a missing embedding UDF makes them fail to load — but the INSERT pipelines (`ingest`, `ingest-chunked`) register anyway and only fail when they actually run. Verified 2026-08-04 on a server built without `chunking` / `remote-embed`: `search-vector` and `search-hybrid` refused to load while `ingest-chunked` reported healthy. So treat a clean startup as necessary, not sufficient — the first real ingest is the proof.
+
+### Step 3 — Ingest the corpus
+
+```bash
+python scripts/ingest_corpus.py --workspace ./context --corpus ./docs
+```
+
+One POST per document to `/ingest-chunked/execute`. Progress is journalled, so a re-run resumes instead of duplicating.
+
+### Step 4 — Retrieve and answer
+
+```bash
+# Hybrid (default — RRF over the vector and full-text signals; the server embeds {query} inline)
+curl -X POST http://localhost:8080/search-hybrid/execute \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"how does retry backoff work","text_query":"retry backoff","vector_weight":0.5,"text_weight":0.5,"limit":5}'
+
+# Full-text only — named entities, exact strings. No embedding, so also the cheapest.
+curl -X POST http://localhost:8080/search-fulltext/execute \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"retry","limit":5}'
+```
+
+Use `/search-vector/execute` for paraphrase and conceptual questions. Cite the `source` of every chunk used in an answer.
+
+**Parameter names are inferred from each pipeline's SQL and are not interchangeable.** Verified against a running server 2026-08-04:
+
+| Endpoint | Parameters |
+|---|---|
+| `ingest` | `doc_id`, `source`, `chunk_idx`, `content` |
+| `ingest-chunked` | `doc_id`, `source`, `content`, `chunk_size`, `overlap` |
+| `search-fulltext` | `query`, `limit` — **not** `text_query` |
+| `search-vector` | `query`, `limit` |
+| `search-hybrid` | `query`, `text_query`, `vector_weight`, `text_weight`, `limit` |
+
+Only `search-hybrid` takes both `query` and `text_query` (one feeds the embedding, the other the FTS match). Standalone `search-fulltext` takes `query`. Sending the wrong name returns `parameter_validation_error` listing what it expected — read that list rather than guessing.
+
+**The relevance field is named differently per backend.** `search-vector` returns `distance` on sqlite and `_score` on postgres; `search-hybrid` returns `rrf_score`. Read the field that is actually present instead of assuming one — defaulting a missing key to `0` silently turns every result into a tie, which looks like broken ranking when the ranking is fine.
+
+### Step 5 — Stop when done
+
+```bash
+python scripts/stop_server.py --workspace ./context
+```
+
+## References
+
+- [references/schemas.md](references/schemas.md) — the SQL the user runs on the override path, per backend.
+- [references/runtimes.md](references/runtimes.md) — local-process vs docker vs kubernetes in full.
+- [references/pipeline_patterns.md](references/pipeline_patterns.md) — pipeline shapes, including the SQLite FTS5 + vec0 mirror design.
+- [references/troubleshooting.md](references/troubleshooting.md) — server and override-path failures.
+- [references/troubleshooting_sqlite.md](references/troubleshooting_sqlite.md) — local-path failures: sqlite-vec loading, extension paths, model download.
+
+## Boundaries
+
+- Never claim a capability without checking it against the running server. If `/pipelines` does not list a pipeline, it does not exist.
+- Never run schema DDL in a datastore the user owns without being asked.
+- Do not promise a CLI-only or serverless mode. There isn't one.
