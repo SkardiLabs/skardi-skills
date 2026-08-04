@@ -37,6 +37,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from _platform import require_supported_platform
+
 DEFAULT_INCLUDE = "*.md,*.markdown,*.txt,*.rst"
 DEFAULT_CHUNK_SIZE = 1200
 DEFAULT_OVERLAP = 200
@@ -150,6 +152,7 @@ def post_doc(endpoint, doc_id, source, content, chunk_size, overlap, timeout):
 
 
 def main():
+    require_supported_platform("ingest_corpus.py")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--workspace", required=True, help="Workspace dir from setup_context.py")
     ap.add_argument("--corpus", required=True, help="Root directory of documents")

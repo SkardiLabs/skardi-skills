@@ -41,6 +41,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from _platform import require_supported_platform
+
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 # v0.4.0+ ships skardi-server-rag (chunk + embedding bundled via --features rag).
@@ -658,6 +660,7 @@ def start_kubernetes(workspace, port, breadcrumb, image, namespace, release_name
 # -- Main -------------------------------------------------------------------
 
 def main():
+    require_supported_platform("start_server.py")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--workspace", required=True)
     ap.add_argument(

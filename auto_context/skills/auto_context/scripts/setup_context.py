@@ -43,6 +43,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _platform import require_supported_platform
+
 SKILL_DIR = Path(__file__).resolve().parent.parent
 ASSETS = SKILL_DIR / "assets"
 
@@ -359,6 +361,7 @@ def render_templates(backend, workspace, subs):
 
 
 def main():
+    require_supported_platform("setup_context.py")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--workspace", required=True, help="Directory to populate (e.g. ./context)")
     ap.add_argument(

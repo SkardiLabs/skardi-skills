@@ -22,6 +22,8 @@ import sys
 import time
 from pathlib import Path
 
+from _platform import require_supported_platform
+
 
 def die(msg, code=1):
     print(f"ERROR: {msg}", file=sys.stderr)
@@ -29,6 +31,10 @@ def die(msg, code=1):
 
 
 def kill_pid(pid_file, grace):
+    # POSIX signal semantics are safe to rely on here: main() rejects
+    # Windows at the entry point, where `os.kill(pid, 0)` would terminate
+    # the process instead of probing it and SIGKILL does not exist.
+    # See _platform.py for why that is a refusal rather than a shim.
     if not pid_file.is_file():
         print(f"  no {pid_file.name} — nothing to kill")
         return
@@ -111,6 +117,7 @@ def stop_kubernetes(workspace, do_delete):
 
 
 def main():
+    require_supported_platform("stop_server.py")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--grace", type=int, default=10,
