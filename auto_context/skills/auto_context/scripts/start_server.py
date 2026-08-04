@@ -81,6 +81,66 @@ def feature_for_udf(udf):
     return {"candle": "candle", "gguf": "gguf", "remote_embed": "remote-embed"}.get(udf)
 
 
+def resolve_backend(workspace, breadcrumb):
+    """Which storage the rendered pipelines target: 'sqlite' or 'postgres'.
+
+    Workspaces rendered before the auto_knowledge_base + auto_rag merge have
+    no `backend` key — that field did not exist. Verified against real
+    pre-merge workspaces on 2026-08-04:
+
+      * auto_knowledge_base wrote udf / model_path / embedding_args / dim /
+        chunk_mode, plus an `aliases.yaml` and a `kb.db` inside the workspace.
+        It was always sqlite.
+      * auto_rag wrote udf / model_path / embedding_args / dim / table /
+        schema and no .db. It was always postgres.
+
+    So decide on the file that is actually there rather than on a default:
+    a workspace that owns a `kb.db` is the sqlite kind. Defaulting a missing
+    key to "postgres" (what this used to do) silently mislabelled every
+    legacy knowledge-base workspace, which then skipped the sqlite+docker
+    refusal and started a container that dies later on an opaque extension
+    error instead of being told up front that the combination cannot work.
+    """
+    backend = breadcrumb.get("backend")
+    if backend:
+        return backend
+    return "sqlite" if (workspace / "kb.db").is_file() else "postgres"
+
+
+def warn_if_legacy_workspace(workspace, breadcrumb, backend):
+    """Say so, once, when the workspace predates the auto_context merge.
+
+    Not a failure: a legacy sqlite workspace is served correctly by
+    local-process, and its already-ingested rows stay queryable over the new
+    HTTP surface (verified 2026-08-04). The user still needs to know, because
+    the workspace lacks the newer breadcrumb keys and because re-running
+    setup_context.py in place would offer to drop their rows.
+    """
+    if breadcrumb.get("backend"):
+        return
+    origin = ("auto-knowledge-base" if (workspace / "aliases.yaml").is_file()
+              else "auto-rag")
+    print(f"  note: this workspace predates the auto_context merge (looks like "
+          f"{origin}).")
+    print(f"        No `backend` key in .embedding.txt; inferred backend="
+          f"{backend} from the workspace contents.")
+    print("        It is served as-is.")
+    if backend == "sqlite":
+        # The advice differs by backend, and getting it wrong here is worse
+        # than staying quiet: --force is sqlite-only, and on this path it
+        # deletes the .db holding everything the user already ingested.
+        print("        Do NOT re-run setup_context.py --force in place — that")
+        print("        recreates kb.db and drops every ingested row. To move to")
+        print("        a current workspace, render a new one in a fresh")
+        print("        directory and re-ingest.")
+    else:
+        print("        Re-running setup_context.py is safe here (it never")
+        print("        touches a database you own), but you must pass --backend")
+        print("        postgres --connection-string and --table again — the old")
+        print("        breadcrumb did not record them.")
+    print("        See SKILL.md § Upgrading from auto-knowledge-base / auto-rag.")
+
+
 def wait_for_health(host, port, timeout_s, kind="server"):
     """Poll /health every 1 s until 200 or timeout. Returns True on success.
 
@@ -287,7 +347,7 @@ def docker_command(workspace, port, breadcrumb, image, container_name):
     udf = breadcrumb.get("udf")
     model_path = breadcrumb.get("model_path") or ""
     embedding_args = breadcrumb.get("embedding_args") or ""
-    backend = breadcrumb.get("backend") or "postgres"
+    backend = resolve_backend(workspace, breadcrumb)
 
     # sqlite never reaches this point (it dies above), so the workspace can
     # stay read-only: the remaining backends keep their data outside it.
@@ -753,6 +813,8 @@ def main():
         feature = feature_for_udf(udf)
         if not feature:
             die(f"Unrecognised embedding UDF in breadcrumb: {udf!r}")
+        warn_if_legacy_workspace(workspace, breadcrumb,
+                                 resolve_backend(workspace, breadcrumb))
 
     if args.runtime == "local-process":
         host, port, log_file = start_local_process(
