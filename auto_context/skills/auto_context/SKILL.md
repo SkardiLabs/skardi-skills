@@ -172,6 +172,19 @@ python scripts/ingest_corpus.py --workspace ./context --corpus ./docs
 
 One POST per document to `/ingest-chunked/execute`. Progress is journalled, so a re-run resumes instead of duplicating.
 
+**Every matched file is accounted for.** The counts line adds up — `matched: 15  ingestable: 8  skipped: 7` — and each skip prints its reason and the filenames. Four reasons, all verified against a hostile corpus on 2026-08-04:
+
+- **not UTF-8** — latin-1 and UTF-16 files are skipped, not mangled. A UTF-8 BOM is fine (decoded with `utf-8-sig`, so front-matter stripping still works).
+- **unreadable** — permission denied, I/O error, symlink loop. One bad file no longer takes the run down with it.
+- **no text content** — empty, whitespace-only, or nothing left after front-matter stripping. These used to vanish with no mention, so a corpus of front-matter-only stubs reported `total: 0` and exited 0, which reads as success.
+- **too large for one request** — see below.
+
+**A document has to fit in one request, and the server caps that at 2 MiB.** Measured against 0.4.0: a 2000 KB body returns 200, 2100 KB returns `413 Payload Too Large` (skardi-server sets no limit itself, so this is axum's default). Files over the line are reported with their serialised size and skipped. Note "serialised": JSON escaping expands newlines, and non-ASCII becomes `\uXXXX`, so a CJK document is roughly twice its on-disk size on the wire. **There is no client-side splitter** — chunking happens server-side, after the whole document arrives — so an oversized file has to be split into smaller documents by hand.
+
+**Exit code is non-zero when nothing was ingested**, so a no-op cannot pass for success: no file matched `--include` (the patterns and the file count are printed), or every matched file was skipped. It stays zero when some files ingested with others skipped, and when every ingestable file was already `ok` in the manifest.
+
+Re-ingesting a document that is already indexed reports *"already in the index — the doc id is derived from the source path"* rather than a raw `UNIQUE constraint failed` dump. That is the error to expect after deleting the manifest to force a re-run; delete the document's rows first, or leave the manifest alone.
+
 ### Step 4 — Retrieve and answer
 
 ```bash

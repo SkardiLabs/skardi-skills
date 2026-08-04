@@ -43,6 +43,21 @@ DEFAULT_INCLUDE = "*.md,*.markdown,*.txt,*.rst"
 DEFAULT_CHUNK_SIZE = 1200
 DEFAULT_OVERLAP = 200
 
+# Largest JSON request body skardi-server will accept. Measured against a
+# running 0.4.0 server on 2026-08-04: a 2000 KB body returns 200, a 2100 KB
+# body returns `413 Payload Too Large`. skardi-server sets no limit of its
+# own (no DefaultBodyLimit / body_limit anywhere in crates/), so this is
+# axum 0.7's default of 2 MiB.
+#
+# Worth checking client-side rather than just letting the POST fail, because
+# the error the user gets otherwise depends on how far over the line they
+# are: slightly over yields the 413 (readable), far over means the server
+# closes the connection while we are still writing, and urllib reports
+# `Broken pipe` or `Connection reset by peer` with no mention of size. A
+# 12 MB markdown file produced exactly that — an unreadable error for an
+# entirely understandable input.
+SERVER_BODY_LIMIT = 2 * 1024 * 1024
+
 FRONT_MATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
 
 
@@ -113,23 +128,34 @@ def save_progress(path, progress):
     tmp.replace(path)
 
 
-def post_doc(endpoint, doc_id, source, content, chunk_size, overlap, timeout):
-    """POST one document to /ingest-chunked/execute.
+def build_body(doc_id, source, content, chunk_size, overlap):
+    """Serialise one document into the JSON request body.
 
-    The server runs the rendered ingest-chunked pipeline: UNNEST(chunk(
-    'markdown', content, chunk_size, overlap)) → embed each chunk → INSERT.
-    A success response means every chunk for this document was committed
-    in one transaction."""
-    body = {
+    Built during the work-list pass rather than at POST time so the size can
+    be checked against SERVER_BODY_LIMIT before the run starts. The size has
+    to be measured on the encoded body, not on the file: json.dumps escapes
+    newlines and (with the default ensure_ascii) expands every non-ASCII
+    character to a \\uXXXX escape, so a CJK document is roughly twice its
+    on-disk size by the time it reaches the wire."""
+    return json.dumps({
         "doc_id": doc_id,
         "source": source,
         "content": content,
         "chunk_size": chunk_size,
         "overlap": overlap,
-    }
+    }).encode("utf-8")
+
+
+def post_doc(endpoint, body, timeout):
+    """POST one already-serialised document to /ingest-chunked/execute.
+
+    The server runs the rendered ingest-chunked pipeline: UNNEST(chunk(
+    'markdown', content, chunk_size, overlap)) → embed each chunk → INSERT.
+    A success response means every chunk for this document was committed
+    in one transaction."""
     req = urllib.request.Request(
         endpoint,
-        data=json.dumps(body).encode("utf-8"),
+        data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -144,6 +170,18 @@ def post_doc(endpoint, doc_id, source, content, chunk_size, overlap, timeout):
             err_body = e.read().decode("utf-8")
         except Exception:
             err_body = ""
+        if "UNIQUE constraint failed" in err_body or "duplicate key" in err_body:
+            # This one is by design (doc ids are derived from the source path,
+            # so a re-ingest collides) but the raw message is a SQLite
+            # constraint dump that reads like a corruption. Name the actual
+            # situation instead — it is the error a user gets after deleting
+            # the manifest to force a re-run.
+            return False, (
+                "already in the index — the doc id is derived from the source "
+                "path, so re-ingesting the same file collides. Delete its rows "
+                "first (DELETE FROM <table> WHERE source = '...') or restore "
+                "the progress manifest so it is skipped instead."
+            )
         return False, f"HTTP {e.code}: {err_body[:300]}"
     except urllib.error.URLError as e:
         return False, f"connection error: {e}"
@@ -225,36 +263,84 @@ def main():
 
     # Build the work list. Each entry is one source file; the server will
     # split it into chunks server-side via chunk('markdown', ...).
+    #
+    # Every file that matched --include has to end up in exactly one bucket.
+    # This used to drop empty files silently and let a single unreadable file
+    # abort the run with a raw PermissionError traceback, so a corpus of
+    # front-matter-only stubs reported "total: 0 / nothing to do" — which
+    # reads as success — and one chmod-000 file lost the whole run.
     work = []
-    skipped = []
+    skipped = {"not UTF-8": [], "unreadable": [], "no text content": [],
+               "too large for one request": []}
+    matched = 0
     for path in iter_files(corpus, args.include):
+        matched += 1
+        rel = str(path.relative_to(corpus))
         try:
-            text = path.read_text(encoding="utf-8")
+            # utf-8-sig, not utf-8: a UTF-8 BOM would otherwise sit in front of
+            # the `---` and defeat front-matter stripping, embedding the YAML
+            # header into the indexed text. Files without a BOM decode
+            # identically either way.
+            text = path.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
-            skipped.append(str(path.relative_to(corpus)))
+            skipped["not UTF-8"].append(rel)
+            continue
+        except OSError as e:
+            # Permission denied, I/O error, symlink loop. One bad file is not
+            # a reason to abandon the other N-1.
+            skipped["unreadable"].append(f"{rel} ({e.strerror or e})")
             continue
         text = strip_front_matter(text).strip()
         if not text:
+            skipped["no text content"].append(rel)
             continue
-        rel = str(path.relative_to(corpus))
-        work.append({
-            "doc_id": stable_doc_id(rel),
-            "source": rel,
-            "content": text,
-        })
+        body = build_body(stable_doc_id(rel), rel, text,
+                          args.chunk_size, args.overlap)
+        if len(body) > SERVER_BODY_LIMIT:
+            skipped["too large for one request"].append(
+                f"{rel} ({len(body) / 1024 / 1024:.1f} MB serialised)")
+            continue
+        work.append({"source": rel, "body": body})
     if args.limit > 0:
         work = work[: args.limit]
 
-    if skipped:
-        head = ", ".join(skipped[:5])
-        more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
-        print(f"  skipped {len(skipped)} non-UTF8 files: {head}{more}")
+    for reason, names in skipped.items():
+        if not names:
+            continue
+        head = ", ".join(names[:5])
+        more = f" (+{len(names) - 5} more)" if len(names) > 5 else ""
+        print(f"  skipped {len(names)} {reason}: {head}{more}")
+    if skipped["too large for one request"]:
+        print(f"  note: skardi-server accepts request bodies up to "
+              f"{SERVER_BODY_LIMIT // 1024 // 1024} MiB and one document is one "
+              f"request. Split those files into smaller documents; there is no "
+              f"client-side splitter (chunking happens server-side, after the "
+              f"whole document arrives).")
+
+    if matched == 0:
+        # Not "nothing to do" — the user asked for a corpus to be ingested and
+        # no file was even a candidate. Almost always a wrong --include or the
+        # wrong directory, so say what was searched for.
+        present = sum(1 for p in corpus.rglob("*") if p.is_file())
+        die(
+            f"no files under {corpus} matched --include {args.include!r} "
+            f"({present} file(s) are present). Fix the patterns or the path."
+        )
 
     pending = [w for w in work if w["source"] not in progress or progress[w["source"]] != "ok"]
-    print(f"  total: {len(work)}  skipped (already ok): {len(work) - len(pending)}  to ingest: {len(pending)}")
+    total_skipped = sum(len(v) for v in skipped.values())
+    print(f"  matched: {matched}  ingestable: {len(work)}  skipped: {total_skipped}  "
+          f"already ok: {len(work) - len(pending)}  to ingest: {len(pending)}")
+
+    if not work:
+        # Files matched but none survived. Distinct from "already ingested":
+        # nothing is in the index as a result of this run, so exiting 0 here
+        # would report success for a corpus that produced no context at all.
+        die(f"all {matched} matched file(s) were skipped — see the reasons above. "
+            f"Nothing was ingested.")
 
     if not pending:
-        print("  nothing to do")
+        print("  nothing to do (every ingestable file is already ok in the manifest)")
         return
 
     started = time.time()
@@ -279,18 +365,12 @@ def main():
 
     if args.concurrency <= 1:
         for item in pending:
-            success, err = post_doc(
-                endpoint, item["doc_id"], item["source"], item["content"],
-                args.chunk_size, args.overlap, args.timeout,
-            )
+            success, err = post_doc(endpoint, item["body"], args.timeout)
             _record(item, success, err)
     else:
         with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
             futures = {
-                pool.submit(
-                    post_doc, endpoint, item["doc_id"], item["source"],
-                    item["content"], args.chunk_size, args.overlap, args.timeout,
-                ): item
+                pool.submit(post_doc, endpoint, item["body"], args.timeout): item
                 for item in pending
             }
             for fut in as_completed(futures):
