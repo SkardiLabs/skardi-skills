@@ -273,21 +273,47 @@ def resolve_candle_model(cli_path, workspace):
 
 
 def resolve_gguf_model(cli_path):
+    """Validate a GGUF model directory against what the server will accept.
+
+    The server's rule (crates/skardi/src/model/gguf/embed.rs, `find_gguf_file`)
+    is *exactly one* `.gguf` file in the directory: zero and two are both hard
+    errors. This check has to match it. Accepting a directory with several
+    quantisations — the normal result of cloning a GGUF repo, which ships
+    Q4_K_M / Q8_0 / f16 side by side — let setup report success and then failed
+    every single embed call at ingest time, which is the failure shape this
+    skill's whole report design exists to avoid.
+
+    Sidecar files are fine: the server filters by extension, and the tokenizer
+    comes from the GGUF's own `tokenizer.ggml.*` metadata, not from a
+    tokenizer.json next to it.
+    """
     if not cli_path:
         die(
             "--embedding-udf gguf requires --model-path pointing at a "
-            "directory that contains the .gguf weights file (and a "
-            "tokenizer.json if the model needs one — e.g. embeddinggemma). "
-            "The skill does not auto-download GGUF because some are "
-            "licence-gated (Gemma) or have multiple quantisations the "
-            "user must pick between."
+            "directory that contains exactly one .gguf weights file. The "
+            "skill does not auto-download GGUF because some are licence-gated "
+            "(Gemma) or have multiple quantisations the user must pick between."
         )
     p = Path(cli_path).expanduser().resolve()
     if not p.is_dir():
-        die(f"--model-path {p} is not a directory")
-    if not any(f.suffix == ".gguf" for f in p.iterdir() if f.is_file()):
+        die(
+            f"--model-path {p} is not a directory. Point at the directory "
+            f"holding the .gguf file, not at the file itself — the server "
+            f"takes a directory and finds the weights inside it."
+        )
+    found = sorted(f.name for f in p.iterdir() if f.is_file() and f.suffix == ".gguf")
+    if not found:
         die(f"gguf model dir {p} contains no .gguf file")
-    print(f"  gguf model: {p}")
+    if len(found) > 1:
+        die(
+            f"gguf model dir {p} contains {len(found)} .gguf files: "
+            f"{', '.join(found)}.\n"
+            f"  The server loads a GGUF model by scanning the directory and "
+            f"requires exactly one, so it cannot tell which quantisation you "
+            f"meant. Move the one you want into a directory of its own and "
+            f"point --model-path there."
+        )
+    print(f"  gguf model: {p} ({found[0]})")
     return str(p)
 
 

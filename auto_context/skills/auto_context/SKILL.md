@@ -55,12 +55,24 @@ Three UDFs, all returning `List<Float32>`, all slotting into the same pipeline s
 | UDF | Signature | Reach for it when | Server build feature |
 |---|---|---|---|
 | `candle(model_dir, text)` | local HuggingFace SafeTensors (BERT / RoBERTa / DistilBERT / Jina) | Local, simple deps, general English text. The default for self-hosted when the corpus fits on one box. Common: `bge-small-en-v1.5` (384-d, ~130 MB), `bge-base-en-v1.5` (768-d), `bge-large-en-v1.5` (1024-d), `all-MiniLM-L6-v2` (384-d, tiny), `multilingual-e5-large` (1024-d), `jina-embeddings-v2-base-code` (768-d) for code. | bundled in `--features rag`, or `--features candle` |
-| `gguf(model_dir, text)` | local llama.cpp quantised weights | Local, RAM-constrained, or the model only ships as GGUF. Common: `embeddinggemma-300m-qat-Q8_0.gguf` (256-d), `nomic-embed-text-v1.5` GGUF (768-d). | `--features gguf` |
+| `gguf(model_dir, text)` | local llama.cpp quantised weights | Local, RAM-constrained, or the model only ships as GGUF. Common: `embeddinggemma-300m-qat-Q8_0.gguf` (256-d), `nomic-embed-text-v1.5` GGUF (768-d). **Read the gguf note below before choosing this** — it is the one backend with a build prerequisite. | `--features gguf` |
 | `remote_embed(provider, model, text)` | hosted API | No local compute, top-tier quality, willing to pay per call. `('openai','text-embedding-3-small')` 1536-d, `('openai','text-embedding-3-large')` 3072-d, `('voyage','voyage-3')` 1024-d, `('voyage','voyage-code-3')` 1024-d for code, `('gemini','text-embedding-004')` 768-d, `('mistral','mistral-embed')` 1024-d. Each needs its key in the server environment. | `--features remote-embed` |
 
 **Decision rule.** Local-only, or is a hosted API acceptable? If local, choose candle vs gguf on memory budget. Code corpus → `voyage-code-3` or `jina-embeddings-v2-base-code`. Multilingual → `multilingual-e5-large` or `text-embedding-3-large`. Chunks over 512 tokens → `nomic-embed-text`. Otherwise bge on candle.
 
 **State the choice in one sentence**, then move on — e.g. *"Using `candle('bge-small-en-v1.5')` (384-d, local, ~130 MB) because your corpus is English markdown and you said no remote APIs."*
+
+### The gguf backend needs cmake, and that collides with the local path
+
+Worth knowing before you pick `gguf`, because the collision has no workaround inside this skill:
+
+- **Building a server with `--features gguf` requires cmake and a C++ toolchain.** `gguf` pulls in `llama-cpp-4`, whose build script compiles llama.cpp through cmake. Measured 2026-08-04 on a machine without it: `cargo check -p skardi-server --features gguf` fails at that build script with `is 'cmake' not installed?` and exits 101. `candle` has no such dependency — this is specific to gguf.
+- **The published `skardi-server-rag` image already contains gguf** (`--features rag` → `embedding` → `gguf`), so `--runtime docker` sidesteps the build entirely.
+- **But `--backend sqlite --runtime docker` is refused** (no Linux sqlite-vec in the image). So *gguf on the local sqlite path means building the server yourself, with cmake installed.* gguf with `--backend postgres` can use the image and needs no local toolchain.
+
+**Model directory layout:** point `--model-path` at a **directory containing exactly one `.gguf` file**, not at the file. The server scans the directory and treats both zero and two-or-more as errors, so a cloned GGUF repo with several quantisations side by side has to be split up first — `setup_context.py` now refuses that up front and names the files it found. Other files in the directory are ignored; the tokenizer comes from the GGUF's own metadata, not from a `tokenizer.json` beside it.
+
+**Runtime status:** the paths above are verified — validation, rendered `gguf('<dir>', content)` SQL, and the failure you get on a server without gguf. Actual gguf *embedding* is still unverified on this machine, because it needs the cmake build.
 
 **The dimension must match the schema** on the override path. If the user already created `vector(1024)`, a 384-d model makes every INSERT fail. Once the table holds rows, changing the dim means rebuilding — there is no in-place fix. On the local path this cannot bite: the skill creates the table at the right dim.
 
@@ -162,7 +174,11 @@ python scripts/start_server.py --workspace ./context --port 8080
 
 Polls `/health`, then lists `/pipelines` and warns if any of the five are missing. On failure the reason is in `<workspace>/server.log`; on the override path it is usually the connection string, a missing credentials env var, or the schema not existing yet.
 
-> **"All five registered" does not prove ingest works.** Load-time validation is not uniform: the SELECT pipelines get planned, so a missing embedding UDF makes them fail to load — but the INSERT pipelines (`ingest`, `ingest-chunked`) register anyway and only fail when they actually run. Verified 2026-08-04 on a server built without `chunking` / `remote-embed`: `search-vector` and `search-hybrid` refused to load while `ingest-chunked` reported healthy. So treat a clean startup as necessary, not sufficient — the first real ingest is the proof.
+> **"All five registered" does not prove ingest works.** Load-time validation is not uniform: the SELECT pipelines get planned, so an embedding UDF the server does not have makes them fail to load — but the INSERT pipelines (`ingest`, `ingest-chunked`) register without being planned and only fail when they actually run. Verified by pointing a healthy server at a model directory holding stub weights: startup was clean, all five pipelines registered, and the first ingest failed on the model load. So treat a clean startup as necessary, not sufficient — the first real ingest is the proof.
+>
+> **A pipeline that fails to plan aborts startup — you never see a partial server.** Re-measured 2026-08-04 (an earlier note here claimed `search-vector` / `search-hybrid` could fail to load "while `ingest-chunked` reported healthy", which is not what happens). One unplannable SELECT pipeline makes skardi-server log `❌ Failed to load server configuration` and exit 1, even though the other four loaded successfully. There is no `/pipelines` response to inspect in that case, so a missing-pipeline WARN row comes from a server that started and then answered — not from a broken build.
+>
+> **The error text for a missing embedding UDF names the wrong function.** Reproduced twice, with `gguf` on a server built without it and with a deliberately bogus UDF name: the planner reports `sqlite_knn(table, vector_col, query_vec, k) expects 4 arguments, got 3`. That message is about `sqlite_knn`, but the real cause is the *embedding* call inside it failing to resolve, which leaves the planner counting three arguments. Check the UDF in the rendered `search_vector.yaml` against the features the server was built with before believing anything about `sqlite_knn`.
 
 ### Step 3 — Ingest the corpus
 
