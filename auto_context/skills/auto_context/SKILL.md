@@ -115,6 +115,20 @@ The override path needs neither of these — no local extension is involved. It 
 
 ## The end-to-end flow
 
+Both `setup_context.py` and `start_server.py` end with a step table — per-step ok / warn / FAIL, per-step timing, and a verdict line. Read that instead of scrolling back through the log:
+
+```
+OK  Server start complete  —  3/3 checks passed  ·  1.0s total
+------------------------------------------------------------------------
+  [  ok ]  process launch                  2ms
+  [  ok ]  server up (/health)            1.0s
+  [  ok ]  pipelines registered            1ms
+```
+
+- **WARN is not a pass.** It means the step ran but could not be verified — an unparseable `skardi --version`, or `/pipelines` coming back short of the five. Those are exactly the cases that resurface as a failure at ingest or query time, so they are counted apart from the passes and printed with a reason.
+- **The table prints on failure too**, with the failing step marked and the denominator intact (`stopped at step 2/3`), so a failed run still shows how far it got and where the time went. A failure in preparatory work before step 1 says so rather than blaming step 1.
+- The denominator is per-run, not a constant: local setup is 5 steps, the override path 3 (no extension to resolve, no schema to create), and `--runtime kubernetes` is a single row because that runtime has never been run — inventing per-phase rows for it would be guesswork dressed up as measurement.
+
 ### Step 1 — Render the workspace
 
 Local path:
@@ -138,7 +152,7 @@ Writes `ctx.yaml`, `semantics.yaml`, `pipelines/{ingest,ingest_chunked,search_ve
 
 **There is no pre-flight connectivity probe.** There used to be one that ran a local CLI query before anything started; that is impossible now. Server startup is the check — `skardi-server` loads `ctx.yaml` and fails naming the source it could not open.
 
-**Re-running against an existing local workspace stops with an error**, because recreating `kb.db` would drop everything already ingested. Pass `--force` only when losing the ingested rows is intended; otherwise reuse the workspace as-is and skip to Step 2.
+**Re-running against an existing local workspace stops with an error**, because recreating `kb.db` would drop everything already ingested. It stops in pre-flight — before the model is resolved and before `ctx.yaml` is rewritten — so a refused re-run costs nothing and changes nothing. Pass `--force` only when losing the ingested rows is intended; otherwise reuse the workspace as-is and skip to Step 2.
 
 ### Step 2 — Start the server
 

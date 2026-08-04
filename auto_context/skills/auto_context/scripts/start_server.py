@@ -42,6 +42,7 @@ import urllib.request
 from pathlib import Path
 
 from _platform import require_supported_platform
+from _report import Report
 
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -122,11 +123,19 @@ def list_pipelines(host, port):
 
 
 def report_pipelines(host, port, log_hint):
+    """Print which pipelines the server registered.
+
+    Returns None when all five are present, or a short note when they are not
+    — the caller turns that into a WARN row. Both "no response" and "some
+    missing" are unverified states, not passes: a missing SELECT pipeline
+    means a UDF failed to load, and the INSERT pipelines register even when
+    they cannot run, so this check is necessary and not sufficient either way.
+    """
     pipelines_resp = list_pipelines(host, port)
     expected = {"ingest", "ingest-chunked", "search-vector", "search-fulltext", "search-hybrid"}
     if pipelines_resp is None:
         print("  warning: /pipelines did not respond", file=sys.stderr)
-        return
+        return "/pipelines did not respond — registration unverified"
     names = set()
     # Tolerate either response shape; the published API uses `pipelines`,
     # earlier internal builds used `data`. Either path captures the names.
@@ -144,8 +153,9 @@ def report_pipelines(host, port, log_hint):
             f"{sorted(missing)}. Inspect {log_hint}.",
             file=sys.stderr,
         )
-    else:
-        print(f"  ok: all five pipelines registered ({sorted(expected)})")
+        return f"{len(missing)} pipeline(s) missing: {', '.join(sorted(missing))}"
+    print(f"  ok: all five pipelines registered ({sorted(expected)})")
+    return None
 
 
 def write_state(workspace, runtime, port, **extra):
@@ -208,50 +218,56 @@ def server_command_local(workspace, port, feature, skardi_source):
     )
 
 
-def start_local_process(workspace, port, feature, skardi_source, health_timeout):
+def start_local_process(workspace, port, feature, skardi_source, health_timeout, report):
     pid_file = workspace / "server.pid"
     log_file = workspace / "server.log"
-    ensure_pid_file_clean(pid_file)
 
-    cmd, cwd = server_command_local(workspace, port, feature, skardi_source)
-    print(f"  command: {' '.join(cmd)}")
-    if cwd:
-        print(f"  cwd:     {cwd}")
-    print(f"  log:     {log_file}")
+    # Launch and health-wait are separate report rows on purpose: launching is
+    # instant, waiting is where the minutes go (a `cargo run` fallback compiles
+    # the server first). One combined row would hide which of the two the user
+    # is actually waiting on.
+    with report.step("Launching skardi-server", "process launch"):
+        ensure_pid_file_clean(pid_file)
+        cmd, cwd = server_command_local(workspace, port, feature, skardi_source)
+        print(f"  command: {' '.join(cmd)}")
+        if cwd:
+            print(f"  cwd:     {cwd}")
+        print(f"  log:     {log_file}")
 
-    log_fh = log_file.open("w")
-    proc = subprocess.Popen(
-        cmd, cwd=cwd, stdout=log_fh, stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL, start_new_session=True,
-    )
-    pid_file.write_text(str(proc.pid))
-    print(f"  pid:     {proc.pid}")
-
-    print(f"  waiting for /health (up to {health_timeout}s) ...")
-    if not wait_for_health("127.0.0.1", port, health_timeout, "local-process server"):
-        try:
-            tail = log_file.read_text().splitlines()[-50:]
-            print("  --- last 50 lines of server.log ---", file=sys.stderr)
-            for line in tail:
-                print(f"    {line}", file=sys.stderr)
-        except Exception:
-            pass
-        die(
-            f"skardi-server did not become healthy within {health_timeout}s. "
-            f"Read {log_file} for full output. Common causes: feature flag "
-            f"mismatch (built without --features {feature}), connection "
-            f"credentials missing from env, or port {port} already in use."
+        log_fh = log_file.open("w")
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, stdout=log_fh, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True,
         )
+        pid_file.write_text(str(proc.pid))
+        print(f"  pid:     {proc.pid}")
+
+    with report.step(f"Waiting for /health (up to {health_timeout}s)",
+                     "server up (/health)"):
+        if not wait_for_health("127.0.0.1", port, health_timeout, "local-process server"):
+            try:
+                tail = log_file.read_text().splitlines()[-50:]
+                print("  --- last 50 lines of server.log ---", file=sys.stderr)
+                for line in tail:
+                    print(f"    {line}", file=sys.stderr)
+            except Exception:
+                pass
+            die(
+                f"skardi-server did not become healthy within {health_timeout}s. "
+                f"Read {log_file} for full output. Common causes: feature flag "
+                f"mismatch (built without --features {feature}), connection "
+                f"credentials missing from env, or port {port} already in use."
+            )
     return ("127.0.0.1", port, log_file)
 
 
 # -- Docker runtime ---------------------------------------------------------
 
-def start_docker(workspace, port, breadcrumb, image, container_name, health_timeout):
-    """Run the official skardi-server-rag image (chunk + embedding bundled)
-    with the workspace mounted at the same absolute path so the rendered
-    candle/gguf model paths in the pipelines resolve unchanged. Postgres
-    credentials and any embedding API keys are forwarded as env vars."""
+def docker_command(workspace, port, breadcrumb, image, container_name):
+    """Build the `docker run` argv, validating what has to hold first.
+
+    Split out of start_docker so the report can time the container start and
+    the /health wait as separate rows; this part is pure preparation."""
     if shutil.which("docker") is None:
         die("docker not found on PATH. Install Docker Desktop / engine and retry.")
 
@@ -340,45 +356,62 @@ def start_docker(workspace, port, breadcrumb, image, container_name, health_time
         "--port", str(port),
     ]
 
-    print(f"  image:     {image}")
-    print(f"  container: {container_name}")
-    print(f"  command:   docker run --rm -d --name {container_name} ... {image} ...")
-    proc = subprocess.run(docker_cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        print(proc.stdout, file=sys.stderr)
-        print(proc.stderr, file=sys.stderr)
-        die("docker run failed; see stderr above.")
-    container_id = proc.stdout.strip()
-    print(f"  container id: {container_id[:12]}")
+    return docker_cmd, log_file
 
-    # Stream logs to <workspace>/server.log in the background so they're
-    # there when the user wants to debug a failed health check.
-    with log_file.open("w") as fh:
-        subprocess.Popen(
-            ["docker", "logs", "-f", container_name],
-            stdout=fh, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, start_new_session=True,
-        )
 
-    print(f"  waiting for /health (up to {health_timeout}s) ...")
-    if not wait_for_health("127.0.0.1", port, health_timeout, "docker container"):
-        try:
-            tail = log_file.read_text().splitlines()[-50:]
-            print("  --- last 50 lines of server.log ---", file=sys.stderr)
-            for line in tail:
-                print(f"    {line}", file=sys.stderr)
-        except Exception:
-            pass
-        # Don't auto-stop the container on failure — the user may want to
-        # `docker logs` it themselves. stop_server.py knows how to clean up.
-        die(
-            f"skardi-server (docker) did not become healthy within "
-            f"{health_timeout}s. Read {log_file} or `docker logs "
-            f"{container_name}`. Common causes: PG host unreachable from "
-            f"the container (use host.docker.internal instead of localhost "
-            f"in the connection string when PG runs on the host), missing "
-            f"PG_USER/PG_PASSWORD, or port {port} already bound on the host."
-        )
+def start_docker(workspace, port, breadcrumb, image, container_name,
+                 health_timeout, report):
+    """Run the official skardi-server-rag image (chunk + embedding bundled)
+    with the workspace mounted at the same absolute path so the rendered
+    candle/gguf model paths in the pipelines resolve unchanged. Postgres
+    credentials and any embedding API keys are forwarded as env vars."""
+    with report.step("Starting the container", "container start"):
+        docker_cmd, log_file = docker_command(
+            workspace, port, breadcrumb, image, container_name)
+        print(f"  image:     {image}")
+        print(f"  container: {container_name}")
+        print(f"  command:   docker run --rm -d --name {container_name} ... {image} ...")
+        proc = subprocess.run(docker_cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            print(proc.stdout, file=sys.stderr)
+            print(proc.stderr, file=sys.stderr)
+            die("docker run failed; see stderr above.")
+        container_id = proc.stdout.strip()
+        print(f"  container id: {container_id[:12]}")
+
+        # Stream logs to <workspace>/server.log in the background so they're
+        # there when the user wants to debug a failed health check.
+        with log_file.open("w") as fh:
+            subprocess.Popen(
+                ["docker", "logs", "-f", container_name],
+                stdout=fh, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, start_new_session=True,
+            )
+
+    # Note this row absorbs the image pull on a cold host: `docker run` returns
+    # once the container is created, but a first-time pull of skardi-server-rag
+    # happens inside that call, so a slow "container start" row usually means
+    # the network, not the server.
+    with report.step(f"Waiting for /health (up to {health_timeout}s)",
+                     "server up (/health)"):
+        if not wait_for_health("127.0.0.1", port, health_timeout, "docker container"):
+            try:
+                tail = log_file.read_text().splitlines()[-50:]
+                print("  --- last 50 lines of server.log ---", file=sys.stderr)
+                for line in tail:
+                    print(f"    {line}", file=sys.stderr)
+            except Exception:
+                pass
+            # Don't auto-stop the container on failure — the user may want to
+            # `docker logs` it themselves. stop_server.py knows how to clean up.
+            die(
+                f"skardi-server (docker) did not become healthy within "
+                f"{health_timeout}s. Read {log_file} or `docker logs "
+                f"{container_name}`. Common causes: PG host unreachable from "
+                f"the container (use host.docker.internal instead of localhost "
+                f"in the connection string when PG runs on the host), missing "
+                f"PG_USER/PG_PASSWORD, or port {port} already bound on the host."
+            )
     return ("127.0.0.1", port, log_file, container_id, container_name)
 
 
@@ -699,22 +732,38 @@ def main():
 
     args = ap.parse_args()
 
-    workspace = Path(args.workspace).expanduser().resolve()
-    if not (workspace / "ctx.yaml").is_file():
-        die(f"{workspace}/ctx.yaml not found. Run setup_context.py first.")
+    # Step report, same table as setup_context.py. Server start is the other
+    # half of "did this work and where did the time go" — before this, the
+    # /health wait (the step people actually sit through, and the one that
+    # swallows a `cargo run` compile) had no row anywhere.
+    #
+    # local-process / docker: launch, /health, /pipelines. kubernetes gets a
+    # single row on purpose — that runtime has never been run, so inventing
+    # per-phase rows for it would be guesswork dressed as measurement.
+    n_planned = 1 if args.runtime == "kubernetes" else 3
+    report = Report(n_planned, "Server start")
 
-    breadcrumb = read_breadcrumb(workspace)
-    udf = breadcrumb.get("udf")
-    feature = feature_for_udf(udf)
-    if not feature:
-        die(f"Unrecognised embedding UDF in breadcrumb: {udf!r}")
+    with report.guard("workspace pre-flight"):
+        workspace = Path(args.workspace).expanduser().resolve()
+        if not (workspace / "ctx.yaml").is_file():
+            die(f"{workspace}/ctx.yaml not found. Run setup_context.py first.")
+
+        breadcrumb = read_breadcrumb(workspace)
+        udf = breadcrumb.get("udf")
+        feature = feature_for_udf(udf)
+        if not feature:
+            die(f"Unrecognised embedding UDF in breadcrumb: {udf!r}")
 
     if args.runtime == "local-process":
         host, port, log_file = start_local_process(
             workspace, args.port, feature, args.skardi_source, args.health_timeout,
+            report,
         )
         write_state(workspace, "local-process", port)
-        report_pipelines(host, port, log_file)
+        with report.step("Checking /pipelines", "pipelines registered") as r:
+            note = report_pipelines(host, port, log_file)
+            if note:
+                r.warn(note)
         url = f"http://localhost:{port}"
 
     elif args.runtime == "docker":
@@ -728,19 +777,26 @@ def main():
             cname = f"skardi-rag-{wh}"
         host, port, log_file, container_id, container_name = start_docker(
             workspace, args.port, breadcrumb, args.docker_image, cname, args.health_timeout,
+            report,
         )
         write_state(workspace, "docker", port,
                     container_id=container_id, container_name=container_name)
-        report_pipelines(host, port, log_file)
+        with report.step("Checking /pipelines", "pipelines registered") as r:
+            note = report_pipelines(host, port, log_file)
+            if note:
+                r.warn(note)
         url = f"http://localhost:{port}"
 
     else:  # kubernetes
         local_port = args.k8s_local_port or args.port
-        result = start_kubernetes(
-            workspace, args.port, breadcrumb, args.docker_image,
-            args.k8s_namespace, args.k8s_release, local_port,
-            args.apply, args.port_forward, args.health_timeout,
-        )
+        with report.step(f"Running the kubernetes runtime "
+                         f"(apply={args.apply}, port-forward={args.port_forward})",
+                         "kubernetes runtime"):
+            result = start_kubernetes(
+                workspace, args.port, breadcrumb, args.docker_image,
+                args.k8s_namespace, args.k8s_release, local_port,
+                args.apply, args.port_forward, args.health_timeout,
+            )
         if not args.apply:
             # Manifests-only run: state is purely "what we'd deploy".
             write_state(workspace, "kubernetes", args.port,
@@ -748,6 +804,7 @@ def main():
                         namespace=args.k8s_namespace,
                         release_name=args.k8s_release,
                         applied=False)
+            report.finish()
             return
         if not args.port_forward:
             host, port = "(in-cluster only)", args.port
@@ -762,9 +819,13 @@ def main():
             write_state(workspace, "kubernetes", port,
                         namespace=namespace, release_name=release_name,
                         applied=True, port_forwarded=True)
+            # Printed, not a report row: the k8s runtime is one row by design
+            # (see the comment where the Report is built), so adding a second
+            # one here would make the denominator wrong.
             report_pipelines(host, port, log_file)
             url = f"http://localhost:{port}"
 
+    report.finish()
     print()
     print("=" * 72)
     print(f"skardi-server is healthy via {args.runtime}: {url}")

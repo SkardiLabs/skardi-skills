@@ -44,6 +44,7 @@ import sys
 from pathlib import Path
 
 from _platform import require_supported_platform
+from _report import Report
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 ASSETS = SKILL_DIR / "assets"
@@ -195,6 +196,12 @@ END;
 def check_skardi():
     """Verify the skardi CLI exists AND is >= 0.4.0.
 
+    Returns None when the version was confirmed, or a short note when it ran
+    but could not be verified — the caller turns that into a WARN row rather
+    than a clean OK. Ported from PR #21: an unparsed version is exactly the
+    case that sails through setup and then dies at ingest with "Invalid
+    function 'chunk'", so the report must not claim it passed.
+
     The CLI is used here only for the SELECT 1 health probe, but the
     server (skardi-server-rag) must also be >= 0.4.0 — we use the CLI
     version as a proxy because most users build / install both binaries
@@ -209,6 +216,16 @@ def check_skardi():
             "--branch main skardi-cli --features candle`."
         )
     out = subprocess.run(["skardi", "--version"], capture_output=True, text=True)
+    if out.returncode != 0:
+        # On PATH but `--version` itself errors → the binary is broken, not
+        # just unparseable. Hard FAIL (the CLI is unusable), not a WARN.
+        die(
+            f"`skardi --version` exited {out.returncode} — the binary is on PATH "
+            f"but not runnable, so the install looks broken. Reinstall with "
+            f"`cargo install --locked --git https://github.com/SkardiLabs/skardi "
+            f"--branch main skardi-cli --features candle`.\n"
+            f"  stderr: {(out.stderr or '').strip()[:300]}"
+        )
     raw = (out.stdout or out.stderr).strip()
     print(f"  found: {raw or 'skardi (version unknown)'}")
     m = re.search(r"(\d+)\.(\d+)\.(\d+)", raw)
@@ -218,7 +235,7 @@ def check_skardi():
             "for the chunk() UDF and the kind: semantics overlay.",
             file=sys.stderr,
         )
-        return
+        return "version unverified — needs >= 0.4.0 for chunk()"
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
     if (major, minor) < (MIN_SKARDI_MAJOR, MIN_SKARDI_MINOR):
         die(
@@ -450,93 +467,135 @@ def main():
     ap.add_argument(
         "--skip-health-check",
         action="store_true",
-        help=argparse.SUPPRESS,  # accepted but ignored; see the note above
+        # Accepted but ignored. This refers to the REMOVED CLI connectivity
+        # probe (see the module docstring), not to the step report printed at
+        # the end of a run — there is no flag to turn that off, and it costs
+        # nothing to print.
+        help=argparse.SUPPRESS,
     )
     args = ap.parse_args()
 
-    workspace = Path(args.workspace).expanduser().resolve()
-    workspace.mkdir(parents=True, exist_ok=True)
+    # Step report (ported from PR #21). Built before any work happens so that
+    # every exit path prints the table — a bare ERROR tells the user what broke
+    # but not which step they got to or how long the run had already taken.
+    # The denominator is per-backend: sqlite does two things postgres does not
+    # (resolve the extension, create the schema), and an honest 3/3 beats a
+    # padded 3/5.
+    report = Report(5 if args.backend == "sqlite" else 3, "Setup")
 
-    # Backend-specific argument handling. sqlite is the zero-question default:
-    # this skill creates and owns the .db, so the user supplies only a corpus
-    # and nothing about storage. postgres means the user already runs the
-    # database and created the table, so both must be named explicitly — we
-    # never invent a connection string or run DDL against someone's database.
-    if args.backend == "sqlite":
-        db_path = workspace / "kb.db"
-        table = "documents"
-        sqlite_vec_path = resolve_sqlite_vec()
-        print(f"  sqlite_vec loadable at {sqlite_vec_path}")
-        for flag, value in (("--connection-string", args.connection_string),
-                            ("--table", args.table)):
-            if value:
-                print(f"  note: {flag} is ignored for --backend sqlite")
-    else:
-        missing = [f for f, v in (("--connection-string", args.connection_string),
-                                  ("--table", args.table)) if not v]
-        if missing:
-            die(
-                f"--backend {args.backend} requires {' and '.join(missing)}. "
-                "These name objects the user already created; this skill does "
-                "not create schema in a database you own."
-            )
-        db_path = None
-        table = args.table
+    with report.guard("workspace pre-flight"):
+        workspace = Path(args.workspace).expanduser().resolve()
+        try:
+            workspace.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            # A raw filesystem error (permission denied, path is a file) should
+            # read as an ERROR with a cause, not a bare traceback.
+            die(f"could not create workspace {workspace}: {e}")
 
-    print(f"[1/4] Checking skardi CLI ...")
-    check_skardi()
+        # Backend-specific argument handling. sqlite is the zero-question
+        # default: this skill creates and owns the .db, so the user supplies
+        # only a corpus and nothing about storage. postgres means the user
+        # already runs the database and created the table, so both must be
+        # named explicitly — we never invent a connection string or run DDL
+        # against someone's database.
+        if args.backend == "sqlite":
+            db_path = workspace / "kb.db"
+            table = "documents"
+            # Refuse an existing .db HERE, not at the create step (ported from
+            # PR #21). A re-run that is going to be refused should be refused
+            # before it costs the user a model download, and before the render
+            # step rewrites ctx.yaml / .embedding.txt with a dim that may not
+            # match the schema already in the file. create_sqlite_db repeats
+            # the check as a safety net.
+            if db_path.exists() and not args.force:
+                die(
+                    f"{db_path} already exists. Re-run with --force to recreate "
+                    f"(this drops every ingested row and re-applies the schema). "
+                    f"Nothing was changed."
+                )
+            for flag, value in (("--connection-string", args.connection_string),
+                                ("--table", args.table)):
+                if value:
+                    print(f"  note: {flag} is ignored for --backend sqlite")
+        else:
+            missing = [f for f, v in (("--connection-string", args.connection_string),
+                                      ("--table", args.table)) if not v]
+            if missing:
+                die(
+                    f"--backend {args.backend} requires {' and '.join(missing)}. "
+                    "These name objects the user already created; this skill does "
+                    "not create schema in a database you own."
+                )
+            db_path = None
+            table = args.table
 
-    print(f"[2/4] Resolving embedding UDF + model ...")
-    if args.embedding_udf == "candle":
-        model_path = resolve_candle_model(args.model_path, workspace)
-    elif args.embedding_udf == "gguf":
-        model_path = resolve_gguf_model(args.model_path)
-    else:
-        model_path = ""  # remote_embed has no local model
-        print(f"  remote_embed args: {args.embedding_args!r}")
-    embed_calls = build_embedding_calls(args.embedding_udf, args.embedding_args, model_path)
-
-    print(f"[3/4] Rendering {args.backend} templates into {workspace} ...")
-    subs = {
-        "{{CONNECTION_STRING}}":             args.connection_string or "",
-        "{{TABLE}}":                         table,
-        "{{SCHEMA}}":                        args.schema,
-        "{{DB_PATH}}":                       str(db_path) if db_path else "",
-        "{{CHUNK_MODE}}":                    args.chunk_mode,
-        "{{EMBED_CALL_OVER_CONTENT}}":       embed_calls["content"],
-        "{{EMBED_CALL_OVER_CHUNK_TEXT}}":    embed_calls["chunk_text"],
-        "{{EMBED_CALL_OVER_QUERY}}":         embed_calls["query"],
-    }
-    render_templates(args.backend, workspace, subs)
-    # Breadcrumb read back by ingest_corpus.py. chunk_mode is recorded here so
-    # a mode chosen at setup actually takes effect at bulk ingest instead of
-    # silently reverting to the default — see ingest_corpus.py.
-    (workspace / ".embedding.txt").write_text(
-        f"udf={args.embedding_udf}\n"
-        f"model_path={model_path}\n"
-        f"embedding_args={args.embedding_args or ''}\n"
-        f"dim={args.embedding_dim}\n"
-        f"backend={args.backend}\n"
-        f"table={table}\n"
-        f"schema={args.schema}\n"
-        f"db_path={db_path or ''}\n"
-        f"chunk_mode={args.chunk_mode}\n"
-    )
-    print(f"  wrote ctx.yaml, semantics.yaml, pipelines/{{ingest,ingest_chunked,search_vector,search_fulltext,search_hybrid}}.yaml")
+    with report.step("Checking skardi CLI", "skardi CLI (>=0.4.0)") as r:
+        note = check_skardi()
+        if note:
+            r.warn(note)
 
     if args.backend == "sqlite":
-        print(f"[4/4] Creating the local knowledge-base schema ...")
-        create_sqlite_db(db_path, args.embedding_dim, sqlite_vec_path,
-                         force=args.force)
+        with report.step("Resolving sqlite-vec", "sqlite-vec extension"):
+            sqlite_vec_path = resolve_sqlite_vec()
+            print(f"  sqlite_vec loadable at {sqlite_vec_path}")
+
+    with report.step("Resolving embedding UDF + model", "embedding model"):
+        if args.embedding_udf == "candle":
+            model_path = resolve_candle_model(args.model_path, workspace)
+        elif args.embedding_udf == "gguf":
+            model_path = resolve_gguf_model(args.model_path)
+        else:
+            model_path = ""  # remote_embed has no local model
+            print(f"  remote_embed args: {args.embedding_args!r}")
+        embed_calls = build_embedding_calls(args.embedding_udf, args.embedding_args, model_path)
+
+    with report.step(f"Rendering {args.backend} templates into {workspace}",
+                     "workspace files"):
+        subs = {
+            "{{CONNECTION_STRING}}":             args.connection_string or "",
+            "{{TABLE}}":                         table,
+            "{{SCHEMA}}":                        args.schema,
+            "{{DB_PATH}}":                       str(db_path) if db_path else "",
+            "{{CHUNK_MODE}}":                    args.chunk_mode,
+            "{{EMBED_CALL_OVER_CONTENT}}":       embed_calls["content"],
+            "{{EMBED_CALL_OVER_CHUNK_TEXT}}":    embed_calls["chunk_text"],
+            "{{EMBED_CALL_OVER_QUERY}}":         embed_calls["query"],
+        }
+        render_templates(args.backend, workspace, subs)
+        # Breadcrumb read back by ingest_corpus.py. chunk_mode is recorded here
+        # so a mode chosen at setup actually takes effect at bulk ingest instead
+        # of silently reverting to the default — see ingest_corpus.py.
+        (workspace / ".embedding.txt").write_text(
+            f"udf={args.embedding_udf}\n"
+            f"model_path={model_path}\n"
+            f"embedding_args={args.embedding_args or ''}\n"
+            f"dim={args.embedding_dim}\n"
+            f"backend={args.backend}\n"
+            f"table={table}\n"
+            f"schema={args.schema}\n"
+            f"db_path={db_path or ''}\n"
+            f"chunk_mode={args.chunk_mode}\n"
+        )
+        print(f"  wrote ctx.yaml, semantics.yaml, pipelines/{{ingest,ingest_chunked,search_vector,search_fulltext,search_hybrid}}.yaml")
+
+    if args.backend == "sqlite":
+        with report.step("Creating the local knowledge-base schema",
+                         "kb.db + ext-load"):
+            create_sqlite_db(db_path, args.embedding_dim, sqlite_vec_path,
+                             force=args.force)
         print(f"  export SQLITE_VEC_PATH={sqlite_vec_path}")
         print("  (the server loads sqlite-vec from that path; start_server.py "
               "checks it)")
     else:
-        print(f"[4/4] Connectivity check ...")
-        print("  deferred to server startup — the CLI can no longer reach a")
-        print("  datastore on its own, so skardi-server loading ctx.yaml IS")
-        print("  the check. start_server.py reports which source failed.")
+        # Deliberately NOT a step row: nothing is checked here. Claiming a
+        # passed "connectivity check" the CLI cannot perform is the kind of
+        # over-promise this report exists to avoid.
+        print("  note: connectivity is not checked at setup — the CLI can no")
+        print("  longer reach a datastore on its own, so skardi-server loading")
+        print("  ctx.yaml IS the check. start_server.py names the source that")
+        print("  failed.")
 
+    report.finish()
     print()
     print("=" * 72)
     print("Workspace ready. Next steps:")
