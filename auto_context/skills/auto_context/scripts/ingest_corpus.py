@@ -81,6 +81,17 @@ def strip_front_matter(text):
     return FRONT_MATTER_RE.sub("", text, count=1)
 
 
+def content_hash(text):
+    """Stable SHA-256 of the (front-matter-stripped) file body.
+
+    Recorded in the progress manifest so a re-run can tell an unchanged file
+    (skip) from one whose content changed since it was ingested (surface it —
+    see main()). Without this the manifest only knew ok/err, so an edited file
+    that was previously ok was skipped forever and the corpus silently drifted
+    out of sync with the source it came from."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def iter_files(corpus_root, patterns):
     pats = [p.strip() for p in patterns.split(",") if p.strip()]
     seen = set()
@@ -113,13 +124,26 @@ def _ensure_localhost_no_proxy(host: str) -> None:
 
 
 def load_progress(path):
+    """Return {source: {"status": str, "hash": str|None}}.
+
+    Back-compat: older manifests stored a bare string per source ("ok" /
+    "err: ...") with no content hash. Normalise those to the dict shape with
+    hash=None (unknown), so a file ingested by an older version is treated as
+    ok-but-unhashed until it is next hashed on this run."""
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text())
+        raw = json.loads(path.read_text())
     except json.JSONDecodeError:
         path.rename(path.with_suffix(".json.bak"))
         return {}
+    normalised = {}
+    for source, val in raw.items():
+        if isinstance(val, str):
+            normalised[source] = {"status": val, "hash": None}
+        elif isinstance(val, dict):
+            normalised[source] = {"status": val.get("status", ""), "hash": val.get("hash")}
+    return normalised
 
 
 def save_progress(path, progress):
@@ -300,7 +324,7 @@ def main():
             skipped["too large for one request"].append(
                 f"{rel} ({len(body) / 1024 / 1024:.1f} MB serialised)")
             continue
-        work.append({"source": rel, "body": body})
+        work.append({"source": rel, "body": body, "hash": content_hash(text)})
     if args.limit > 0:
         work = work[: args.limit]
 
@@ -327,10 +351,61 @@ def main():
             f"({present} file(s) are present). Fix the patterns or the path."
         )
 
-    pending = [w for w in work if w["source"] not in progress or progress[w["source"]] != "ok"]
+    # Split the work list into what to ingest now vs. what changed since it was
+    # last ingested. A file is pending when it was never ingested or its last
+    # attempt errored. A file whose stored hash differs from its current content
+    # is CHANGED — we do NOT auto-ingest it, because its rows still exist under
+    # stable ids and a re-POST would collide on the primary key; re-ingesting
+    # means deleting the old rows first, which is the user's call (see the
+    # warning below). Files ingested by an older version have hash=None; we
+    # backfill the hash in place so future edits are detectable, but treat them
+    # as ok for this run because we cannot know whether they changed.
+    pending = []
+    changed = []
+    backfilled = 0
+    for w in work:
+        entry = progress.get(w["source"])
+        if entry is None or entry.get("status") != "ok":
+            pending.append(w)
+            continue
+        stored_hash = entry.get("hash")
+        if stored_hash is None:
+            progress[w["source"]]["hash"] = w["hash"]  # backfill, don't re-ingest
+            backfilled += 1
+        elif stored_hash != w["hash"]:
+            changed.append(w["source"])
+
+    if backfilled:
+        # Persist the backfill NOW, not only on the ingest path. A run with
+        # nothing to ingest returns early, and without this the upgraded
+        # hashes were dropped — so a manifest written by an older version
+        # stayed hash-less forever and edits to those files could never be
+        # detected, which is the whole point of recording the hash.
+        save_progress(progress_path, progress)
+        print(f"  backfilled content hashes for {backfilled} file(s) from an "
+              f"older manifest (not re-ingested — their content is unknown to "
+              f"this version, so edits made before now cannot be detected)")
+
+    if changed:
+        save_progress(progress_path, progress)
+        head = "\n    ".join(changed[:10])
+        more = f"\n    (+{len(changed) - 10} more)" if len(changed) > 10 else ""
+        print(
+            f"\n  WARNING: {len(changed)} file(s) changed since they were ingested:\n"
+            f"    {head}{more}\n"
+            f"  These are NOT re-ingested automatically: their chunks still exist\n"
+            f"  under stable ids, so a re-POST would fail on the primary key. To\n"
+            f"  refresh them, delete their existing rows and drop their manifest\n"
+            f"  entries, then re-run this script. For each changed <source>:\n"
+            f"    DELETE FROM <table> WHERE source = '<source>';\n"
+            f"  (or DELETE the whole set in one WHERE source IN (...)), then remove\n"
+            f"  those keys from {progress_path}.\n"
+        )
+
     total_skipped = sum(len(v) for v in skipped.values())
     print(f"  matched: {matched}  ingestable: {len(work)}  skipped: {total_skipped}  "
-          f"already ok: {len(work) - len(pending)}  to ingest: {len(pending)}")
+          f"already ok: {len(work) - len(pending) - len(changed)}  "
+          f"changed (see warning): {len(changed)}  to ingest: {len(pending)}")
 
     if not work:
         # Files matched but none survived. Distinct from "already ingested":
@@ -351,10 +426,10 @@ def main():
     def _record(item, success, err):
         nonlocal ok, last_save
         if success:
-            progress[item["source"]] = "ok"
+            progress[item["source"]] = {"status": "ok", "hash": item["hash"]}
             ok += 1
         else:
-            progress[item["source"]] = f"err: {err}"
+            progress[item["source"]] = {"status": f"err: {err}", "hash": None}
             failed.append((item["source"], err))
         if time.time() - last_save > 2.0:
             save_progress(progress_path, progress)

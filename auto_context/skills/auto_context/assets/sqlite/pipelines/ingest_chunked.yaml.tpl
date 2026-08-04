@@ -12,8 +12,23 @@ metadata:
 
     Synthesised chunk ids: `id = doc_id * 1000 + chunk_idx` (0-based), so callers
     must pick `doc_id` values whose chunks won't collide (chunks-per-doc < 1000 in
-    practice). ROW_NUMBER drives the chunk_idx and matches text-splitter's emission
-    order. Source is recorded verbatim for citation.
+    practice). `chunk_idx` is derived from an explicit positional index (see below),
+    NOT from row order, so the same document always yields the same
+    (chunk_idx, content) pairs and the same ids on every run. Source is recorded
+    verbatim for citation.
+
+    Determinism note: chunk() returns an ORDERED List<Utf8>. We enumerate it with
+    generate_series(0 .. array_length-1) and unnest that index list in the SAME
+    projection as UNNEST(chunks); DataFusion zips two unnests in a projection
+    positionally, so index i is paired with chunk i by construction. The earlier
+    `ROW_NUMBER() OVER (ORDER BY 1)` form was non-deterministic: `ORDER BY 1`
+    orders by the constant literal 1, making every row a peer, so DataFusion was
+    free to number chunks in any order — the same chunk could get a different
+    chunk_idx (and therefore a different id) on each run. This template had it
+    twice, once for `id` and once for `chunk_idx`, so the two could in principle
+    disagree and break the `id = doc_id * 1000 + chunk_idx` invariant; both now
+    come from the one index. DataFusion 52 rejects `UNNEST ... WITH ORDINALITY`
+    (`not_impl`), which is why the index is generated explicitly.
 
     Wrapped as `SELECT ... FROM (...) AS t` rather than a bare INSERT-from-SELECT
     because DataFusion's INSERT planner otherwise validates row width against the
@@ -38,12 +53,17 @@ spec:
            vec_to_binary({{EMBED_CALL_OVER_CONTENT}})
     FROM (
       SELECT
-        CAST({doc_id} AS BIGINT) * 1000
-          + (ROW_NUMBER() OVER (ORDER BY 1) - 1)              AS id,
+        CAST({doc_id} AS BIGINT) * 1000 + chunk_idx            AS id,
         {source}                                              AS source,
-        CAST(ROW_NUMBER() OVER (ORDER BY 1) - 1 AS BIGINT)    AS chunk_idx,
+        chunk_idx,
         chunk_text                                            AS content
       FROM (
-        SELECT UNNEST(chunk('{{CHUNK_MODE}}', {content}, {chunk_size}, {overlap})) AS chunk_text
-      ) c
+        SELECT
+          UNNEST(generate_series(CAST(0 AS BIGINT),
+                                 CAST(array_length(chunks) AS BIGINT) - 1)) AS chunk_idx,
+          UNNEST(chunks)                                                    AS chunk_text
+        FROM (
+          SELECT chunk('{{CHUNK_MODE}}', {content}, {chunk_size}, {overlap}) AS chunks
+        ) c
+      ) r
     ) AS t

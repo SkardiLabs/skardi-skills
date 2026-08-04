@@ -19,4 +19,5 @@ spec:
         (SELECT {{EMBED_CALL_OVER_QUERY}}),
         {limit}) v
     LEFT JOIN kb.main.documents d ON d.id = v.id
-    ORDER BY v._score
+    -- id breaks score ties so equal-distance rows keep a stable order across runs
+    ORDER BY v._score, v.id

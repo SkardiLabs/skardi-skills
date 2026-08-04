@@ -17,4 +17,5 @@ spec:
     SELECT f.id, d.source, d.chunk_idx, f.content, f._score AS score
     FROM sqlite_fts('kb.main.documents_fts', 'content', {query}, {limit}) f
     LEFT JOIN kb.main.documents d ON d.id = f.id
-    ORDER BY f._score DESC
+    -- id breaks score ties so equal-score rows keep a stable order across runs
+    ORDER BY f._score DESC, f.id

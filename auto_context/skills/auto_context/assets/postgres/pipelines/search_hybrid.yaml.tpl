@@ -27,14 +27,18 @@ spec:
       COALESCE({vector_weight} / (60.0 + v.rk), 0)
         + COALESCE({text_weight}   / (60.0 + t.rk), 0) AS rrf_score
     FROM (
-      SELECT id, ROW_NUMBER() OVER (ORDER BY _score ASC) AS rk
+      -- id as a secondary sort key makes rank assignment deterministic when
+      -- two rows share a _score; without it, tied rows get arbitrary ranks
+      -- and the fused rrf_score (hence the result order) shifts run to run.
+      SELECT id, ROW_NUMBER() OVER (ORDER BY _score ASC, id ASC) AS rk
       FROM pg_knn('{{TABLE}}', 'embedding',
                   {{EMBED_CALL_OVER_QUERY}}, '<=>', 80)
     ) v
     FULL OUTER JOIN (
-      SELECT id, ROW_NUMBER() OVER (ORDER BY _score DESC) AS rk
+      SELECT id, ROW_NUMBER() OVER (ORDER BY _score DESC, id ASC) AS rk
       FROM pg_fts('{{TABLE}}', 'content', {text_query}, 60)
     ) t ON v.id = t.id
     LEFT JOIN {{TABLE}} d ON d.id = COALESCE(v.id, t.id)
-    ORDER BY rrf_score DESC
+    -- id breaks rrf_score ties for a stable final order
+    ORDER BY rrf_score DESC, id ASC
     LIMIT {limit}

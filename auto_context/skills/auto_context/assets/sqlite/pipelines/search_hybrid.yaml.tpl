@@ -18,13 +18,16 @@ metadata:
 spec:
   query: |
     WITH vec AS (
-      SELECT id, ROW_NUMBER() OVER (ORDER BY _score ASC) AS rk
+      -- id as a secondary sort key makes rank assignment deterministic when
+      -- two rows share a _score; without it, tied rows get arbitrary ranks
+      -- and the fused rrf_score (hence the result order) shifts run to run.
+      SELECT id, ROW_NUMBER() OVER (ORDER BY _score ASC, id ASC) AS rk
       FROM sqlite_knn('kb.main.documents_vec', 'embedding',
           (SELECT {{EMBED_CALL_OVER_QUERY}}),
           80)
     ),
     fts AS (
-      SELECT id, content, ROW_NUMBER() OVER (ORDER BY _score DESC) AS rk
+      SELECT id, content, ROW_NUMBER() OVER (ORDER BY _score DESC, id ASC) AS rk
       FROM sqlite_fts('kb.main.documents_fts', 'content', {text_query}, 60)
     )
     SELECT
@@ -37,5 +40,6 @@ spec:
     FROM vec v
     FULL OUTER JOIN fts f ON v.id = f.id
     LEFT JOIN kb.main.documents d ON d.id = COALESCE(v.id, f.id)
-    ORDER BY rrf_score DESC
+    -- id breaks rrf_score ties for a stable final order
+    ORDER BY rrf_score DESC, id ASC
     LIMIT {limit}

@@ -17,4 +17,5 @@ spec:
     SELECT f.id, d.source, d.chunk_idx, d.content, f._score
     FROM pg_fts('{{TABLE}}', 'content', {query}, {limit}) f
     JOIN {{TABLE}} d ON d.id = f.id
-    ORDER BY f._score DESC
+    -- id breaks ts_rank ties so equal-score rows keep a stable order across runs
+    ORDER BY f._score DESC, f.id
