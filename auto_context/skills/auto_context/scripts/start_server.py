@@ -34,6 +34,7 @@ import http.client
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -141,7 +142,46 @@ def warn_if_legacy_workspace(workspace, breadcrumb, backend):
     print("        See SKILL.md § Upgrading from auto-knowledge-base / auto-rag.")
 
 
-def wait_for_health(host, port, timeout_s, kind="server"):
+def port_is_taken(host, port, timeout=0.5):
+    """True when something already accepts connections on (host, port).
+
+    Pre-flight for the "somebody else already owns this port" case, which
+    /health cannot detect on its own — see wait_for_health.
+
+    Connect-test rather than bind-test on purpose. A bind test has to pick
+    between two wrong answers on macOS: without SO_REUSEADDR it calls a port
+    still in TIME_WAIT "taken" (a false alarm right after stop_server.py),
+    and with SO_REUSEADDR, BSD semantics happily let 127.0.0.1:P bind while
+    another socket listens on 0.0.0.0:P — which is exactly the case we need
+    to catch, since skardi-server binds 0.0.0.0 and docker publishes there
+    too. A successful connect has neither failure mode.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def refuse_taken_port(host, port, how_to_stop):
+    """Die with an actionable message when `port` is already serving."""
+    if not port_is_taken(host, port):
+        return
+    die(
+        f"{host}:{port} is already accepting connections, so we are not "
+        f"starting anything on it. /health there would answer from whatever "
+        f"is already listening, and this script would report a healthy "
+        f"server that in fact never started.\n"
+        f"  Find the owner with: lsof -nP -iTCP:{port} -sTCP:LISTEN\n"
+        f"  * If it is a skardi-server this skill started for a different "
+        f"workspace, stop it with:\n"
+        f"      {how_to_stop}\n"
+        f"  * Otherwise stop that process yourself, or re-run with a free "
+        f"--port."
+    )
+
+
+def wait_for_health(host, port, timeout_s, kind="server", is_alive=None):
     """Poll /health every 1 s until 200 or timeout. Returns True on success.
 
     Every transport-level failure here means "not ready yet", so the retry
@@ -157,14 +197,43 @@ def wait_for_health(host, port, timeout_s, kind="server"):
 
     OSError covers refused/reset/unreachable; HTTPException covers
     RemoteDisconnected and friends.
+
+    `is_alive`, when passed, is called before every probe and again on a 200.
+    It returns None while the thing we launched is still running, or a short
+    string saying how it died. Without it a 200 only proves that *something*
+    answers on this port, which is not the same as "our server is up".
+    Verified 2026-08-04: with a skardi-server from another workspace already
+    on port 8099, the freshly spawned process died immediately with "Failed
+    to bind to 0.0.0.0:8099: Address already in use", yet /health kept
+    answering 200 from the other server — so this function returned True in
+    10 ms, the step report printed "[ ok ] server up (/health)", server.pid
+    was written with a dead pid, and stop_server.py later said "pid ... is
+    already gone" while the real server carried on. The probe cannot tell
+    the two servers apart; only the child's own exit status can. A dead
+    child also ends the wait immediately instead of sitting out the full
+    timeout for an answer that will never come.
     """
     url = f"http://{host}:{port}/health"
     deadline = time.time() + timeout_s
     last_err = None
     while time.time() < deadline:
+        if is_alive is not None:
+            dead = is_alive()
+            if dead:
+                print(f"  {kind} is gone: {dead}", file=sys.stderr)
+                return False
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
+                    # Re-check before believing it: a 200 that arrived while
+                    # our own process was dying belongs to someone else.
+                    dead = is_alive() if is_alive is not None else None
+                    if dead:
+                        print(f"  /health answered 200 but {kind} is gone: "
+                              f"{dead} — the response came from another "
+                              f"process on port {port}, not from us.",
+                              file=sys.stderr)
+                        return False
                     return True
         except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             last_err = e
@@ -288,6 +357,13 @@ def start_local_process(workspace, port, feature, skardi_source, health_timeout,
     # is actually waiting on.
     with report.step("Launching skardi-server", "process launch"):
         ensure_pid_file_clean(pid_file)
+        # Checked before spawning, not after: this is the one launch failure
+        # whose symptom (/health answering 200) looks identical to success.
+        refuse_taken_port(
+            "127.0.0.1", port,
+            f"python {SKILL_DIR / 'scripts' / 'stop_server.py'} "
+            f"--workspace <the other workspace>",
+        )
         cmd, cwd = server_command_local(workspace, port, feature, skardi_source)
         print(f"  command: {' '.join(cmd)}")
         if cwd:
@@ -302,9 +378,15 @@ def start_local_process(workspace, port, feature, skardi_source, health_timeout,
         pid_file.write_text(str(proc.pid))
         print(f"  pid:     {proc.pid}")
 
+    def exited():
+        """None while our child runs, else how it died. See wait_for_health."""
+        rc = proc.poll()
+        return None if rc is None else f"pid {proc.pid} exited with code {rc}"
+
     with report.step(f"Waiting for /health (up to {health_timeout}s)",
                      "server up (/health)"):
-        if not wait_for_health("127.0.0.1", port, health_timeout, "local-process server"):
+        if not wait_for_health("127.0.0.1", port, health_timeout,
+                               "local-process server", is_alive=exited):
             try:
                 tail = log_file.read_text().splitlines()[-50:]
                 print("  --- last 50 lines of server.log ---", file=sys.stderr)
@@ -312,11 +394,26 @@ def start_local_process(workspace, port, feature, skardi_source, health_timeout,
                     print(f"    {line}", file=sys.stderr)
             except Exception:
                 pass
+            dead = exited()
+            if dead:
+                # Don't leave server.pid pointing at a pid that is already
+                # gone — stop_server.py would report "already gone" as if it
+                # had cleaned something up.
+                pid_file.unlink(missing_ok=True)
+                die(
+                    f"skardi-server exited before it was healthy ({dead}). "
+                    f"Read {log_file} for full output — the last lines above "
+                    f"usually name the cause directly. Common causes: feature "
+                    f"flag mismatch (built without --features {feature}), a "
+                    f"pipeline or ctx.yaml the server refused to load, or "
+                    f"connection credentials missing from env."
+                )
             die(
-                f"skardi-server did not become healthy within {health_timeout}s. "
-                f"Read {log_file} for full output. Common causes: feature flag "
-                f"mismatch (built without --features {feature}), connection "
-                f"credentials missing from env, or port {port} already in use."
+                f"skardi-server did not become healthy within {health_timeout}s "
+                f"(the process is still running). Read {log_file} for full "
+                f"output. Common causes: a slow first `cargo run` compile that "
+                f"needs a longer --health-timeout, or the server wedged while "
+                f"opening its data source."
             )
     return ("127.0.0.1", port, log_file)
 
@@ -394,6 +491,22 @@ def docker_command(workspace, port, breadcrumb, image, container_name):
             "      database you already run."
         )
 
+    # Refuse an occupied host port before `docker run`, but after the checks
+    # above: a sqlite workspace is unsupported here whatever the port does, so
+    # that message has to win. Placed after the `docker rm` too, so our own
+    # previous container is never mistaken for a squatter.
+    #
+    # `docker run -p` does reject an already-allocated port on its own, and
+    # start_docker turns that non-zero exit into a die(). What it cannot catch
+    # is the container that starts and *then* exits, which leaves /health
+    # answering 200 from whoever else holds the port — the same false success
+    # documented in wait_for_health. One check covers both.
+    refuse_taken_port(
+        "127.0.0.1", port,
+        f"python {SKILL_DIR / 'scripts' / 'stop_server.py'} "
+        f"--workspace <the other workspace>",
+    )
+
     # Mount the model dir (candle/gguf) at its host path. remote_embed
     # needs no model files; we just forward whichever provider key the
     # caller exported.
@@ -417,6 +530,32 @@ def docker_command(workspace, port, breadcrumb, image, container_name):
     ]
 
     return docker_cmd, log_file
+
+
+def container_gone(container_name):
+    """None while the container runs, else how it died. See wait_for_health.
+
+    The container is started with --rm, so a crash removes it and `docker
+    inspect` then fails with "No such object" — that is the normal shape of a
+    dead container here, not an error on our side. Any *other* inspect failure
+    (daemon restarting, socket hiccup) is not evidence the container died, so
+    it returns None and lets the health timeout decide.
+    """
+    proc = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}",
+         container_name],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        if "No such object" in (proc.stderr or ""):
+            return (f"container {container_name} no longer exists (it was "
+                    f"started with --rm, so it removed itself when it exited)")
+        return None
+    parts = proc.stdout.split()
+    if parts and parts[0] == "true":
+        return None
+    code = parts[1] if len(parts) > 1 else "?"
+    return f"container {container_name} exited with code {code}"
 
 
 def start_docker(workspace, port, breadcrumb, image, container_name,
@@ -454,7 +593,9 @@ def start_docker(workspace, port, breadcrumb, image, container_name,
     # the network, not the server.
     with report.step(f"Waiting for /health (up to {health_timeout}s)",
                      "server up (/health)"):
-        if not wait_for_health("127.0.0.1", port, health_timeout, "docker container"):
+        if not wait_for_health("127.0.0.1", port, health_timeout,
+                               "docker container",
+                               is_alive=lambda: container_gone(container_name)):
             try:
                 tail = log_file.read_text().splitlines()[-50:]
                 print("  --- last 50 lines of server.log ---", file=sys.stderr)
@@ -464,13 +605,25 @@ def start_docker(workspace, port, breadcrumb, image, container_name,
                 pass
             # Don't auto-stop the container on failure — the user may want to
             # `docker logs` it themselves. stop_server.py knows how to clean up.
+            gone = container_gone(container_name)
+            if gone:
+                die(
+                    f"skardi-server (docker) exited before it was healthy "
+                    f"({gone}). The last lines above are what it logged. "
+                    f"Common causes: PG host unreachable from the container "
+                    f"(use host.docker.internal instead of localhost in the "
+                    f"connection string when PG runs on the host), missing "
+                    f"PG_USER/PG_PASSWORD, or a pipeline the server refused "
+                    f"to load."
+                )
             die(
                 f"skardi-server (docker) did not become healthy within "
-                f"{health_timeout}s. Read {log_file} or `docker logs "
-                f"{container_name}`. Common causes: PG host unreachable from "
-                f"the container (use host.docker.internal instead of localhost "
-                f"in the connection string when PG runs on the host), missing "
-                f"PG_USER/PG_PASSWORD, or port {port} already bound on the host."
+                f"{health_timeout}s (the container is still running). Read "
+                f"{log_file} or `docker logs {container_name}`. Common causes: "
+                f"PG host unreachable from the container (use "
+                f"host.docker.internal instead of localhost in the connection "
+                f"string when PG runs on the host), or the server wedged while "
+                f"opening its data source."
             )
     return ("127.0.0.1", port, log_file, container_id, container_name)
 
@@ -730,6 +883,15 @@ def start_kubernetes(workspace, port, breadcrumb, image, namespace, release_name
     # http://127.0.0.1:<local_port>. The PID goes into server.pid so
     # stop_server.py can clean it up.
     log_file = workspace / "server.log"
+    # Same failure shape as the other two runtimes: kubectl port-forward dies
+    # if the local port is taken, and /health then answers from whatever holds
+    # it. Applied here for consistency, but note this runtime is untested (see
+    # the comment where the Report is built).
+    refuse_taken_port(
+        "127.0.0.1", local_port,
+        f"python {SKILL_DIR / 'scripts' / 'stop_server.py'} "
+        f"--workspace <the other workspace>",
+    )
     log_fh = log_file.open("w")
     pf_proc = subprocess.Popen(
         ["kubectl", "-n", namespace, "port-forward",
@@ -740,12 +902,30 @@ def start_kubernetes(workspace, port, breadcrumb, image, namespace, release_name
     (workspace / "server.pid").write_text(str(pf_proc.pid))
     print(f"  port-forward pid: {pf_proc.pid} (localhost:{local_port} -> svc/{release_name}:{port})")
 
+    def pf_exited():
+        rc = pf_proc.poll()
+        return None if rc is None else f"kubectl port-forward exited with code {rc}"
+
     print(f"  waiting for /health on localhost:{local_port} ...")
-    if not wait_for_health("127.0.0.1", local_port, health_timeout, "k8s port-forward"):
+    if not wait_for_health("127.0.0.1", local_port, health_timeout,
+                           "k8s port-forward", is_alive=pf_exited):
+        gone = pf_exited()
+        if gone:
+            # Same cleanup as the other two runtimes: a pid file pointing at a
+            # dead process makes stop_server.py claim it cleaned something up.
+            (workspace / "server.pid").unlink(missing_ok=True)
+            die(
+                f"kubectl port-forward exited before /health answered ({gone}). "
+                f"Read {log_file} — it holds the port-forward's own output. "
+                f"Common causes: svc/{release_name} does not exist in namespace "
+                f"{namespace}, no pod is ready behind it, or the local port was "
+                f"taken after the pre-flight check."
+            )
         die(
-            f"port-forward came up but /health didn't respond. Check "
-            f"`kubectl -n {namespace} logs deployment/{release_name}` and "
-            f"the port-forward log at {log_file}."
+            f"port-forward is still running but /health didn't respond within "
+            f"{health_timeout}s. Check `kubectl -n {namespace} logs "
+            f"deployment/{release_name}` — the server itself is the likely "
+            f"problem, not the tunnel. The port-forward log is at {log_file}."
         )
     return ("127.0.0.1", local_port, log_file, None, namespace, release_name)
 
