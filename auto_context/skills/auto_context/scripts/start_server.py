@@ -42,6 +42,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from _diagnose import emit_startup_diagnosis
 from _platform import require_supported_platform
 from _report import Report
 
@@ -394,6 +395,10 @@ def start_local_process(workspace, port, feature, skardi_source, health_timeout,
                     print(f"    {line}", file=sys.stderr)
             except Exception:
                 pass
+            # Before the dead/alive split: the arity error that hides a
+            # missing feature kills the server, but printing the decoded
+            # cause is just as useful if it is still hanging.
+            emit_startup_diagnosis(log_file, feature)
             dead = exited()
             if dead:
                 # Don't leave server.pid pointing at a pid that is already

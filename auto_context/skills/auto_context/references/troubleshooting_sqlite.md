@@ -46,6 +46,46 @@ Three options, in order of preference:
 2. Re-run `setup_context.py` with a different `--embedding-udf` whose feature *is* available in your build.
 3. Embed externally (Python + sentence-transformers / a vendor SDK) and skip Skardi for the write path — feed embeddings directly into `documents.embedding` as packed f32 BLOBs via the simpler `ingest` pipeline.
 
+## `sqlite_knn(...) expects 4 arguments, got 3` at server startup
+
+**The pipeline is not malformed. Do not edit it.** This is the previous
+problem wearing a disguise: your server was built without the feature that
+registers the embedding UDF.
+
+```
+Failed to load pipeline from ".../pipelines/search_hybrid.yaml"
+Caused by (level 1): Pipeline loading failed: Error during planning:
+sqlite_knn(table, vector_col, query_vec, k) expects 4 arguments, got 3.
+```
+
+`search_vector.yaml` and `search_hybrid.yaml` do pass four arguments — the
+third is `(SELECT <your embedding UDF>(...))`. When that UDF isn't
+registered, DataFusion **silently discards** the argument instead of
+reporting the missing function, because the table-function argument planner
+drops any argument that fails to plan (verified against datafusion-sql
+52.5.0, `src/relation/mod.rs:152`: `flat_map` over a `Result` yields nothing
+for an `Err`). The UDTF then receives three expressions and complains about
+the count. `sqlite_fts` takes the same path and fails the same way.
+
+Fix it by rebuilding the server with the feature your workspace needs
+(`.embedding.txt` records which UDF that is):
+
+```bash
+cargo install --locked --path crates/server --features rag
+```
+
+`start_server.py` prints this diagnosis for you when startup fails this way.
+
+Two things worth knowing:
+
+- Pipeline loading is alphabetical and the server exits at the first
+  failure, so you'll usually only see `search_hybrid` named. `search_vector`
+  has the same problem.
+- `ingest` and `ingest_chunked` call the same UDF but **load without
+  complaint** — an INSERT's projection isn't resolved at load time. They
+  fail at execute with the honest `Invalid function '<udf>'`. So a server
+  that starts cleanly is not proof the embedding UDF is present.
+
 ## `ModuleNotFoundError: No module named 'sqlite_vec'`
 
 The Python package `sqlite-vec` provides both the `vec0` loadable extension and a convenient `loadable_path()` helper. Install it:
