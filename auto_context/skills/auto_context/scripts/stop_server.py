@@ -85,7 +85,11 @@ def stop_docker(workspace):
         return
     print(f"  docker rm -f {name}")
     proc = subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True)
-    if proc.returncode != 0 and "No such container" not in (proc.stderr or ""):
+    # Case-insensitive: docker's own wording differs between subcommands
+    # (29.2.1 says "No such container" for rm but "no such object" for
+    # inspect), and an already-removed container is the expected state here,
+    # not an error worth printing. See container_gone() in start_server.py.
+    if proc.returncode != 0 and "no such container" not in (proc.stderr or "").lower():
         print(proc.stderr, file=sys.stderr)
 
 

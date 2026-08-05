@@ -541,10 +541,18 @@ def container_gone(container_name):
     """None while the container runs, else how it died. See wait_for_health.
 
     The container is started with --rm, so a crash removes it and `docker
-    inspect` then fails with "No such object" — that is the normal shape of a
+    inspect` then fails with "no such object" — that is the normal shape of a
     dead container here, not an error on our side. Any *other* inspect failure
     (daemon restarting, socket hiccup) is not evidence the container died, so
     it returns None and lets the health timeout decide.
+
+    Matched case-insensitively because Docker is not consistent with itself:
+    29.2.1 answers `error: no such object: <name>` for inspect while `docker
+    rm` on the same missing container still says `No such container`. An
+    earlier version of this function matched "No such object" exactly and so
+    returned None for every removed container — i.e. the guard was dead
+    exactly in the case it exists for. Caught by tests/test_server_liveness.py
+    running against a real daemon; the previous stubbed test could not see it.
     """
     proc = subprocess.run(
         ["docker", "inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}",
@@ -552,7 +560,7 @@ def container_gone(container_name):
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
-        if "No such object" in (proc.stderr or ""):
+        if "no such object" in (proc.stderr or "").lower():
             return (f"container {container_name} no longer exists (it was "
                     f"started with --rm, so it removed itself when it exited)")
         return None
