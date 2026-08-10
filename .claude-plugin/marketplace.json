@@ -36,6 +36,13 @@
       "description": "Sync a Feishu/Lark Bitable into local SQLite via lark-cli, then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync, Bitable only.",
       "category": "connector",
       "keywords": ["skardi", "feishu", "lark", "bitable", "sqlite", "connector"]
+    },
+    {
+      "name": "skardi-query-log",
+      "source": "./skardi_query_log",
+      "description": "Turn questions the user keeps asking into pipelines. Reads the query audit log written by `skardi-server --query-audit-db`, spots repeating ad-hoc SQL, and installs the pipeline itself with self-verification and automatic rollback. Requires Skardi newer than v0.5.0.",
+      "category": "automation",
+      "keywords": ["skardi", "pipelines", "query-audit", "observability", "automation"]
     }
   ]
 }
