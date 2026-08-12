@@ -14,20 +14,26 @@
       prints the SQL and stops.
 
 Flow:
-  1. Validate `skardi` CLI is on PATH and >= 0.4.0 (the chunk() UDF and the
-     `kind: semantics` overlay both landed in 0.4.0; the rendered pipelines
-     and the auto-discovered semantics file depend on them).
-  2. Resolve the embedding UDF + model path / remote args from flags.
-  3. Render <workspace>/{ctx.yaml, semantics.yaml, pipelines/*.yaml} from
+  1. Resolve the embedding UDF + model path / remote args from flags.
+  2. Render <workspace>/{ctx.yaml, semantics.yaml, pipelines/*.yaml} from
      ../assets/<backend>/ templates. Embedding happens server-side inside
      the rendered pipelines (chunk → embed → write in one INSERT for
      ingest-chunked; embed inline for search-{vector,hybrid}), so this
      needs the skardi-server-rag image or a server built --features rag.
-  4. On sqlite only: create the .db and its schema.
+  3. On sqlite only: create the .db and its schema.
 
-There is deliberately NO connectivity pre-flight. The CLI holds no engine
-since skardi PR #170, so it cannot reach a datastore before a server runs.
-Server startup is the check — see the note further down.
+This script never invokes the `skardi` CLI. Two reasons, both structural:
+
+  * There is deliberately NO connectivity pre-flight. The CLI holds no
+    engine since skardi PR #170, so it cannot reach a datastore before a
+    server runs. Server startup is the check — see the note further down.
+  * An earlier version gated setup on `skardi --version`, using the CLI
+    version as a stand-in for the server's. That proxy does not hold: the
+    v0.5.0 CLI is a thin HTTP client that talks to whatever server it is
+    pointed at, so its version says nothing about the server that will
+    actually run the pipelines — and requiring it on PATH blocked anyone
+    running the server from the published container image. The real check
+    is the server refusing to load a pipeline whose UDF it lacks.
 
 Output: <workspace>/{ctx.yaml, semantics.yaml, pipelines/*.yaml}, the
 sqlite .db when applicable, plus a `.embedding.txt` breadcrumb so
@@ -36,8 +42,6 @@ re-parsing the YAML.
 """
 import argparse
 import os
-import re
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -50,9 +54,6 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 ASSETS = SKILL_DIR / "assets"
 
 DEFAULT_MODEL_FILES = ["model.safetensors", "config.json", "tokenizer.json"]
-
-MIN_SKARDI_MAJOR = 0
-MIN_SKARDI_MINOR = 4
 
 
 def die(msg, code=1):
@@ -193,62 +194,6 @@ END;
     print(f"  created {db_path} with documents/documents_fts/documents_vec (dim={dim})")
 
 
-def check_skardi():
-    """Verify the skardi CLI exists AND is >= 0.4.0.
-
-    Returns None when the version was confirmed, or a short note when it ran
-    but could not be verified — the caller turns that into a WARN row rather
-    than a clean OK. Ported from PR #21: an unparsed version is exactly the
-    case that sails through setup and then dies at ingest with "Invalid
-    function 'chunk'", so the report must not claim it passed.
-
-    The CLI is used here only for the SELECT 1 health probe, but the
-    server (skardi-server-rag) must also be >= 0.4.0 — we use the CLI
-    version as a proxy because most users build / install both binaries
-    from the same source. If the user has a mixed install we'll fail
-    later at ingest time with "Invalid function 'chunk'", which the
-    troubleshooting guide names explicitly."""
-    if shutil.which("skardi") is None:
-        die(
-            "`skardi` CLI not found on PATH. The skill uses it for the "
-            "pre-flight `SELECT 1` health probe. Install >= 0.4.0 with "
-            "`cargo install --locked --git https://github.com/SkardiLabs/skardi "
-            "--branch main skardi-cli --features candle`."
-        )
-    out = subprocess.run(["skardi", "--version"], capture_output=True, text=True)
-    if out.returncode != 0:
-        # On PATH but `--version` itself errors → the binary is broken, not
-        # just unparseable. Hard FAIL (the CLI is unusable), not a WARN.
-        die(
-            f"`skardi --version` exited {out.returncode} — the binary is on PATH "
-            f"but not runnable, so the install looks broken. Reinstall with "
-            f"`cargo install --locked --git https://github.com/SkardiLabs/skardi "
-            f"--branch main skardi-cli --features candle`.\n"
-            f"  stderr: {(out.stderr or '').strip()[:300]}"
-        )
-    raw = (out.stdout or out.stderr).strip()
-    print(f"  found: {raw or 'skardi (version unknown)'}")
-    m = re.search(r"(\d+)\.(\d+)\.(\d+)", raw)
-    if not m:
-        print(
-            "  warning: could not parse version; auto_context needs >= 0.4.0 "
-            "for the chunk() UDF and the kind: semantics overlay.",
-            file=sys.stderr,
-        )
-        return "version unverified — needs >= 0.4.0 for chunk()"
-    major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    if (major, minor) < (MIN_SKARDI_MAJOR, MIN_SKARDI_MINOR):
-        die(
-            f"Skardi {major}.{minor}.{patch} is too old for this skill. "
-            f"auto_context requires >= {MIN_SKARDI_MAJOR}.{MIN_SKARDI_MINOR}.0 "
-            f"because it uses the chunk() UDF (server-side ingest) and "
-            f"the kind: semantics overlay (catalog descriptions). "
-            f"Reinstall with `cargo install --locked --git "
-            f"https://github.com/SkardiLabs/skardi --branch main skardi-cli "
-            f"--features candle`."
-        )
-
-
 def resolve_candle_model(cli_path, workspace):
     if not cli_path:
         die(
@@ -373,7 +318,7 @@ def render_templates(backend, workspace, subs):
         die(f"Missing template {ctx_tpl}")
     _render(ctx_tpl, workspace / "ctx.yaml")
 
-    # semantics.yaml — auto-discovered by skardi-server / skardi query --schema.
+    # semantics.yaml — auto-discovered by skardi-server; surfaces in `skardi schema`.
     sem_tpl = src_dir / "semantics.yaml.tpl"
     if sem_tpl.is_file():
         _render(sem_tpl, workspace / "semantics.yaml")
@@ -388,7 +333,7 @@ def render_templates(backend, workspace, subs):
 # NOTE ON THE REMOVED PRE-FLIGHT CHECK
 #
 # This script used to probe the datastore before starting anything, by
-# setting SKARDICONFIG=<workspace> and running
+# setting SKARDICONFIG=<workspace> — a variable that no longer exists — and running
 #   skardi query --sql "SELECT 1 FROM <table>"
 # so the CLI would connect directly and surface auth / network /
 # missing-table errors early.
@@ -505,9 +450,11 @@ def main():
     # every exit path prints the table — a bare ERROR tells the user what broke
     # but not which step they got to or how long the run had already taken.
     # The denominator is per-backend: sqlite does two things postgres does not
-    # (resolve the extension, create the schema), and an honest 3/3 beats a
-    # padded 3/5.
-    report = Report(5 if args.backend == "sqlite" else 3, "Setup")
+    # (resolve the extension, create the schema), and an honest 2/2 beats a
+    # padded 2/4. Dropped from 5/3 when the `skardi --version` step was
+    # removed — the CLI is never invoked by this skill, so gating on it
+    # measured nothing.
+    report = Report(4 if args.backend == "sqlite" else 2, "Setup")
 
     with report.guard("workspace pre-flight"):
         workspace = Path(args.workspace).expanduser().resolve()
@@ -554,11 +501,6 @@ def main():
                 )
             db_path = None
             table = args.table
-
-    with report.step("Checking skardi CLI", "skardi CLI (>=0.4.0)") as r:
-        note = check_skardi()
-        if note:
-            r.warn(note)
 
     if args.backend == "sqlite":
         with report.step("Resolving sqlite-vec", "sqlite-vec extension"):

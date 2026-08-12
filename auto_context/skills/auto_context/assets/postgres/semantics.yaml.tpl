@@ -6,7 +6,7 @@ metadata:
   description: >
     Catalog overlay attached to the user-supplied Postgres data source so that
     GET /data_source on skardi-server returns meaningful descriptions, and
-    `skardi query --schema --all` renders them next to the schema. Sits next
+    `skardi schema` renders them next to the schema. Sits next
     to ctx.yaml so Skardi auto-discovers it on startup (docs/semantics.md).
 
 spec:

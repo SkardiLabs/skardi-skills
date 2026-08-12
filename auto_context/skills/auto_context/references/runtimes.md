@@ -5,10 +5,10 @@
 | Runtime | When to pick it | What it gives you | What it costs |
 |---|---|---|---|
 | `local-process` (default) | Single-laptop dev, single-agent loops, prototyping | Zero infra: a host process started with `nohup`, logs at `<workspace>/server.log`, killed by sending SIGTERM to a pid file | Skardi binary must be on PATH (build with `--features rag`, which bundles chunk + candle) or pass `--skardi-source` so we can fall back to `cargo run`. Tied to whatever Python/OpenSSL/libsqlite the host has. |
-| `docker` | Shipping RAG to a teammate, isolating the server from the host's library versions, "production single-box" | One pulled image (`ghcr.io/skardilabs/skardi/skardi-server-rag:latest` — chunk + candle + gguf + remote-embed bundled), no Rust toolchain needed on the host, full container isolation, identical lifecycle on macOS / Linux | Docker Desktop / engine on the host. Connection-string gotcha: when PG runs on the host, use `host.docker.internal` (auto-mapped by `--add-host=host.docker.internal:host-gateway` in start_server.py, so it works on Linux too). |
+| `docker` | Shipping RAG to a teammate, isolating the server from the host's library versions, "production single-box" | One pulled image (`ghcr.io/skardilabs/skardi/skardi-server-rag:0.5.0` — chunk + candle + gguf + remote-embed bundled), no Rust toolchain needed on the host, full container isolation, identical lifecycle on macOS / Linux | Docker Desktop / engine on the host. Connection-string gotcha: when PG runs on the host, use `host.docker.internal` (auto-mapped by `--add-host=host.docker.internal:host-gateway` in start_server.py, so it works on Linux too). |
 | `kubernetes` | Agent itself already runs in a cluster, multi-replica retrieval, shared service across teams | Deployment + Service + ConfigMap + Secret rendered into `<workspace>/k8s/`, optional `--apply` and `--port-forward`, in-cluster service DNS for collocated agents | A reachable cluster (kubectl context). PG must be reachable from inside the cluster — you handle that via Service / Endpoints / external IPs. |
 
-## Embedding and chunking happen on the server (Skardi 0.4.0+)
+## Embedding and chunking happen on the server
 
 This is a change from earlier versions of the skill: as of Skardi 0.4.0 + the `skardi-server-rag` image, both `chunk()` and the embedding UDFs are registered server-side. The rendered pipelines call them inline:
 
@@ -37,7 +37,7 @@ python SKILL_DIR/scripts/start_server.py \
   --workspace ./rag --runtime docker --port 8080
 ```
 
-Pulls and runs `ghcr.io/skardilabs/skardi/skardi-server-rag:latest` under a name like `skardi-rag-<workspace-hash>`. Mounts the rendered workspace at the same absolute path inside the container so paths in ctx.yaml / pipelines resolve unchanged. Forwards `PG_USER`, `PG_PASSWORD`, and (for `remote_embed`) the relevant API keys. Adds `--add-host=host.docker.internal:host-gateway` so connection strings that say `host.docker.internal:5432` work on Linux as they do on macOS.
+Pulls and runs `ghcr.io/skardilabs/skardi/skardi-server-rag:0.5.0` under a name like `skardi-rag-<workspace-hash>`. Mounts the rendered workspace at the same absolute path inside the container so paths in ctx.yaml / pipelines resolve unchanged. Forwards `PG_USER`, `PG_PASSWORD`, and (for `remote_embed`) the relevant API keys. Adds `--add-host=host.docker.internal:host-gateway` so connection strings that say `host.docker.internal:5432` work on Linux as they do on macOS.
 
 For `candle` / `gguf`, the container also bind-mounts the model directory at its host absolute path so `candle('<host-path>', ...)` resolves identically in-container.
 
@@ -76,7 +76,7 @@ Five files, applied in this numeric order:
 | `00-namespace.yaml` | The namespace (defaults to `skardi-rag`; override with `--k8s-namespace`). |
 | `10-configmap.yaml` | Holds `ctx.yaml` and all five pipeline YAMLs (`ingest`, `ingest_chunked`, `search_vector`, `search_fulltext`, `search_hybrid`) as keys. The Deployment mounts each one at `/config/<name>`. The auto-discovered `semantics.yaml` would also live here if you choose to mount it. |
 | `20-secret.yaml` | Carries the credentials this skill needs at runtime (`PG_USER`, `PG_PASSWORD`, and any embedding-API keys when remote_embed is in use). Built from `os.environ` at render time — make sure those vars are exported before running `setup_context.py` / `start_server.py`. |
-| `30-deployment.yaml` | Single-replica deployment using `ghcr.io/skardilabs/skardi/skardi-server-rag:latest`, `envFrom: secretRef`, readiness/liveness on `/health`, conservative 512 Mi / 200 m requests. |
+| `30-deployment.yaml` | Single-replica deployment using `ghcr.io/skardilabs/skardi/skardi-server-rag:0.5.0`, `envFrom: secretRef`, readiness/liveness on `/health`, conservative 512 Mi / 200 m requests. |
 | `40-service.yaml` | ClusterIP Service exposing port 8080. |
 
 ### Connectivity expectations

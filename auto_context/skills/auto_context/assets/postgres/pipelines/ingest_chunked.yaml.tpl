@@ -8,7 +8,7 @@ metadata:
     with chunk(<mode from setup>, ...), embed each chunk with the configured UDF, and
     INSERT one row per chunk in a single SQL statement. The agent POSTs the
     raw document content; the server does the chunking and embedding. This
-    requires the skardi-server-rag image (Skardi >= 0.4.0; --features rag),
+    requires the skardi-server-rag image (:0.5.0; --features rag),
     where both chunk() and the chosen embedding UDF are registered.
 
     Synthesised chunk ids: `id = doc_id * 1000 + chunk_idx` (0-based), so

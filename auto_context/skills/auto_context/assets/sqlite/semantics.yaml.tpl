@@ -4,7 +4,7 @@ metadata:
   name: auto-context-sqlite-semantics
   version: 1.0.0
   description: >
-    Catalog overlay attached to the kb data source so that `skardi query --schema`
+    Catalog overlay attached to the kb data source so that `skardi schema`
     and any agent reading the catalog see what the documents table holds. Keeping
     these descriptions in a separate file (rather than inline in ctx.yaml) is the
     pattern docs/semantics.md recommends for auto-generated overlays — this file
@@ -15,10 +15,11 @@ spec:
   sources:
     - name: kb
       description: >
-        Local knowledge base built by the auto_knowledge_base skill. One SQLite
+        Local knowledge base built by the auto_context skill. One SQLite
         catalog with documents (canonical rows), documents_fts (FTS5 mirror), and
         documents_vec (sqlite-vec vec0 mirror) kept in sync by AFTER INSERT/UPDATE/
-        DELETE triggers. Query via skardi grep / vec / fts.
+        DELETE triggers. Query it through the server's search-hybrid /
+        search-vector / search-fulltext pipelines.
       columns:
         - name: id
           description: >

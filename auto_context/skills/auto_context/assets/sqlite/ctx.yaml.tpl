@@ -9,7 +9,7 @@ metadata:
     in sync by AFTER INSERT/UPDATE/DELETE triggers. Queries go through the
     `kb` catalog, so tables surface as `kb.main.documents`, etc. Per-table
     and per-column descriptions live in semantics.yaml next to this file
-    and surface via `skardi query --schema --all`.
+    and surface via `skardi schema`.
 
 spec:
   data_sources:

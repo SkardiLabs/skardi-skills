@@ -9,8 +9,7 @@ The pipelines this skill generates are the minimum set that makes a KB useful to
 ```
 <workspace>/
   ctx.yaml                      # registers kb.db as a SQLite catalog source
-  semantics.yaml                # auto-discovered overlay; surfaces in `skardi query --schema --all`
-  aliases.yaml                  # short verbs: ingest, ingest-doc, grep, vec, fts
+  semantics.yaml                # auto-discovered overlay; surfaces in `skardi schema`
   pipelines/
     ingest.yaml                 # single-row INSERT from a pre-chunked seed; trigger fans to FTS+vec
     ingest_chunked.yaml         # full document → chunk → embed → write in one statement
@@ -26,7 +25,9 @@ The pipelines this skill generates are the minimum set that makes a KB useful to
 
 ## The bulk write path: `ingest_corpus.py`
 
-For a whole-corpus walk, the script writes a manifest NDJSON and runs ONE `skardi query` with this INSERT — the embedding model loads exactly once for the entire run:
+For a whole-corpus walk, the script POSTs one request per document to `/ingest-chunked/execute` — the rendered `pipelines/ingest_chunked.yaml` — and records each file's outcome in a progress manifest so a re-run resumes instead of duplicating. Per-file POST is deliberate: the server may not share a filesystem with the client (docker, kubernetes), so it cannot be handed a local manifest path to read.
+
+The SQL below is the **pre-#170 bulk form**, kept here because it shows the chunk → embed → write shape in one piece. It is not what runs today: it reads `./manifest.json` from the server's own filesystem and partitions across documents, whereas the shipped pipeline receives a single document as parameters over HTTP.
 
 ```sql
 INSERT INTO kb.main.documents (id, source, chunk_idx, content, embedding)

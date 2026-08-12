@@ -71,12 +71,18 @@ add it deliberately when needed, not by default.
 
 ### Verifying the schema
 
-After the user reports running the SQL, the agent can confirm via
-`skardi query`:
+After the user reports running the SQL, the agent can confirm it — but only
+once the server is up, since every query goes through the server (Step 2 of
+the flow). Either of these:
 
 ```bash
-SKARDICONFIG=<workspace> skardi query --sql \
+# CLI against the running server (--server defaults to http://127.0.0.1:8080)
+skardi --server http://localhost:8080 query --sql \
   "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '<table>'"
+
+# or the same thing over plain HTTP
+curl -X POST http://localhost:8080/query -H 'Content-Type: application/json' -d \
+  '{"sql":"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '\''<table>'\''"}'
 ```
 
 Look for `id`, `source`, `chunk_idx`, `content`, and `embedding`. The

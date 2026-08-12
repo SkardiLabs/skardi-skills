@@ -2,35 +2,29 @@
 
 Fix the symptoms below by applying the prescribed remedy. Don't retry the same command hoping it will work — each of these has a definite cause.
 
-## `skardi: command not found`
+**Read this first: the local path needs a `skardi-server` on the host, and that is the thing to install.** Every UDF in this skill (`chunk`, `candle`, `gguf`, `remote_embed`) is registered by the *server*, and every operation is an HTTP call to it. The `skardi` CLI is a thin HTTP client — optional, and its version tells you nothing about which UDFs are available. So when an error below says "function not found", the binary to fix is always the server.
 
-The Skardi CLI isn't installed or isn't on PATH.
+## Getting a `skardi-server` for the local (SQLite) path
+
+`--backend sqlite` cannot use the container image: it needs the `sqlite-vec` extension, which the published image does not ship for Linux, and the host's copy is the wrong platform to mount in. So the local path means a server binary on this machine.
+
+**There is no published `skardi-server` binary for any platform.** The v0.5.0 GitHub Release attaches the `skardi` CLI only; the server ships as a container image (which the local path can't use) or as source. Build it from the released tag so you get exactly what v0.5.0 contains:
 
 ```bash
-# Install from source (macOS / Linux):
-git clone https://github.com/SkardiLabs/skardi.git
+git clone --depth 1 --branch v0.5.0 https://github.com/SkardiLabs/skardi.git
 cd skardi
-cargo install --locked --path crates/cli --features candle
-
-# Or grab a pre-built binary (see repo README for the platform table).
+cargo install --locked --path crates/server --features rag
 ```
 
-The `--features candle` flag is what enables the local embedding UDF. Without it, `candle(...)` calls fail with "function not found".
+`--features rag` bundles `chunk` plus all three embedding UDFs, which is what the rendered pipelines expect. Budget for a Rust build the first time — this is the main cost of the local path, and it is unavoidable until a server binary is published.
 
-## `Skardi X.Y.Z is too old for this skill` from setup_context.py
+Pin the tag. Do **not** install from `main`: `main` carries unreleased changes, so a workspace that works today can break on the next pull with no version to point at.
 
-`auto_context` requires Skardi >= 0.4.0 because it uses the `chunk()` UDF (added in 0.4.0) for inline server-side chunking. Reinstall:
-
-```bash
-cargo install --locked --git https://github.com/SkardiLabs/skardi --branch main \
-  skardi-cli --features candle
-```
-
-If you have a newer source tree locally, `cargo install --locked --path /path/to/skardi/crates/cli --features candle` builds from the source directly.
+> The **override path** (`--backend postgres` / `mongo` / `lance`) has no such constraint — use `--runtime docker` with `ghcr.io/skardilabs/skardi/skardi-server-rag:0.5.0` and skip the toolchain entirely.
 
 ## `error: Invalid function 'chunk'` (or `Unknown function: chunk`) at ingest time
 
-Same root cause as above — the `chunk()` UDF is in 0.4.0 only. The CLI binary you're running was built before that. Even if `setup_context.py` passed (because the version-parse warning is non-fatal), `ingest_corpus.py`'s INSERT will fail at execution. Rebuild the CLI from a 0.4.0+ source.
+The **server** you are pointed at was built without `--features chunking` / `--features rag`. Rebuild or re-pull it per the section above; the pre-built `skardi-server-embedding` image does not register `chunk()` either. This is not about the CLI: `setup_context.py` never inspects it, and a matching CLI version would not change which UDFs the server has.
 
 ## `error: Unknown function 'candle'` (or `gguf`, or `remote_embed`)
 
@@ -42,7 +36,7 @@ Skardi was built without the matching feature flag. Each embedding UDF is gated 
 
 Three options, in order of preference:
 
-1. Rebuild Skardi with the feature you need (e.g. `cargo install --locked --git https://github.com/SkardiLabs/skardi --branch main skardi-cli --features candle,gguf,remote-embed` for all three).
+1. Rebuild the **server** with the feature you need, from the released tag (e.g. `cargo install --locked --path crates/server --features candle,gguf,remote-embed` inside a `v0.5.0` checkout, for all three; `--features rag` covers `candle` + `gguf` + `remote-embed` + `chunking` in one).
 2. Re-run `setup_context.py` with a different `--embedding-udf` whose feature *is* available in your build.
 3. Embed externally (Python + sentence-transformers / a vendor SDK) and skip Skardi for the write path — feed embeddings directly into `documents.embedding` as packed f32 BLOBs via the simpler `ingest` pipeline.
 
@@ -104,20 +98,27 @@ export SQLITE_VEC_PATH=$(python -c "import sqlite_vec; print(sqlite_vec.loadable
 
 FTS5 reserves those characters as query operators. A natural-language query like `"What is X?"` will blow up on the `?`. Two fixes:
 
-1. **Hybrid search**: override `--text_query` with a cleaned version while leaving `--query` intact for the vector side:
+1. **Hybrid search**: send a cleaned `text_query` while leaving `query` intact for the vector side:
 
    ```bash
-   skardi grep "What is X?" --text_query="X"
+   curl -X POST http://localhost:8080/search-hybrid/execute \
+     -H 'Content-Type: application/json' \
+     -d '{"query":"What is X?","text_query":"X","vector_weight":0.5,"text_weight":0.5,"limit":5}'
    ```
 
 2. **FTS-only**: strip punctuation or phrase-quote:
 
    ```bash
-   skardi fts "X"
-   skardi fts '"what is x"'
+   curl -X POST http://localhost:8080/search-fulltext/execute \
+     -H 'Content-Type: application/json' -d '{"query":"X","limit":5}'
+
+   curl -X POST http://localhost:8080/search-fulltext/execute \
+     -H 'Content-Type: application/json' -d '{"query":"\"what is x\"","limit":5}'
    ```
 
-The vector half of hybrid search never sees FTS parsing, so if `skardi grep` returns any FTS-side errors they degrade the hybrid rank but don't break the run — you'll still get vector candidates.
+The vector half of hybrid search never sees FTS parsing, so FTS-side errors degrade the hybrid rank but don't break the run — you'll still get vector candidates.
+
+> Both calls above can equally be made with the CLI against the same running server — `skardi --server http://localhost:8080 run search-hybrid -p query="What is X?" -p text_query=X`. There is no `skardi grep` or `skardi fts`; those were subcommands of the pre-#170 CLI and do not exist in v0.5.0, whose subcommands are `query`, `run`, `pipeline`, `job`, `schema`, `health`.
 
 ## `INSERT` succeeds but `SELECT COUNT(*) FROM documents_vec` is 0
 
@@ -134,14 +135,15 @@ Fix: rerun `python setup_context.py --workspace <dir> --force` and re-ingest.
 python setup_context.py --workspace ./kb --force
 python ingest_corpus.py --workspace ./kb --corpus ./docs
 
-# Targeted re-ingest of one file:
-SKARDICONFIG=./kb skardi query --sql "DELETE FROM kb.main.documents WHERE source = 'changed_file.md'"
+# Targeted re-ingest of one file — needs the server running (see Step 2):
+skardi --server http://localhost:8080 query \
+  --sql "DELETE FROM kb.main.documents WHERE source = 'changed_file.md'"
 python ingest_corpus.py --workspace ./kb --corpus ./docs   # the rest is skipped (id matches existing rows)
 ```
 
-## Empty result set from `skardi grep`
+## Empty result set from hybrid search
 
-Check in order:
+All four checks below run SQL against the **running server**. `--server` defaults to `http://127.0.0.1:8080`, so it can be omitted when the server is on the default port; `curl -X POST .../query -d '{"sql":"..."}'` does the same thing without the CLI.
 
 1. `skardi query --sql "SELECT COUNT(*) FROM kb.main.documents"` — if 0, ingest didn't run or failed silently.
 2. `skardi query --sql "SELECT COUNT(*) FROM kb.main.documents_vec"` — if less than `documents`, trigger mismatch (see above).
@@ -154,7 +156,7 @@ The chunk() UDF rejects `overlap >= size` to avoid infinite loops. Pass `--overl
 
 ## `chunk: unsupported mode '<x>'`
 
-Only `'character'` and `'markdown'` are supported in 0.4.0. Token-based / code-aware splitters are roadmap items. Pass `--chunk-mode markdown` (default) or `--chunk-mode character` to `setup_context.py`.
+Only `'character'` and `'markdown'` are supported as of v0.5.0. Token-based / code-aware splitters are roadmap items. Pass `--chunk-mode markdown` (default) or `--chunk-mode character` to `setup_context.py`.
 
 ## `skardi` hangs indefinitely on the first query
 
