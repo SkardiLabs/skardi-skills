@@ -150,6 +150,26 @@ All four checks below run SQL against the **running server**. `--server` default
 3. Embedding dim mismatch: if you changed `--embedding-dim` after the DB was created, the vec0 table was built with the old dim and new rows will error. Rebuild with `--force`.
 4. Model path broken: `skardi query --sql "SELECT candle('<abs-path>', 'hello world')"` should return a float array. If it errors, fix the absolute path in `pipelines/*.yaml`.
 
+## `search-fulltext` returns 0 rows for a Chinese term that is in the corpus
+
+Not a bug in your setup, and not fixable by re-ingesting. `documents_fts` is created without a `tokenize=` clause, so FTS5 uses `unicode61`, which breaks tokens on non-alphanumeric characters. An unbroken run of Han characters has no such boundary, so the entire run is stored as one token and only an exact full-run query matches it.
+
+Measured 2026-08-13 against a real workspace: `预跑` → 0 rows, `上下文` → 0 rows (both present in the ingested text), `Skardi` → 1, `Agent` → 1. A minimal repro needs no Skardi at all:
+
+```python
+db.execute("create virtual table t using fts5(c)")
+db.execute("insert into t values ('预跑机制指的是重复查询 Skardi hello')")
+db.execute("select count(*) from t where t match '预跑'")                   # 0
+db.execute("select count(*) from t where t match 'Skardi'")                 # 1
+db.execute("select count(*) from t where t match '预跑机制指的是重复查询'")  # 1
+```
+
+Postgres has the same shape via `to_tsvector` with the default `pg_catalog.english`; the `simple` configuration does not help, because it changes stemming and stop words rather than segmentation.
+
+**What to do now:** on a CJK corpus use `search-vector` or `search-hybrid` and treat `search-fulltext` as unavailable. Hybrid keeps working — the vector half carries the query — which is also why this is easy to miss: a bare full-text call answers `success: true` with an empty set instead of an error.
+
+`tokenize='trigram'` is the closest sqlite-only workaround, but it is a trade-off rather than a fix: it reaches 3-character terms, still misses 2-character ones (`预跑`, `查询`), roughly doubles the index, and turns English word search into substring search (`cat` starts matching `concatenate`). Discussion and measurements in [skardi-skills#26](https://github.com/SkardiLabs/skardi-skills/issues/26).
+
 ## `chunk: 'overlap' (N) must be strictly less than 'size' (M)`
 
 The chunk() UDF rejects `overlap >= size` to avoid infinite loops. Pass `--overlap` < `--chunk-size` to `ingest_corpus.py` (or `--chunk-size 1200 --overlap 200`, the defaults). `--overlap 0` is always safe.

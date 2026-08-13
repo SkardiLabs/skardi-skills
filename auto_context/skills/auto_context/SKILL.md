@@ -237,6 +237,12 @@ Only `search-hybrid` takes both `query` and `text_query` (one feeds the embeddin
 
 **The relevance field is named differently per backend.** `search-vector` returns `distance` on sqlite and `_score` on postgres; `search-hybrid` returns `rrf_score`. Read the field that is actually present instead of assuming one — defaulting a missing key to `0` silently turns every result into a tie, which looks like broken ranking when the ranking is fine.
 
+**`search-fulltext` does not segment CJK — on a Chinese, Japanese or Korean corpus it returns nothing.** Both backends split on non-alphanumeric boundaries, and an unbroken run of Han characters has none, so the whole run becomes a single token: only an exact, full-run query matches. Measured 2026-08-13 on a real workspace — `预跑` and `上下文` each returned **0 rows while present in the corpus**, `Skardi` and `Agent` returned 1 each. Postgres behaves the same way (`to_tsvector` with the default `pg_catalog.english`; the `simple` configuration does not help — it changes stemming, not segmentation).
+
+The failure is quiet in two ways: the endpoint answers `success: true` with an empty set rather than erroring, and `search-hybrid` keeps returning correct results because the vector half carries the query. **So on a CJK corpus, reach for `search-vector` or `search-hybrid` and treat `search-fulltext` as unavailable** — do not report "no matches" to the user from a bare full-text call.
+
+Fixing it is a real trade-off rather than a one-line default change (`trigram` on sqlite reaches 3-character terms but still misses 2-character ones, costs ~1.8× the index, and turns English word search into substring search; postgres needs an installed segmenter such as `zhparser`). Tracked in [skardi-skills#26](https://github.com/SkardiLabs/skardi-skills/issues/26).
+
 ### Step 5 — Stop when done
 
 ```bash
