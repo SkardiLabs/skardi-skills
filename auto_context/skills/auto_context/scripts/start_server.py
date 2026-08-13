@@ -144,6 +144,76 @@ def warn_if_legacy_workspace(workspace, breadcrumb, backend):
     print("        See SKILL.md § Upgrading from auto-knowledge-base / auto-rag.")
 
 
+def ensure_sqlite_vec_path(workspace, breadcrumb, backend, runtime):
+    """Put SQLITE_VEC_PATH in the environment the server inherits, or refuse.
+
+    The rendered sqlite `ctx.yaml` loads the extension from whatever that
+    variable holds (`options.extensions_env`). setup_context.py resolves the
+    path and prints the export line, but setup and start almost always run in
+    different shells, and an unset variable does not stop anything: the server
+    starts, all five pipelines register, the step report is green, and every
+    vector query fails afterwards. Nothing on the happy path says why — which
+    made the missing export the most expensive way to lose ten minutes on a
+    first run.
+
+    So setup records the path in the breadcrumb and we re-export it here.
+    Precedence is the shell's, not ours: a value the user already exported
+    wins, because they may have installed sqlite-vec somewhere else since.
+
+    local-process only. Docker refuses the sqlite backend outright (the image
+    ships no Linux vec0), and the kubernetes runtime would need the value in
+    the Deployment's env rather than in ours.
+    """
+    if backend != "sqlite" or runtime != "local-process":
+        return
+
+    from_env = os.environ.get("SQLITE_VEC_PATH")
+    if from_env:
+        if not Path(from_env).is_file():
+            print(f"  warning: SQLITE_VEC_PATH={from_env} is set but that file "
+                  f"does not exist.", file=sys.stderr)
+            print("           Leaving it as-is (your export wins), but expect "
+                  "vector queries to fail.", file=sys.stderr)
+        return
+
+    recorded = breadcrumb.get("sqlite_vec_path")
+    if recorded and Path(recorded).is_file():
+        os.environ["SQLITE_VEC_PATH"] = recorded
+        print(f"  note: SQLITE_VEC_PATH was not set; using the path "
+              f"setup_context.py recorded")
+        print(f"        ({recorded}). Export it yourself if you also want to "
+              f"query from")
+        print("        this shell.")
+        return
+
+    # Everything below is a refusal rather than a warning, because the run
+    # would otherwise reach "healthy" and only fail at query time.
+    if recorded:
+        die(
+            f"SQLITE_VEC_PATH is not set, and the path recorded at setup time "
+            f"no longer exists:\n"
+            f"    {recorded}\n"
+            f"  sqlite-vec was probably reinstalled or the virtualenv changed. "
+            f"Re-resolve it with:\n"
+            f"    python -c 'import sqlite_vec; print(sqlite_vec.loadable_path())'\n"
+            f"  then `export SQLITE_VEC_PATH=<that path>` and re-run, or re-run "
+            f"setup_context.py\n"
+            f"  in a fresh workspace to record the new one."
+        )
+    die(
+        "SQLITE_VEC_PATH is not set, and this workspace does not record one "
+        "(it was\n"
+        "  rendered before the path was written to .embedding.txt).\n"
+        "  Without it the server starts, registers every pipeline, and then "
+        "fails every\n"
+        "  vector query — so we stop here instead of reporting a healthy "
+        "server.\n"
+        "  Get the path and export it:\n"
+        "    python -c 'import sqlite_vec; print(sqlite_vec.loadable_path())'\n"
+        "    export SQLITE_VEC_PATH=<that path>"
+    )
+
+
 def port_is_taken(host, port, timeout=0.5):
     """True when something already accepts connections on (host, port).
 
@@ -1007,8 +1077,9 @@ def main():
         feature = feature_for_udf(udf)
         if not feature:
             die(f"Unrecognised embedding UDF in breadcrumb: {udf!r}")
-        warn_if_legacy_workspace(workspace, breadcrumb,
-                                 resolve_backend(workspace, breadcrumb))
+        backend = resolve_backend(workspace, breadcrumb)
+        warn_if_legacy_workspace(workspace, breadcrumb, backend)
+        ensure_sqlite_vec_path(workspace, breadcrumb, backend, args.runtime)
 
     if args.runtime == "local-process":
         host, port, log_file = start_local_process(

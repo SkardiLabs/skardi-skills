@@ -502,6 +502,7 @@ def main():
             db_path = None
             table = args.table
 
+    sqlite_vec_path = ""
     if args.backend == "sqlite":
         with report.step("Resolving sqlite-vec", "sqlite-vec extension"):
             sqlite_vec_path = resolve_sqlite_vec()
@@ -533,6 +534,12 @@ def main():
         # Breadcrumb read back by ingest_corpus.py. chunk_mode is recorded here
         # so a mode chosen at setup actually takes effect at bulk ingest instead
         # of silently reverting to the default — see ingest_corpus.py.
+        #
+        # sqlite_vec_path is recorded for start_server.py, which re-exports it
+        # when the environment does not already carry it. Without the key it
+        # could not: setup and start usually run in different shells, and an
+        # unset SQLITE_VEC_PATH does not stop the server — it starts clean,
+        # registers all five pipelines, and then fails every vector query.
         (workspace / ".embedding.txt").write_text(
             f"udf={args.embedding_udf}\n"
             f"model_path={model_path}\n"
@@ -543,6 +550,7 @@ def main():
             f"schema={args.schema}\n"
             f"db_path={db_path or ''}\n"
             f"chunk_mode={args.chunk_mode}\n"
+            f"sqlite_vec_path={sqlite_vec_path}\n"
         )
         print(f"  wrote ctx.yaml, semantics.yaml, pipelines/{{ingest,ingest_chunked,search_vector,search_fulltext,search_hybrid}}.yaml")
 
@@ -552,8 +560,13 @@ def main():
             create_sqlite_db(db_path, args.embedding_dim, sqlite_vec_path,
                              force=args.force)
         print(f"  export SQLITE_VEC_PATH={sqlite_vec_path}")
-        print("  (the server loads sqlite-vec from that path; start_server.py "
-              "checks it)")
+        print("  (the server loads sqlite-vec from that path. The path is also "
+              "recorded in")
+        print("   .embedding.txt, so start_server.py re-exports it for you when "
+              "your shell")
+        print("   does not already have it — the export above only matters for "
+              "commands")
+        print("   you run yourself against the server.)")
     else:
         # Deliberately NOT a step row: nothing is checked here. Claiming a
         # passed "connectivity check" the CLI cannot perform is the kind of

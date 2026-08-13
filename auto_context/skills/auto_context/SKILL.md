@@ -119,11 +119,16 @@ python3 -c "import sqlite3; print(hasattr(sqlite3.connect(':memory:'), 'enable_l
 # on macOS this usually means: brew install python  → /opt/homebrew/bin/python3
 ```
 
-**2. Export `SQLITE_VEC_PATH` before starting the server.** `setup_context.py` prints the exact line at the end — carry it into the shell that runs `start_server.py`. The server reads that variable to load sqlite-vec (see `options.extensions_env` in the rendered `ctx.yaml`); without it the server starts but every vector query fails.
+**2. `SQLITE_VEC_PATH` — handled for you, but know what it is.** The server reads that variable to load sqlite-vec (see `options.extensions_env` in the rendered `ctx.yaml`). `setup_context.py` resolves the path, prints it, and records it in `.embedding.txt`; `start_server.py --runtime local-process` re-exports it into the server's environment when your shell does not already carry one. A value you exported yourself always wins.
+
+It matters because an unset value used to fail *silently in the worst direction*: the server started, all five pipelines registered, the step report was green, and every vector query returned nothing. That is now a refusal at startup instead — but only for workspaces rendered by this version. A workspace from an older version has no recorded path, so `start_server.py` stops and asks you to export one:
 
 ```bash
-export SQLITE_VEC_PATH=<the path setup_context.py printed>
+python -c 'import sqlite_vec; print(sqlite_vec.loadable_path())'
+export SQLITE_VEC_PATH=<that path>
 ```
+
+Export it in your own shell too if you plan to run `sqlite3` or other tools against `kb.db` directly.
 
 The override path needs neither of these — no local extension is involved. It needs the datastore credentials in the environment instead (`PG_USER` / `PG_PASSWORD`, etc.).
 
@@ -205,7 +210,9 @@ One POST per document to `/ingest-chunked/execute`. Progress is journalled, so a
 
 **Exit code is non-zero when nothing was ingested**, so a no-op cannot pass for success: no file matched `--include` (the patterns and the file count are printed), or every matched file was skipped. It stays zero when some files ingested with others skipped, and when every ingestable file was already `ok` in the manifest.
 
-Re-ingesting a document that is already indexed reports *"already in the index — the doc id is derived from the source path"* rather than a raw `UNIQUE constraint failed` dump. That is the error to expect after deleting the manifest to force a re-run; delete the document's rows first, or leave the manifest alone.
+**A document the server already holds counts as `already-present`, not as a failure.** The doc id is derived from the source path, so re-POSTing a file that is already indexed collides on the primary key. That is not an error condition — it is the normal aftermath of an interrupted run, because the manifest is flushed at most every two seconds and a Ctrl-C drops the last few successes from it while their rows stay committed. Those files are recorded `ok` and counted on their own line (`already-present=N`), so a resumed run converges instead of retrying them forever. Treating the collision as an error is what made an interrupted ingest unrecoverable: the manifest said `err:`, the next run saw `err:` as pending, re-POSTed, collided, and wrote `err:` again.
+
+The caveat is printed with the count and matters if you deleted the manifest on purpose: `already-present` means *rows exist*, not *rows are current*. Nothing was re-indexed. To actually refresh a document, delete its rows (`DELETE FROM <table> WHERE source = '...'`) and its manifest entry, then re-run.
 
 ### Step 4 — Retrieve and answer
 
