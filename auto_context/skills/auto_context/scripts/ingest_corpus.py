@@ -176,7 +176,24 @@ def post_doc(endpoint, body, timeout):
     The server runs the rendered ingest-chunked pipeline: UNNEST(chunk(
     'markdown', content, chunk_size, overlap)) → embed each chunk → INSERT.
     A success response means every chunk for this document was committed
-    in one transaction."""
+    in one transaction.
+
+    Returns one of three outcomes, not two:
+
+      ("ok", None)          committed by this POST
+      ("present", None)     the rows were already there (primary-key collision)
+      ("fail", "<reason>")  anything else
+
+    `present` is separate from `fail` because it is the normal aftermath of an
+    interrupted run, not an error. The manifest is flushed at most every two
+    seconds, so a Ctrl-C drops the last few successes from it while their rows
+    stay committed server-side. Folding that into `fail` made those files
+    permanently unrecoverable: the manifest marked them `err:`, the next run
+    treated `err:` as pending, re-POSTed, collided again, and wrote `err:`
+    again. They could never leave that state without hand-deleting rows —
+    while `resuming after a pause loses no work` sat in the troubleshooting
+    table. Caller decides what to record; see main().
+    """
     req = urllib.request.Request(
         endpoint,
         data=body,
@@ -187,30 +204,20 @@ def post_doc(endpoint, body, timeout):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read())
             if not payload.get("success", True):
-                return False, f"server returned success=false: {payload.get('error')}"
-            return True, None
+                return "fail", f"server returned success=false: {payload.get('error')}"
+            return "ok", None
     except urllib.error.HTTPError as e:
         try:
             err_body = e.read().decode("utf-8")
         except Exception:
             err_body = ""
         if "UNIQUE constraint failed" in err_body or "duplicate key" in err_body:
-            # This one is by design (doc ids are derived from the source path,
-            # so a re-ingest collides) but the raw message is a SQLite
-            # constraint dump that reads like a corruption. Name the actual
-            # situation instead — it is the error a user gets after deleting
-            # the manifest to force a re-run.
-            return False, (
-                "already in the index — the doc id is derived from the source "
-                "path, so re-ingesting the same file collides. Delete its rows "
-                "first (DELETE FROM <table> WHERE source = '...') or restore "
-                "the progress manifest so it is skipped instead."
-            )
-        return False, f"HTTP {e.code}: {err_body[:300]}"
+            return "present", None
+        return "fail", f"HTTP {e.code}: {err_body[:300]}"
     except urllib.error.URLError as e:
-        return False, f"connection error: {e}"
+        return "fail", f"connection error: {e}"
     except Exception as e:  # noqa: BLE001 — surfaced verbatim into manifest
-        return False, f"unexpected: {type(e).__name__}: {e}"
+        return "fail", f"unexpected: {type(e).__name__}: {e}"
 
 
 def main():
@@ -421,27 +428,36 @@ def main():
     started = time.time()
     last_save = started
     ok = 0
+    already_present = []
     failed = []
 
-    def _record(item, success, err):
+    def _record(item, status, err):
         nonlocal ok, last_save
-        if success:
+        if status == "ok":
             progress[item["source"]] = {"status": "ok", "hash": item["hash"]}
             ok += 1
+        elif status == "present":
+            # The rows are in the index; the manifest just did not know. Record
+            # ok so the file stops being retried forever, and remember it for
+            # the caveat printed below — we cannot compare our hash against
+            # what is actually indexed, so "present" is not proof of "current".
+            progress[item["source"]] = {"status": "ok", "hash": item["hash"]}
+            already_present.append(item["source"])
         else:
             progress[item["source"]] = {"status": f"err: {err}", "hash": None}
             failed.append((item["source"], err))
         if time.time() - last_save > 2.0:
             save_progress(progress_path, progress)
             last_save = time.time()
-        done = ok + len(failed)
+        done = ok + len(already_present) + len(failed)
         if done % 5 == 0 or done == len(pending):
-            print(f"    {done}/{len(pending)} (ok={ok} failed={len(failed)})")
+            print(f"    {done}/{len(pending)} (ok={ok} "
+                  f"already-present={len(already_present)} failed={len(failed)})")
 
     if args.concurrency <= 1:
         for item in pending:
-            success, err = post_doc(endpoint, item["body"], args.timeout)
-            _record(item, success, err)
+            status, err = post_doc(endpoint, item["body"], args.timeout)
+            _record(item, status, err)
     else:
         with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
             futures = {
@@ -450,13 +466,36 @@ def main():
             }
             for fut in as_completed(futures):
                 item = futures[fut]
-                success, err = fut.result()
-                _record(item, success, err)
+                status, err = fut.result()
+                _record(item, status, err)
 
     save_progress(progress_path, progress)
     elapsed = time.time() - started
-    rate = (ok + len(failed)) / elapsed if elapsed > 0 else 0
-    print(f"  done in {elapsed:.1f}s ({rate:.2f} files/s)  ok={ok}  failed={len(failed)}")
+    done = ok + len(already_present) + len(failed)
+    rate = done / elapsed if elapsed > 0 else 0
+    print(f"  done in {elapsed:.1f}s ({rate:.2f} files/s)  ok={ok}  "
+          f"already-present={len(already_present)}  failed={len(failed)}")
+
+    if already_present:
+        head = ", ".join(already_present[:5])
+        more = (f" (+{len(already_present) - 5} more)"
+                if len(already_present) > 5 else "")
+        print(
+            f"\n  note: {len(already_present)} file(s) were already in the index "
+            f"and have been\n"
+            f"        marked ok in the manifest: {head}{more}\n"
+            f"        Normal after an interrupted run — the manifest is flushed "
+            f"every two\n"
+            f"        seconds, so the last few successes before a Ctrl-C are "
+            f"missing from it\n"
+            f"        while their rows are committed. If instead you deleted the "
+            f"manifest to\n"
+            f"        force a refresh, note that this did NOT re-index them: the "
+            f"rows already\n"
+            f"        there are whatever was ingested last time. Delete those "
+            f"rows and their\n"
+            f"        manifest entries to actually refresh.\n"
+        )
 
     if failed:
         print("  failures (first 10):")
