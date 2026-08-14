@@ -1,0 +1,10 @@
+{
+  "name": "auto-context",
+  "version": "0.2.0",
+  "description": "Turn a folder of documents or a datastore you already run into governed, searchable context an agent can query — hybrid search (vector + full-text) served by skardi-server over SQLite, Postgres+pgvector, MongoDB, or Lance. Renders ctx + semantics + ingest/search pipelines, starts the server, then drives ingestion and querying over HTTP. Never creates schema in a datastore you own without asking.",
+  "author": { "name": "Skardi Labs" },
+  "homepage": "https://github.com/SkardiLabs/skardi-skills",
+  "repository": "https://github.com/SkardiLabs/skardi-skills",
+  "license": "Apache-2.0",
+  "keywords": ["skardi", "context", "rag", "skardi-server", "sqlite", "pgvector", "mongodb", "lance", "hybrid-search", "knowledge-base"]
+}

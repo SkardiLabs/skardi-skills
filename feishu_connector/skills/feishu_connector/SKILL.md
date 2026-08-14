@@ -1,6 +1,6 @@
 ---
 name: feishu_connector
-description: 'Sync Feishu/Lark data into a local SQLite database via the official lark-cli, then register that SQLite as a Skardi data source so an AI agent can query it with plain SQL (skardi query). Three sources: (A) a Bitable / 多维表格 becomes one SQLite table of rows and columns; (B) cloud docs / 云文档 (docx) become one row per doc holding the full markdown body; (C) a chat / 聊天记录 (IM) — group or 1:1 — becomes one row per message (sender, time, type, content). Use whenever the user wants an agent to read / query / analyze data living in Feishu — e.g. 让 AI 查飞书多维表格 / 把飞书表接进来给 agent / query my Feishu base / 让 AI 读我的飞书云文档 / 把飞书文档接进来 / 让 AI 读飞书群聊天记录 / 把飞书群聊接进来 / query my Feishu chat. v1 scope — Bitable + docs + chat (not Sheets), manual one-shot sync; Bitable special fields stored as text; docs stored as whole-doc markdown (no chunking/embedding — for semantic search over a large corpus use the auto_knowledge_base skill instead); chat stores message text + metadata (images/files as placeholders).'
+description: 'Sync Feishu/Lark data into a local SQLite database via the official lark-cli, then register that SQLite as a Skardi data source so an AI agent can query it with plain SQL (skardi query). Three sources: (A) a Bitable / 多维表格 becomes one SQLite table of rows and columns; (B) cloud docs / 云文档 (docx) become one row per doc holding the full markdown body; (C) a chat / 聊天记录 (IM) — group or 1:1 — becomes one row per message (sender, time, type, content). Use whenever the user wants an agent to read / query / analyze data living in Feishu — e.g. 让 AI 查飞书多维表格 / 把飞书表接进来给 agent / query my Feishu base / 让 AI 读我的飞书云文档 / 把飞书文档接进来 / 让 AI 读飞书群聊天记录 / 把飞书群聊接进来 / query my Feishu chat. v1 scope — Bitable + docs + chat (not Sheets), manual one-shot sync; Bitable special fields stored as text; docs stored as whole-doc markdown (no chunking/embedding — for semantic search over a large corpus use the auto_context skill instead); chat stores message text + metadata (images/files as placeholders).'
 ---
 
 # feishu_connector — query Feishu Bitables & cloud docs through Skardi
@@ -38,7 +38,7 @@ Ask for: **`app_token`** (from the URL `.../base/<app_token>`), **`table_id`** (
   ```
 
 ### B) Cloud docs (云文档 / docx) — one row per doc, full markdown body
-For when the user keeps notes / tasks / knowledge in Feishu docs and wants the agent to read them. Each doc becomes one row `(doc_id, title, url, content_md, synced_at)`; the agent filters by title/keyword, then reads `content_md`. No chunking/embedding — this suits a modest set of docs the agent can read directly; for semantic search over a large corpus use the `auto_knowledge_base` skill instead.
+For when the user keeps notes / tasks / knowledge in Feishu docs and wants the agent to read them. Each doc becomes one row `(doc_id, title, url, content_md, synced_at)`; the agent filters by title/keyword, then reads `content_md`. No chunking/embedding — this suits a modest set of docs the agent can read directly; for semantic search over a large corpus use the `auto_context` skill instead.
 Ask for: a set of **doc URLs / tokens**, or a **wiki node token + space id** (to pull a whole subtree). Optional table name (default `feishu_docs`).
 - **Sync** an explicit list:
   `python scripts/sync_docs.py --doc <url_or_token> [--doc <url_or_token> …] --out feishu.db --table-name feishu_docs`
@@ -70,7 +70,7 @@ Ask for: which chat (by **`--chat-id`** `oc_...`, or **`--chat-name`** — match
 - **Bitable + docs + chat only** — Sheets out of scope.
 - **Manual one-shot sync** — no incremental/scheduled sync; re-run to refresh.
 - **Bitable special fields as text** — select/multi-select become "a / b"; dates are Feishu's string; links are text. Typed mapping is future work (with eng).
-- **Docs = whole-doc markdown** — one row per doc, no per-section/heading split, no embedding. Deeply-nested list items may be flattened by the markdown export. For semantic retrieval over a large corpus, use `auto_knowledge_base` instead.
+- **Docs = whole-doc markdown** — one row per doc, no per-section/heading split, no embedding. Deeply-nested list items may be flattened by the markdown export. For semantic retrieval over a large corpus, use `auto_context` instead.
 - **Chat = message text + metadata** — images/files/audio become `[type]` placeholders (not downloaded); reactions and thread structure are not captured; only chats the authed user belongs to are readable.
 
 ## Notes
