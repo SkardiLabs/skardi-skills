@@ -10,8 +10,9 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 |---|---|---|
 | `auto_context/` | `auto_context` | Turn a folder of documents — or a datastore you already run — into governed, searchable context an agent can query. Hybrid search (vector + full-text + RRF) served over HTTP by `skardi-server`. Defaults to a local SQLite file the skill creates and owns (FTS5 + sqlite-vec `vec0` mirrors kept in sync by triggers), so you supply only a corpus; point it at Postgres+pgvector, MongoDB, or Lance when the data should live in a database you already own. Handles prereq checks, model resolution, chunking and embedding inline in SQL, ingest, and retrieval end-to-end across `candle` / `gguf` / `remote_embed`. Never creates schema in a datastore you own — prints the SQL and waits. |
 | `feishu_connector/` | `feishu_connector` | Sync a Feishu/Lark Bitable into local SQLite via `lark-cli`, then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync, Bitable only. |
+| `retrieval/` | `retrieval` | Answer questions from live data through a running `skardi-server` with the `skardi` CLI. Discovers sources, tables and named pipelines at runtime, runs the question through any semantic search surface first (`search-hybrid` and friends), then writes read-only SQL against exact qualified table names, checks the truncated flag before trusting counts, and reports with the query attached. Consumes whatever the server already has — builds nothing, writes nothing. |
 
-> **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto_context` starts a server. There is no CLI-only mode.
+> **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto_context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
 
 ## Installation
 
@@ -23,6 +24,7 @@ From inside any Claude Code session:
 /plugin marketplace add SkardiLabs/skardi-skills
 /plugin install auto-context@skardi-skills
 /plugin install feishu-connector@skardi-skills
+/plugin install retrieval@skardi-skills
 ```
 
 That's it — the skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
@@ -39,13 +41,17 @@ cp -r auto_context/skills/auto_context ~/.claude/skills/auto_context
 
 # feishu_connector (query a Feishu Bitable through Skardi)
 cp -r feishu_connector/skills/feishu_connector ~/.claude/skills/feishu_connector
+
+# retrieval (answer questions from data a skardi-server already serves)
+cp -r retrieval/skills/retrieval ~/.claude/skills/retrieval
 ```
 
-Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto_context`. You can also invoke it directly:
+Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto_context`, or "query our database" / "how many orders last month" / "what tables do we have" for `retrieval`. You can also invoke it directly:
 
 ```text
 /auto_context
 /feishu_connector
+/retrieval
 ```
 
 ### Cursor
@@ -55,6 +61,7 @@ Copy the skill(s) into the project-level skills directory:
 ```bash
 cp -r auto_context/skills/auto_context .cursor/skills/auto_context
 cp -r feishu_connector/skills/feishu_connector .cursor/skills/feishu_connector
+cp -r retrieval/skills/retrieval .cursor/skills/retrieval
 ```
 
 ### Other Agent Skills-compatible tools
