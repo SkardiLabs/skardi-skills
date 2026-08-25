@@ -48,18 +48,52 @@ Claude Code will automatically load the relevant skill when your request matches
 /feishu_connector
 ```
 
-### Cursor
+### Other Agent Skills hosts
 
-Copy the skill(s) into the project-level skills directory:
+Codex, Cursor, Pi, dsh, OpenClaw, and Hermes read the same `SKILL.md` format Claude Code does — they differ only in where the skill directory has to go. All of them install from a checkout:
 
 ```bash
-cp -r auto_context/skills/auto_context .cursor/skills/auto_context
-cp -r feishu_connector/skills/feishu_connector .cursor/skills/feishu_connector
+git clone https://github.com/SkardiLabs/skardi-skills.git && cd skardi-skills
 ```
 
-### Other Agent Skills-compatible tools
+`*/skills/*` in the commands below copies every skill in this repo. To install a single one, name it instead: `cp -r auto_context/skills/auto_context <destination>`.
 
-The `SKILL.md` files follow the [Agent Skills open standard](https://agentskills.io/) and work with any compatible tool. Place the skill directory wherever your tool resolves personal or project skills.
+#### Codex, Cursor, Pi, dsh
+
+All four read the cross-tool `~/.agents/skills/` convention, so one copy covers every one of them:
+
+```bash
+mkdir -p ~/.agents/skills
+cp -r */skills/* ~/.agents/skills/
+```
+
+To scope the skills to a single project instead, copy them into that repo's `.agents/skills/`. Each host also keeps a native directory if you'd rather install per tool — `~/.cursor/skills/` for [Cursor](https://cursor.com/docs/skills), `~/.pi/agent/skills/` for [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md), `~/.dsh/skills/` for [dsh](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/skills.md) — while [Codex](https://learn.chatgpt.com/docs/build-skills) uses `~/.agents/skills/` as its only personal location.
+
+#### OpenClaw
+
+[OpenClaw](https://docs.openclaw.ai/tools/skills) installs from a local path through its own CLI rather than by copying:
+
+```bash
+openclaw skills install ./auto_context/skills/auto_context
+openclaw skills install ./feishu_connector/skills/feishu_connector
+```
+
+That puts the skills in the active workspace's `skills/` directory. OpenClaw's shared location, visible to every local agent, is `~/.openclaw/skills/`; its docs pair the `--global` flag with that directory for ClawHub installs and don't say whether the flag also applies to a local path.
+
+#### Hermes
+
+[Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills) treats `~/.hermes/skills/` as its source of truth:
+
+```bash
+mkdir -p ~/.hermes/skills
+cp -r */skills/* ~/.hermes/skills/
+```
+
+Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git repo it reads `<repo>/.hermes/skills/` and `<repo>/.agents/skills/`. To share one personal folder with the hosts above, add it under `skills.external_dirs` in `~/.hermes/config.yaml`.
+
+#### Anything else
+
+The `SKILL.md` files follow the [Agent Skills open standard](https://agentskills.io/), so any compatible host works. Place the skill directory wherever your tool resolves personal or project skills, and restart the host if the skill doesn't show up.
 
 ## Bundled resources per skill
 
