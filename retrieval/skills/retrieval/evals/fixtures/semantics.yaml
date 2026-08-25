@@ -12,7 +12,10 @@ spec:
         E-commerce operational database mounted as a catalog. Tables:
         shop.main.orders (one row per order), shop.main.customers (one row
         per registered customer), shop.main.notes_fts (FTS5 index over
-        internal policy notes, served by the read-only search-fulltext pipeline).
+        internal policy notes, served by the read-only search-fulltext
+        pipeline — auto_context's unmodified standard, honors its limit
+        parameter). recent-orders is a read-only pipeline over
+        shop.main.orders.
       columns:
         - name: amount_cents
           description: Order total in cents; divide by 100 for yuan.

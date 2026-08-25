@@ -32,12 +32,25 @@ done
 
 : "${SKARDI_SERVER_BIN:?set SKARDI_SERVER_BIN to a skardi-server binary built from the v0.5.0 tag}"
 
+# Refuse a port that is already answering BEFORE touching any fixture
+# state. This check must precede make_data.py and the rendered configs:
+# a refused launch that had already rebuilt the databases would leave the
+# still-running old server on stale inodes and wipe evidence (e.g. an
+# ops_log row proving a write pipeline was executed) — reproduced in
+# review round 4. It also protects against the round-3 failure where the
+# health poll blessed the leftover server as this launch.
+if curl -sf "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1; then
+  echo "port ${PORT} is already serving /health — stop the old server first" \
+       "(kill \$(cat server.pid)) or pass a different --port; no fixture state was touched" >&2
+  exit 1
+fi
+
 python3 make_data.py
 
 RENDER=pipelines.rendered
 rm -rf "$RENDER" && mkdir "$RENDER"
 cp pipelines/orders-by-status.yaml pipelines/refresh-orders.yaml "$RENDER"/
-[[ "$NO_SEARCH" -eq 1 ]] || cp pipelines/search-fulltext.yaml "$RENDER"/
+[[ "$NO_SEARCH" -eq 1 ]] || cp pipelines/search-fulltext.yaml pipelines/recent-orders.yaml "$RENDER"/
 
 # v0.5.0 auto-discovers `semantics.yaml` sitting NEXT TO the ctx file even
 # when --semantics is not passed (verified 2026-08-25). For --bare we must
@@ -53,16 +66,6 @@ if [[ "$BARE" -eq 1 ]]; then
   CTX="ctx.rendered/ctx.yaml"
 else
   SEM=(--semantics semantics.yaml)
-fi
-
-# Refuse a port that is already answering — otherwise the health poll
-# below would bless a LEFTOVER server from a previous variant while this
-# launch dies with "Address already in use" (reproduced in review round 3:
-# --no-search reported ready against the old full-variant server).
-if curl -sf "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1; then
-  echo "port ${PORT} is already serving /health — stop the old server first" \
-       "(kill \$(cat server.pid)) or pass a different --port" >&2
-  exit 1
 fi
 
 # ${SEM[@]+...}: macOS bash 3.2 errors on expanding an empty array under
