@@ -12,7 +12,7 @@ spec:
         E-commerce operational database mounted as a catalog. Tables:
         shop.main.orders (one row per order), shop.main.customers (one row
         per registered customer), shop.main.notes_fts (FTS5 index over
-        internal policy notes, served by the search-fulltext pipeline).
+        internal policy notes, served by the read-only search-fulltext pipeline).
       columns:
         - name: amount_cents
           description: Order total in cents; divide by 100 for yuan.

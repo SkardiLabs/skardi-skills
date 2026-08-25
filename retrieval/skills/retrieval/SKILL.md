@@ -59,29 +59,29 @@ If the question names data you cannot find, say so — do not query a lookalike 
 
 ### 2. Search meaning first, SQL second — in that order, not either/or
 
-Check `skardi pipeline list` for a search surface: the `auto_context` standard names (`search-hybrid`, `search-vector`, `search-fulltext`), or a pipeline the operator has declared to be one. Name-shape is how you *find* candidates; whether you may *call* one is decided by the allowlist rule below.
+Check `skardi pipeline list` for a search surface: the `auto_context` standard names (`search-hybrid`, `search-vector`, `search-fulltext`), or a pipeline the operator has declared to be one. Name-shape is how you *find* candidates; whether you may *call* one is decided by the declaration rule below.
 
-- **If one exists, run the user's question through it first**, even when you expect to write SQL afterwards. It searches indexed content — documentation, policies, definitions, past decisions — and what comes back tells you what the terms in the question *mean* before you count anything. A question like "how many refunds under the new policy" needs the policy text (semantic surface) before the refund count (SQL) can be right:
+- **If one exists (and clears the declaration rule below), run the user's question through it first**, even when you expect to write SQL afterwards. It searches indexed content — documentation, policies, definitions, past decisions — and what comes back tells you what the terms in the question *mean* before you count anything. A question like "how many refunds under the new policy" needs the policy text (semantic surface) before the refund count (SQL) can be right:
 
   ```bash
   skardi run search-fulltext -p 'query=refund policy' -p limit=5
   # → "Refund policy changed on 2026-07-15: refunds are now allowed within 30 days …"
   ```
 
-  (`search-hybrid` takes more parameters — `query`, `text_query`, `vector_weight`, `text_weight`, `limit`. Confirm the signature with `pipeline show` before calling: an exact match is what puts a pipeline on the allowlist below.)
+  (`search-hybrid` takes more parameters — `query`, `text_query`, `vector_weight`, `text_weight`, `limit`. Check the signature with `pipeline show`: matching the standard shape makes a pipeline worth *proposing*; the declaration rule below still decides whether you may call it.)
 
 - **If the search result alone answers the question** (a "what does X say / find the doc about Y" question), stop there and cite the sources it returned.
 - **Search hits inform your SQL; they never override the data.** An indexed document can be stale or off-topic — use what it says to shape filters and interpret terms, but the registered tables are the system of record for numbers. If a document and the data disagree, report both, don't average them.
 - **If no search surface exists, go straight to SQL.** Do not build one — that is `auto_context`'s job, offer it as a follow-up instead.
 
-**Which pipelines may you run at all? Default: none.** Pipeline SQL is validated when the server loads it, so a pipeline that would write to a `read_only` source cannot even register (the server refuses to start with it). But a write to a source the operator marked `read_write` is a perfectly legal pipeline — every `auto_context` deployment ships `ingest` / `ingest-chunked`, which insert rows — and `pipeline show` does not reveal the SQL, so **nothing you can inspect at runtime proves a pipeline is read-only**. Names and parameter shapes are labels, not proof: an INSERT pipeline named `search-notes` with `query`/`limit` parameters would pass every look-based test. So invocation is allowlist-only. A pipeline is callable when **one** of these holds:
+**Which pipelines may you run at all? Default: none — a declaration is required.** Pipeline SQL is validated when the server loads it, so a pipeline that would write to a `read_only` source cannot even register (the server refuses to start with it). But a write to a source the operator marked `read_write` is a perfectly legal pipeline — every `auto_context` deployment ships `ingest` / `ingest-chunked`, which insert rows — and `pipeline show` does not reveal the SQL, so **nothing you can inspect at runtime proves a pipeline is read-only**. Names and parameter shapes are labels, not proof: an INSERT pipeline *named* `search-fulltext` with `query`/`limit` parameters would pass every look-based test. Not writing is a hard promise of this skill, so looks never authorize a call. A pipeline is callable only when **both** hold:
 
-1. **It matches an `auto_context` standard search pipeline by exact name and parameter signature** — `search-fulltext(query, limit)`, `search-vector(query, limit)`, or `search-hybrid(query, text_query, vector_weight, text_weight, limit)`. These ship in this repo and are read-only by construction. Stated assumption: a deployment that redefines these names with different SQL has broken the convention this skill relies on — if results from one look like writes or nonsense, stop and say so.
-2. **The operator or user has told you this specific pipeline is a read-only search/lookup surface** — in this session, or in the source's semantics description. Ask once per pipeline and keep the answer for the session.
+1. **Someone accountable has declared this specific pipeline read-only.** Two forms count: the operator wrote it into the source's semantics description, which you read in `skardi schema` (e.g. an index table described as "served by the search-fulltext pipeline"), or the user/operator confirms it in this session. Matching an `auto_context` standard signature — `search-fulltext(query, limit)`, `search-vector(query, limit)`, `search-hybrid(query, text_query, vector_weight, text_weight, limit)` — is a strong reason to *propose* one ("this looks like auto_context's standard search pipeline — confirm it's the unmodified read-only one and I'll use it"), but the declaration is what authorizes, not the match. Ask once per pipeline and keep the answer for the session.
+2. **Its result size is clearly bounded.** A search/list pipeline qualifies through a `limit`-style parameter — which you then always pass explicitly and small (start at 5–20, raise deliberately), because `skardi run` output is not row-capped. A unique-key lookup (`lookup-order(id)`) is naturally bounded by its key. A declared-read-only pipeline with no bound at all is still not callable — get those rows through ad-hoc SQL with a `LIMIT` instead.
 
 Everything else — however retrieval-flavored its name — you do not call from this skill. Answer with an ad-hoc `SELECT` (validated read-only on every request) or ask what the pipeline is. Never run a pipeline to find out what it does.
 
-When you do call one, **always pass an explicit, small limit** (start at 5–20 and raise deliberately) — `skardi run` output is not row-capped, and a search surface without a tight limit can pull an entire index. Invocation: `skardi run <name> -p key=value` — values parse as JSON first (numbers, booleans), then fall back to plain strings.
+Invocation: `skardi run <name> -p key=value` — values parse as JSON first (numbers, booleans), then fall back to plain strings.
 
 ### 3. Ad-hoc SQL: read-only, one statement at a time
 

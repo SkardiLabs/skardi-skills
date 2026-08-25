@@ -55,18 +55,39 @@ else
   SEM=(--semantics semantics.yaml)
 fi
 
+# Refuse a port that is already answering — otherwise the health poll
+# below would bless a LEFTOVER server from a previous variant while this
+# launch dies with "Address already in use" (reproduced in review round 3:
+# --no-search reported ready against the old full-variant server).
+if curl -sf "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1; then
+  echo "port ${PORT} is already serving /health — stop the old server first" \
+       "(kill \$(cat server.pid)) or pass a different --port" >&2
+  exit 1
+fi
+
 # ${SEM[@]+...}: macOS bash 3.2 errors on expanding an empty array under
 # `set -u`; this idiom expands to nothing when SEM is empty.
 nohup "$SKARDI_SERVER_BIN" --ctx "$CTX" --pipeline "$RENDER" --port "$PORT" \
   ${SEM[@]+"${SEM[@]}"} > server.log 2>&1 &
-echo $! > server.pid
+PID=$!
+echo "$PID" > server.pid
 
+fail() {
+  echo "$1; last server.log lines:" >&2
+  tail -5 server.log >&2 || true
+  kill "$PID" 2>/dev/null || true
+  rm -f server.pid
+  exit 1
+}
+
+# Health alone is not proof — require OUR pid to be alive on every poll,
+# so a dead launch can never be mistaken for a running one.
 for _ in $(seq 1 60); do
+  kill -0 "$PID" 2>/dev/null || fail "server process died during startup"
   if curl -sf "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1; then
-    echo "ready: http://127.0.0.1:${PORT} (pid $(cat server.pid), bare=$BARE, no-search=$NO_SEARCH)"
+    echo "ready: http://127.0.0.1:${PORT} (pid $PID, bare=$BARE, no-search=$NO_SEARCH)"
     exit 0
   fi
   sleep 0.5
 done
-echo "server did not become healthy; see $(pwd)/server.log" >&2
-exit 1
+fail "server did not become healthy within 30s"
