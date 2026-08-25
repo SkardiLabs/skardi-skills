@@ -1,6 +1,6 @@
 ---
 name: retrieval
-description: 'Answer questions from live data through a running skardi-server using the skardi CLI. Discover at runtime what sources, tables and named pipelines the server has, run the question through any semantic search surface first (search-hybrid and friends), then write read-only SQL against exact qualified table names for the precise answer, check the truncated flag before trusting counts, and report with the query attached. Use whenever the user wants to query, explore, or answer questions from data a skardi-server already serves — Postgres, MySQL, SQLite, MongoDB, files, or SaaS sources registered in its ctx — or asks what data is available. Trigger on: query our database, ask our data a question, what tables do we have, run SQL through skardi, use the skardi CLI, how many orders/users/events, answer from the warehouse. Requires a reachable skardi-server; this skill does not build search indexes (auto_context does that), does not write data (the job path does that), and does not set up or start servers.'
+description: 'Answer questions from live data through a running skardi-server using the skardi CLI. Discover at runtime what sources and named pipelines the server has (and table schemas where the deployment exposes them), run the question through any semantic search surface first (search-hybrid and friends), then write read-only SQL against exact qualified table names for the precise answer, check the truncated flag before trusting counts, and report with the query attached. Use whenever the user wants to query, explore, or answer questions from data a skardi-server already serves — Postgres, MySQL, SQLite, MongoDB, files, or SaaS sources registered in its ctx — or asks what data is available. Trigger on: query our database, ask our data a question, what tables do we have, run SQL through skardi, use the skardi CLI, how many orders/users/events, answer from the warehouse. Requires a reachable skardi-server; this skill does not build search indexes (auto_context does that), does not write data (the job path does that), and does not set up or start servers.'
 ---
 
 # retrieval — answer questions from live data through skardi
@@ -42,7 +42,7 @@ Which tables exist, which pipelines are registered, what a column means, what is
 Run `skardi schema`. Sources come in two registration shapes, and they read differently:
 
 - **Table-level source** (the default): one source = one table, addressed by the bare source name — `SELECT ... FROM orders`. `skardi schema` lists its full column set with types. Easy case.
-- **Catalog-level source**: a whole database mounted as a named catalog. Tables live at `<source>.<schema>.<table>` — e.g. `shop.main.orders` for SQLite, where the schema segment is `main`. **On v0.5.0 `skardi schema` does not enumerate a catalog's tables** (you will see `schema: []`), and `SHOW TABLES` / `information_schema` are not available either. Get table names from the source's semantics description (well-run deployments name their tables there), from the operator, or from the question itself — then confirm each with `DESCRIBE`:
+- **Catalog-level source**: a whole database mounted as a named catalog. Tables live at `<source>.<schema>.<table>` — e.g. `shop.main.orders` for SQLite, where the schema segment is `main`. **On v0.5.0 `skardi schema` does not enumerate a catalog's tables** (you will see `schema: []`), and `SHOW TABLES` / `information_schema` are not available either. Get table names from the source's semantics description (well-run deployments name their tables there) or from the operator; a name the user's question mentions may be tried too. Whatever its origin, a candidate name earns **exactly one `DESCRIBE` verification** before you build on it — and if no candidate verifies, stop and ask for the table list instead of iterating guesses:
 
   ```bash
   skardi query -e "DESCRIBE shop.main.orders" --table
@@ -71,9 +71,16 @@ Check `skardi pipeline list` for a search surface: names like `search-hybrid`, `
   (`search-hybrid` deployments take more parameters — typically `query`, `text_query`, `vector_weight`, `text_weight`, `limit`. Always read the actual names from `pipeline show`; do not assume.)
 
 - **If the search result alone answers the question** (a "what does X say / find the doc about Y" question), stop there and cite the sources it returned.
+- **Search hits inform your SQL; they never override the data.** An indexed document can be stale or off-topic — use what it says to shape filters and interpret terms, but the registered tables are the system of record for numbers. If a document and the data disagree, report both, don't average them.
 - **If no search surface exists, go straight to SQL.** Do not build one — that is `auto_context`'s job, offer it as a follow-up instead.
 
-Prefer a matching named pipeline over improvised SQL in general: pipelines are the operator's tested, parameterized queries. `skardi run <name> -p key=value` — values parse as JSON first (numbers, booleans), then fall back to plain strings.
+**Which pipelines may you run at all?** Pipeline SQL is validated when the server loads it, so a pipeline that would write to a `read_only` source cannot even register (the server refuses to start with it). But a write to a source the operator marked `read_write` is a perfectly legal pipeline — every `auto_context` deployment ships `ingest` / `ingest-chunked`, which insert rows — and `pipeline show` does not reveal the SQL. So gate invocation on evident intent. Run a pipeline only when all three hold:
+
+1. **Name and parameters read as retrieval** — `search-*`, a `query` + `limit` shape. Never anything ingest-, write-, refresh-, sync- or update-flavored.
+2. **It has a result-bounding parameter** (`limit` or similar) — `skardi run` output is not row-capped, so an unbounded pipeline can pull an entire table.
+3. **Its purpose matches the question.**
+
+Anything ambiguous: do not run it to find out what it does — ask the operator what it is, or answer with an ad-hoc `SELECT`, which is validated read-only on every request. Invocation: `skardi run <name> -p key=value` — values parse as JSON first (numbers, booleans), then fall back to plain strings.
 
 ### 3. Ad-hoc SQL: read-only, one statement at a time
 
@@ -81,7 +88,7 @@ Prefer a matching named pipeline over improvised SQL in general: pipelines are t
 skardi query -e "/* purpose: order counts by lifecycle state */ SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
 ```
 
-- **Open every query with a one-line purpose comment**: `/* purpose: ... */`. It costs nothing, it makes the SQL self-explaining when someone re-runs it, and on servers with the query audit ledger enabled (post-v0.5.0) it puts the *why* into the recorded statement — the raw material Skardi's self-improving loop learns repeated questions from. Use the block-comment form: a leading `-- comment` makes the CLI misparse `-e "--..."` as a flag (only the `--sql="..."` form tolerates it).
+- **Open every query with a one-line purpose comment**: `/* purpose: ... */`. On v0.5.0 this is a readability habit and nothing more — it helps whoever re-runs or audits the SQL. Skardi's structured audit contract (an `ai_context: { purpose, session_id }` object in the request body, which is what session-level learning aggregates on) exists server-side only after v0.5.0, and this CLI cannot send it: `skardi query` carries just the SQL and `--max-rows` (CLI flags are tracked in skardi#218). **Do not claim query purposes are being captured for Skardi's self-improving loop** until the CLI grows those flags. Mechanics: use the block-comment form — a leading `-- comment` makes the CLI misparse `-e "--..."` as a flag (only the `--sql="..."` form tolerates it).
 - **SELECT only.** The server already rejects DDL and COPY outright, and rejects writes to any source not explicitly configured `read_write` — but do not lean on that: retrieval work is read work, even on writable sources.
 - **One statement per request.** The server rejects multi-statement SQL (`Expected exactly one SQL statement`). Run follow-ups as separate calls.
 - **Peek before the real query.** `SELECT * FROM <table> LIMIT 5` shows you actual value shapes — date formats, status spellings, NULL patterns — that schema output cannot. One peek prevents most wrong-filter answers.

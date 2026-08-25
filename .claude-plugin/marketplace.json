@@ -19,9 +19,9 @@
     {
       "name": "feishu-connector",
       "source": "./feishu_connector",
-      "description": "Sync a Feishu/Lark Bitable into local SQLite via lark-cli, then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync, Bitable only.",
+      "description": "Sync Feishu/Lark data into local SQLite via lark-cli — a Bitable (rows/columns), cloud docs (one row per doc), or a chat (one row per message) — then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync; Sheets not covered.",
       "category": "connector",
-      "keywords": ["skardi", "feishu", "lark", "bitable", "sqlite", "connector"]
+      "keywords": ["skardi", "feishu", "lark", "bitable", "docs", "chat", "sqlite", "connector"]
     },
     {
       "name": "retrieval",

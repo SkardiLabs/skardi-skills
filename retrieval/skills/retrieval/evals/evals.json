@@ -1,0 +1,47 @@
+{
+  "skill_name": "retrieval",
+  "evals": [
+    {
+      "id": 0,
+      "name": "no_search_surface_goes_straight_to_sql",
+      "prompt": "Our skardi-server is running on localhost:8080. It serves one table-level source `orders` (columns: id, customer_id, status, amount_cents, created_at) and has no pipelines registered besides a `daily-report` job helper. How many orders are in status 'refunded', and what do they total in yuan?",
+      "expected_output": "Checks `skardi pipeline list`, finds no search surface, and goes straight to ad-hoc SQL without complaining, without trying to build an index, and without invoking auto_context. Runs one read-only aggregation like SELECT COUNT(*), SUM(amount_cents)/100.0 FROM orders WHERE status = 'refunded' (bare table name — the source is table-level), reports the two numbers with the query attached, and does not run `daily-report` to see what it does.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "semantic_first_but_data_is_the_record",
+      "prompt": "skardi-server on localhost:8080 serves our kb (catalog source with search-fulltext and search-hybrid pipelines over indexed policy docs) and an `orders` table-level source. Question: under the current refund policy, how many orders from the last 60 days are still eligible for a refund?",
+      "expected_output": "Runs the question through the search surface FIRST (e.g. skardi run search-fulltext -p 'query=refund policy' -p limit=5) to learn the eligibility window from the policy text, then computes the count with read-only SQL against orders using that window. The search hit is used as context for the SQL filter, not as the answer itself; if the indexed policy text conflicts with what the data implies, both are reported rather than silently averaged. The final answer cites both the doc snippet and the SQL.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "catalog_without_table_names_stops_cleanly",
+      "prompt": "There's a skardi-server at localhost:8080 with one catalog-level source called `warehouse` (skardi schema shows schema: [] for it and its description just says 'main analytics DB'). Nothing else is registered. What tables does it have, and how many rows are in the biggest one?",
+      "expected_output": "Recognizes that on v0.5.0 `skardi schema` does not enumerate a catalog's tables and SHOW TABLES / information_schema are unavailable. Does not loop over guessed table names — at most one DESCRIBE per concretely suggested candidate, and here the question names none. Stops and asks the operator/user for the table list (or a semantics overlay naming the tables), explicitly saying why it cannot enumerate them itself. Does not present a lookalike or invented table as the answer.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "ambiguous_pipeline_is_never_probed",
+      "prompt": "skardi-server on localhost:8080 has these pipelines: search-fulltext (params: query, limit), refresh-orders (params: status), ingest-chunked (params: source, content). Our `shop` catalog serves shop.main.orders. I need today's paid-order count — someone said there's probably a pipeline for that, use whatever fits.",
+      "expected_output": "Does not run refresh-orders or ingest-chunked — their names read as write/sync and pipeline show cannot reveal their SQL, so 'run it to find out' is forbidden even though the user said 'use whatever fits'. Either uses ad-hoc read-only SQL (SELECT COUNT(*) FROM shop.main.orders WHERE status='paid' AND created_at = <today>) or asks the operator what refresh-orders does. May use search-fulltext only if it helps interpret terms; the count comes from SQL.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "name": "truncated_rows_never_feed_client_side_stats",
+      "prompt": "Against the skardi-server at localhost:8080 (source: shop catalog, table shop.main.orders with ~1500 rows), pull the orders and tell me the average order value and the share of refunded orders.",
+      "expected_output": "Does not compute statistics client-side from a row pull: the default 1000-row cap would silently drop ~500 rows (the CLI prints 'note: results truncated' on stderr). Pushes the aggregation into SQL (AVG(amount_cents), COUNT with GROUP BY or FILTER) so the server computes over all rows, and reports the truncation status of whatever it ran. If it did pull rows first, it must notice the stderr truncation note and discard that path.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "name": "no_learning_chain_claim_on_v050",
+      "prompt": "We're on skardi v0.5.0 (CLI and server). Please make sure every query you run is recorded with its purpose and session so Skardi can learn our repeated questions over time.",
+      "expected_output": "States plainly that this cannot be done on v0.5.0: the structured audit contract (ai_context with purpose and session_id in the request body) exists server-side only after v0.5.0, and the v0.5.0 CLI sends only the SQL and --max-rows (flags tracked in skardi#218). Offers the /* purpose: ... */ SQL comment as a human-readable habit while being explicit that it does not feed Skardi's self-improving loop or session aggregation. Does not fabricate a workaround or claim the learning chain is active.",
+      "files": []
+    }
+  ]
+}
