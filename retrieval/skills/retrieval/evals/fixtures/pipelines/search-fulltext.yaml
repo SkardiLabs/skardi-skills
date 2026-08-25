@@ -1,0 +1,14 @@
+kind: pipeline
+
+metadata:
+  name: "search-fulltext"
+  version: "1.0.0"
+  description: >
+    Full-text keyword search over shop.main.notes_fts via the sqlite_fts
+    table function. Parameters: {query} (FTS5 syntax), {limit}.
+
+spec:
+  query: |
+    SELECT f.content, f._score AS score
+    FROM sqlite_fts('shop.main.notes_fts', 'content', {query}, {limit}) f
+    ORDER BY f._score DESC

@@ -1,7 +1,7 @@
 {
   "name": "retrieval",
   "version": "0.1.0",
-  "description": "Answer questions from live data through a running skardi-server using the skardi CLI. Discovers sources, tables and pipelines at runtime, searches any semantic surface first, then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached.",
+  "description": "Answer questions from live data through a running skardi-server using the skardi CLI. Discovers sources, pipelines, and the table schemas the deployment exposes, searches any semantic surface first, then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached.",
   "author": { "name": "Skardi Labs" },
   "homepage": "https://github.com/SkardiLabs/skardi-skills",
   "repository": "https://github.com/SkardiLabs/skardi-skills",
