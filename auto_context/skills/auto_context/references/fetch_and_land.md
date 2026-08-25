@@ -64,13 +64,19 @@ server owns that). Minimum shape, extend freely:
 ```sql
 CREATE TABLE IF NOT EXISTS staged_documents (
   key        TEXT PRIMARY KEY,  -- stable id at the source (page id, node token, message id)
-  source     TEXT NOT NULL,     -- locator a citation can use (URL, path); unique
+  source     TEXT NOT NULL UNIQUE,  -- locator a citation can use (URL, path)
   title      TEXT,
   content    TEXT,              -- NULL until stage B lands it
   fetched_at TEXT,
   error      TEXT               -- last fetch failure, NULL after a success
 );
 ```
+
+`source` carries a real `UNIQUE` constraint, not a comment saying it should
+be unique. Source strings are document identity downstream — two rows sharing
+one means one of the two documents cannot be indexed — so the constraint
+belongs where it fails immediately, at stage A, rather than at stage D after
+every body has already been fetched.
 
 ## Stage B — fetch bodies one document at a time
 
@@ -107,9 +113,15 @@ Acceptance criteria — all three, before stage D:
 1. **Listed matches the source.** Where the source exposes a total, `listed`
    equals it; where it does not, state how the end of the listing was
    established (which has-more signal, which containers were expanded).
-2. **Fetched equals listed** — or the user has seen the exact list of
-   missing documents (keys, titles, per-row reason) and explicitly said to
-   continue without them.
+2. **Fetched equals listed** — or the shortfall is explicitly accepted. Not
+   by omitting a flag: show the user the exact list of missing documents
+   (keys, titles, per-row reason), and if they decide the corpus should be
+   built anyway, pass `--accept-missing N` at stage D with the exact count.
+   That records the decision in the command, and it self-invalidates — if
+   the shortfall later changes, the count no longer matches and the run
+   stops again with the new number. Reserve it for documents that are
+   genuinely unavailable at the source; anything transient (rate limits,
+   timeouts) is a reason to re-run stage B instead.
 3. **The numbers go in your report to the user** — listed, fetched, failed,
    and the named misses. Not in a log file: in the message the user reads.
    An index built from a shortfall the user never saw is worse than no
@@ -160,6 +172,13 @@ listed and never fetched. Without it the run prints the same counts and
 indexes the partial corpus anyway, which is the exact failure this process
 exists to prevent.
 
+If the user accepted a shortfall at stage C, add `--accept-missing N` with
+the exact count. The run then proceeds, prints `ACCEPTED SHORTFALL`, and ends
+with `RESULT complete=false reason=accepted-shortfall` — so the index is on
+record as knowingly partial, and you say so when reporting it. A wrong count
+is refused rather than rounded, which is the point: the override cannot be
+written once and left behind.
+
 It is still not a substitute for stage C: a document your listing never
 captured produces no row at all, so nothing here can notice it. Only stage
 A's completeness makes stage C's arithmetic mean anything — see the section
@@ -168,6 +187,12 @@ above on which half is enforced.
 Use `--limit` only for a trial POST or two while debugging. It holds rows
 back by design, so the run reports itself INCOMPLETE and refuses to combine
 with `--require-complete`; its result never counts as a finished ingest.
+
+Every run ends with one machine-readable line — `RESULT complete=true`, or
+`complete=false` with a reason (`limit`, `accepted-shortfall`,
+`failed-posts`). Check that line, not the exit code, when something
+downstream consumes the run: a deliberate trial exits 0 like a finished
+ingest does.
 
 ## Source notes (state of 2026-08, verify before relying on them)
 

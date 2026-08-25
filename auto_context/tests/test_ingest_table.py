@@ -314,19 +314,17 @@ def _run_corpus(monkeypatch, argv, outcome=("ok", None)):
     return posted
 
 
-def test_table_run_refuses_a_source_already_held_by_the_folder_entry(
+def test_table_run_refuses_a_source_that_means_another_document(
         tmp_path, monkeypatch, capsys):
-    """The collision that used to pass silently: a table row whose source
-    equals a file's relative path is the SAME doc id, so with identical
-    content it was written off as `already ok` and the row never ingested
-    on its own terms."""
+    """Same source string, different content, different raw-material set —
+    two genuinely different documents fighting over one doc id."""
     ws = _make_workspace(tmp_path)
     corpus = tmp_path / "docs"
     corpus.mkdir()
-    (corpus / "guide.md").write_text("shared body")
+    (corpus / "guide.md").write_text("the file's own body")
     _run_corpus(monkeypatch, ["--workspace", str(ws), "--corpus", str(corpus)])
 
-    db = _make_staging(tmp_path, [("guide.md", "guide.md", None, "shared body")])
+    db = _make_staging(tmp_path, [("guide.md", "guide.md", None, "a different body")])
     with pytest.raises(SystemExit) as e:
         _run_main(monkeypatch, [
             "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
@@ -334,8 +332,29 @@ def test_table_run_refuses_a_source_already_held_by_the_folder_entry(
             "--source-column", "source"])
     err = capsys.readouterr().err
     assert e.value.code != 0
-    assert "guide.md" in err and "already ingested from the corpus entry" in err
+    assert "guide.md" in err and "already indexed from" in err
     assert "Nothing was ingested" in err
+
+
+def test_identical_content_from_another_set_is_not_a_collision(
+        tmp_path, monkeypatch, capsys):
+    """Byte-identical content under the same source is the SAME document
+    reached another way — a moved corpus root, a re-export. Refusing it
+    would block ordinary re-runs, which is the trap the label-based version
+    fell into."""
+    ws = _make_workspace(tmp_path)
+    corpus = tmp_path / "docs"
+    corpus.mkdir()
+    (corpus / "guide.md").write_text("shared body")
+    _run_corpus(monkeypatch, ["--workspace", str(ws), "--corpus", str(corpus)])
+
+    db = _make_staging(tmp_path, [("guide.md", "guide.md", None, "shared body")])
+    posted = _run_main(monkeypatch, [
+        "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+        "--key-column", "key", "--content-column", "content",
+        "--source-column", "source"])
+    assert posted == []                        # already indexed, not refused
+    assert "nothing to do" in capsys.readouterr().out
 
 
 def test_folder_run_refuses_a_source_already_held_by_a_table_entry(
@@ -355,7 +374,7 @@ def test_folder_run_refuses_a_source_already_held_by_a_table_entry(
         _run_corpus(monkeypatch, ["--workspace", str(ws), "--corpus", str(corpus)])
     err = capsys.readouterr().err
     assert e.value.code != 0
-    assert "already ingested from the table entry" in err
+    assert "already indexed from" in err and "staging.db::staged_documents" in err
 
 
 def test_two_entries_coexist_when_sources_are_distinct(tmp_path, monkeypatch):
@@ -373,8 +392,8 @@ def test_two_entries_coexist_when_sources_are_distinct(tmp_path, monkeypatch):
         "--source-column", "source"])
     assert [p["source"] for p in posted] == ["https://wiki/p1"]
     manifest = json.loads((ws / "ingest_progress.json").read_text())
-    assert manifest["guide.md"]["origin"] == "corpus"
-    assert manifest["https://wiki/p1"]["origin"] == "table"
+    assert manifest["guide.md"]["set"] == str(corpus)
+    assert manifest["https://wiki/p1"]["set"].endswith("staging.db::staged_documents")
 
 
 def test_changing_the_label_is_not_a_collision_when_sources_are_a_column(
@@ -397,10 +416,12 @@ def test_changing_the_label_is_not_a_collision_when_sources_are_a_column(
     assert "nothing to do" in capsys.readouterr().out
 
 
-def test_legacy_manifest_entries_count_as_corpus(tmp_path, monkeypatch, capsys):
-    """A manifest written before the table entry existed has no `origin`.
-    It can only have come from ingest_corpus.py, so it must be treated as
-    corpus — otherwise the upgrade silently disarms the guard."""
+def test_legacy_entry_blocks_a_table_run_but_not_a_corpus_run(
+        tmp_path, monkeypatch, capsys):
+    """A manifest predating set ids records neither a set nor a hash, so the
+    two documents cannot be proven identical. A table run must stop and ask;
+    a corpus run must NOT, or every upgraded workspace breaks on its next
+    ordinary run."""
     ws = _make_workspace(tmp_path)
     (ws / "ingest_progress.json").write_text(json.dumps({"guide.md": "ok"}))
     db = _make_staging(tmp_path, [("guide.md", "guide.md", None, "body")])
@@ -409,7 +430,16 @@ def test_legacy_manifest_entries_count_as_corpus(tmp_path, monkeypatch, capsys):
             "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
             "--key-column", "key", "--content-column", "content",
             "--source-column", "source"])
-    assert "already ingested from the corpus entry" in capsys.readouterr().err
+    assert "already indexed from" in capsys.readouterr().err
+
+    # same legacy manifest, ordinary corpus run: proceeds, and upgrades the entry
+    corpus = tmp_path / "docs"
+    corpus.mkdir()
+    (corpus / "guide.md").write_text("body")
+    _run_corpus(monkeypatch, ["--workspace", str(ws), "--corpus", str(corpus)])
+    manifest = json.loads((ws / "ingest_progress.json").read_text())
+    assert manifest["guide.md"]["set"] == str(corpus)
+    assert manifest["guide.md"]["hash"] is not None
 
 
 # ---------------------------------------------------------- --require-complete
@@ -490,3 +520,167 @@ def test_corpus_limit_keeps_the_accounting_balanced(tmp_path, monkeypatch, capsy
     assert len(posted) == 1
     assert "matched: 3  ingestable: 1  skipped: 0  limited (--limit, NOT ingested): 2" in out
     assert "INCOMPLETE" in out
+
+
+# --------------------------------------------- read-only under hostile names
+
+@pytest.mark.parametrize("name", [
+    "raw?table.db",     # `?` used to end the path and drop mode=ro entirely
+    "raw#frag.db",      # `#` is the same family
+    "with space.db",
+    "amp&and.db",
+    "plain.db",
+])
+def test_source_db_is_readonly_whatever_the_filename(name, tmp_path, monkeypatch):
+    """`mode=ro` has to survive the filename.
+
+    The URI used to be an f-string, so a file called `raw?table.db` produced
+    `file:/dir/raw?table.db?mode=ro`: SQLite read the path as `/dir/raw`,
+    never parsed mode=ro, CREATED that new database and accepted writes to
+    it. The promise "a table handed over as raw material is never modified"
+    was silently false for any such name."""
+    ws = _make_workspace(tmp_path)
+    db = tmp_path / name
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE docs (k TEXT PRIMARY KEY, body TEXT)")
+    conn.execute("INSERT INTO docs VALUES ('k1','body one')")
+    conn.commit()
+    conn.close()
+
+    before_hash = hashlib.sha256(db.read_bytes()).hexdigest()
+    before_files = set(p.name for p in tmp_path.iterdir())
+
+    posted = _run_main(monkeypatch, [
+        "--workspace", str(ws), "--db", str(db), "--table", "docs",
+        "--key-column", "k", "--content-column", "body"])
+
+    assert len(posted) == 1                                   # still readable
+    assert hashlib.sha256(db.read_bytes()).hexdigest() == before_hash
+    # no stray database, no -wal / -journal, nothing new beside it
+    assert set(p.name for p in tmp_path.iterdir()) == before_files
+
+
+def test_readonly_connection_actually_refuses_writes(tmp_path):
+    """Directly pin the guarantee, independent of the ingest path."""
+    db = tmp_path / "raw?table.db"
+    sqlite3.connect(db).close()
+    conn = ingest_table.open_sqlite_readonly(db)
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        conn.execute("CREATE TABLE nope (x INT)")
+    conn.close()
+
+
+# ------------------------------------------------------- --accept-missing
+
+def _partial_staging(tmp_path):
+    return _make_staging(tmp_path, [
+        ("k1", "https://wiki/p1", "one", "body one"),
+        ("k2", "https://wiki/p2", "two", None),      # listed, never fetched
+    ])
+
+
+def _gate_argv(ws, db):
+    return ["--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content",
+            "--source-column", "source", "--require-complete"]
+
+
+def test_the_gate_names_the_override_instead_of_dead_ending(
+        tmp_path, monkeypatch, capsys):
+    """Stage C allows an explicitly accepted shortfall, so the gate must
+    offer a way through — otherwise the documented process contradicts the
+    tool and the only way past is to drop the flag, which is exactly the
+    silent partial ingest the gate exists to stop."""
+    ws = _make_workspace(tmp_path)
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, _gate_argv(ws, _partial_staging(tmp_path)))
+    assert "--accept-missing 1" in capsys.readouterr().err
+
+
+def test_accept_missing_lets_an_explicit_shortfall_through(
+        tmp_path, monkeypatch, capsys):
+    ws = _make_workspace(tmp_path)
+    posted = _run_main(monkeypatch,
+                       _gate_argv(ws, _partial_staging(tmp_path))
+                       + ["--accept-missing", "1"])
+    out = capsys.readouterr().out
+    assert len(posted) == 1
+    assert "ACCEPTED SHORTFALL" in out
+    assert "RESULT complete=false reason=accepted-shortfall" in out
+
+
+def test_accept_missing_must_match_the_actual_count(
+        tmp_path, monkeypatch, capsys):
+    """The count is exact so the override cannot be written once and left in
+    place: a shortfall that later grows stops the run again."""
+    ws = _make_workspace(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch,
+                  _gate_argv(ws, _partial_staging(tmp_path))
+                  + ["--accept-missing", "5"])
+    err = capsys.readouterr().err
+    assert e.value.code != 0
+    assert "does not match the actual shortfall of 1" in err
+
+
+def test_accept_missing_needs_the_gate(tmp_path, monkeypatch, capsys):
+    ws = _make_workspace(tmp_path)
+    db = _partial_staging(tmp_path)
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, [
+            "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content",
+            "--accept-missing", "1"])
+    assert "only means something with --require-complete" in capsys.readouterr().err
+
+
+# ------------------------------------------------- machine-readable verdict
+
+def test_result_line_marks_a_complete_run(tmp_path, monkeypatch, capsys):
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [("k1", None, None, "body")])
+    _run_main(monkeypatch, [
+        "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+        "--key-column", "key", "--content-column", "content"])
+    assert "RESULT complete=true" in capsys.readouterr().out
+
+
+def test_result_line_marks_a_limited_run(tmp_path, monkeypatch, capsys):
+    """A pipeline reading only the exit code cannot tell a trial run from a
+    finished one, because a deliberate trial exits 0. The verdict line is
+    what makes it machine-checkable."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [
+        ("k1", None, None, "one"), ("k2", None, None, "two")])
+    _run_main(monkeypatch, [
+        "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+        "--key-column", "key", "--content-column", "content", "--limit", "1"])
+    assert "RESULT complete=false reason=limit" in capsys.readouterr().out
+
+
+# ------------------------------------------------------- interrupt window
+
+def test_a_pending_source_is_recorded_before_its_post(tmp_path, monkeypatch):
+    """An interrupt used to leave rows committed server-side that the
+    manifest had never heard of — and with no entry, a later run from a
+    different set had nothing to compare against, so the collision check
+    could not fire and the newcomer was filed as `already ok`."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [("k1", "https://wiki/p1", None, "body one")])
+    seen = {}
+
+    def fake_post(endpoint, body, timeout):
+        # what the manifest holds at the moment the POST goes out
+        seen["manifest"] = json.loads((ws / "ingest_progress.json").read_text())
+        return ("ok", None)
+
+    monkeypatch.setattr(ingest_table, "post_doc", fake_post)
+    monkeypatch.setattr(sys, "argv", ["ingest_table.py"] + [
+        "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+        "--key-column", "key", "--content-column", "content",
+        "--source-column", "source"])
+    ingest_table.main()
+
+    entry = seen["manifest"]["https://wiki/p1"]
+    assert entry["status"] == "inflight"
+    assert entry["set"].endswith("staging.db::staged_documents")

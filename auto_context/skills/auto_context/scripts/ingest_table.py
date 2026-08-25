@@ -52,13 +52,17 @@ from ingest_corpus import (
     _ensure_localhost_no_proxy,
     build_body,
     content_hash,
-    ORIGIN_TABLE,
-    detect_origin_collisions,
+    KIND_TABLE,
+    detect_source_collisions,
     die,
     die_on_collisions,
     load_progress,
+    mark_inflight,
+    ndjson_set_id,
     post_doc,
+    print_result_line,
     save_progress,
+    sqlite_set_id,
     stable_doc_id,
 )
 
@@ -80,10 +84,20 @@ def open_sqlite_readonly(db_path):
     mode=ro is enforced by SQLite itself, not by politeness: INSERTs on
     this connection fail with "attempt to write a readonly database" and
     no -wal / -journal side files are created. That is what lets SKILL.md
-    promise that a table handed over as raw material is never modified."""
+    promise that a table handed over as raw material is never modified.
+
+    The URI is built with Path.as_uri(), which percent-encodes the path,
+    NOT by interpolating it into an f-string. Interpolating loses the
+    guarantee entirely on any path SQLite would read as carrying a query:
+    a file literally named `raw?table.db` produced the URI
+    `file:/dir/raw?table.db?mode=ro`, so SQLite took the path as `/dir/raw`
+    and `mode=ro` was never parsed — it created a brand new `/dir/raw`
+    database and accepted writes to it. Measured 2026-08-25; `#` and spaces
+    are in the same family. Percent-encoding puts the whole name back on
+    the path side, where it belongs."""
     if not db_path.is_file():
         die(f"--db {db_path} is not a file")
-    uri = f"file:{db_path}?mode=ro"
+    uri = db_path.resolve().as_uri() + "?mode=ro"
     try:
         return sqlite3.connect(uri, uri=True)
     except sqlite3.Error as e:
@@ -237,6 +251,20 @@ def main():
         ),
     )
     ap.add_argument(
+        "--accept-missing",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Proceed under --require-complete even though N rows are not "
+            "ingestable. N must equal the actual count exactly, so the "
+            "override cannot be set once and forgotten: if the shortfall "
+            "later grows or shrinks, the run refuses again and names the "
+            "new number. Use only for documents that are genuinely "
+            "unavailable at the source, after showing the user the list."
+        ),
+    )
+    ap.add_argument(
         "--require-complete",
         action="store_true",
         help=(
@@ -258,6 +286,12 @@ def main():
     if args.require_complete and args.limit > 0:
         die("--require-complete and --limit contradict each other: the first demands "
             "every row be ingested, the second deliberately holds rows back. Pick one.")
+    if args.accept_missing is not None and not args.require_complete:
+        die("--accept-missing only means something with --require-complete: without "
+            "the gate there is nothing to override.")
+    if args.accept_missing is not None and args.accept_missing < 0:
+        die("--accept-missing takes the exact number of unusable rows, which cannot "
+            "be negative.")
 
     if args.db:
         for flag, val in (("--table", args.table), ("--key-column", args.key_column),
@@ -270,6 +304,7 @@ def main():
                 "the server owns, not raw material. Land documents in a separate "
                 "staging file (see references/fetch_and_land.md) and ingest from that.")
         label = args.label or args.table
+        set_id = sqlite_set_id(db_path, args.table)
     else:
         for flag, val in (("--table", args.table), ("--key-column", args.key_column),
                           ("--content-column", args.content_column),
@@ -279,8 +314,10 @@ def main():
                     f"inside each JSON object instead")
         if not args.label:
             die("--label is required with --ndjson (it namespaces doc ids and default "
-                "source strings; keep it stable across runs)")
+                "source strings, and identifies this raw-material set in the "
+                "manifest; keep it stable across runs)")
         label = args.label
+        set_id = ndjson_set_id(label)
 
     progress_path = workspace / "ingest_progress.json"
 
@@ -370,6 +407,7 @@ def main():
             "table or file was named)."
         )
 
+    accepted_shortfall = 0
     total_skipped = sum(len(v) for v in skipped.values())
     if args.require_complete and total_skipped:
         detail = "\n    ".join(f"{reason}: {len(names)}"
@@ -378,24 +416,42 @@ def main():
         hint = (
             "\n  The `no text content` rows are the ones that matter most here: on a "
             "table filled by a fetch-and-land run they are documents that were listed "
-            "and never fetched.\n  Fix the fetch (re-run stage B), or drop them from "
-            "the staging table if they are genuinely empty at the source."
-            if empty else ""
+            "and never fetched.\n  Fix the fetch (re-run stage B), or — if they are "
+            "genuinely unavailable at the source — accept the shortfall explicitly "
+            "with\n  --accept-missing %d after showing the user the list above."
+            % total_skipped if empty else
+            "\n  If these rows are genuinely unusable at the source, accept the "
+            "shortfall explicitly with --accept-missing %d." % total_skipped
         )
-        die(
-            f"--require-complete: {total_skipped} of {rows} row(s) are not ingestable, "
-            f"so this corpus would be indexed incomplete.\n    {detail}{hint}\n"
-            f"  Nothing was ingested. The named rows are listed above."
-        )
+        if args.accept_missing is None:
+            die(
+                f"--require-complete: {total_skipped} of {rows} row(s) are not "
+                f"ingestable, so this corpus would be indexed incomplete.\n    "
+                f"{detail}{hint}\n"
+                f"  Nothing was ingested. The named rows are listed above."
+            )
+        if args.accept_missing != total_skipped:
+            die(
+                f"--accept-missing {args.accept_missing} does not match the actual "
+                f"shortfall of {total_skipped} row(s):\n    {detail}\n"
+                f"  The count must be exact, so that a shortfall which changed since "
+                f"the override was written stops the run instead of\n  passing "
+                f"unnoticed. Re-check the list above, then pass "
+                f"--accept-missing {total_skipped} if it is still what you intend."
+            )
+        print(f"  ACCEPTED SHORTFALL: proceeding without {total_skipped} row(s) by "
+              f"explicit --accept-missing. This index is knowingly incomplete;\n"
+              f"                     say so when reporting it.")
+        accepted_shortfall = total_skipped
 
     # Same three-way split as ingest_corpus.py: pending (never ingested or
     # last attempt errored), changed (hash differs from what was ingested —
     # surfaced, never auto-re-ingested), and ok. Hashes recorded by an older
     # run of either script are honoured; the manifest is shared because the
     # index is shared, and identity is the source string in both.
-    origin = ORIGIN_TABLE
-    die_on_collisions(detect_origin_collisions(progress, work, origin),
-                      origin, progress_path)
+    die_on_collisions(
+        detect_source_collisions(progress, work, set_id, KIND_TABLE),
+        set_id, progress_path)
 
     pending = []
     changed = []
@@ -407,8 +463,11 @@ def main():
         stored_hash = entry.get("hash")
         if stored_hash is None:
             progress[w["source"]]["hash"] = w["hash"]  # backfill, don't re-ingest
+            progress[w["source"]]["set"] = set_id
         elif stored_hash != w["hash"]:
             changed.append(w["source"])
+        elif entry.get("set") != set_id:
+            progress[w["source"]]["set"] = set_id
 
     if changed:
         save_progress(progress_path, progress)
@@ -430,6 +489,9 @@ def main():
           f"{limited_note}  "
           f"already ok: {len(work) - len(pending) - len(changed)}  "
           f"changed (see warning): {len(changed)}  to ingest: {len(pending)}")
+    incomplete_run = bool(limited) or bool(accepted_shortfall)
+    incomplete_reason = ("limit" if limited else
+                         "accepted-shortfall" if accepted_shortfall else None)
     if limited:
         print(f"  INCOMPLETE: --limit held back {limited} ingestable row(s). This is a "
               f"trial run over part of the table;\n"
@@ -442,7 +504,10 @@ def main():
     if not pending:
         save_progress(progress_path, progress)  # persist any hash backfill
         print("  nothing to do (every ingestable row is already ok in the manifest)")
+        print_result_line(not limited, reason="limit" if limited else None)
         return
+
+    mark_inflight(progress, pending, set_id, progress_path)
 
     started = time.time()
     last_save = started
@@ -454,15 +519,15 @@ def main():
         nonlocal ok, last_save
         if status == "ok":
             progress[item["source"]] = {"status": "ok", "hash": item["hash"],
-                                        "origin": origin}
+                                        "set": set_id}
             ok += 1
         elif status == "present":
             progress[item["source"]] = {"status": "ok", "hash": item["hash"],
-                                        "origin": origin}
+                                        "set": set_id}
             already_present.append(item["source"])
         else:
             progress[item["source"]] = {"status": f"err: {err}", "hash": None,
-                                        "origin": origin}
+                                        "set": set_id}
             failed.append((item["source"], err))
         if time.time() - last_save > 2.0:
             save_progress(progress_path, progress)
@@ -507,10 +572,13 @@ def main():
         )
 
     if failed:
+        print_result_line(False, reason="failed-posts")
         print("  failures (first 10):")
         for src, err in failed[:10]:
             print(f"    {src}  {err}")
         sys.exit(1)
+
+    print_result_line(not incomplete_run, reason=incomplete_reason)
 
 
 if __name__ == "__main__":
