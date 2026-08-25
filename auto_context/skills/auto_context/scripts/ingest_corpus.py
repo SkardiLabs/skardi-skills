@@ -61,7 +61,14 @@ SERVER_BODY_LIMIT = 2 * 1024 * 1024
 FRONT_MATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
 
 
-def die(msg, code=1):
+def die(msg, code=1, reason="error"):
+    """Exit with a reason, and emit the verdict line first.
+
+    Every exit prints a RESULT line, including refusals — a consumer that
+    reads the verdict must never have to fall back to guessing from an
+    absent line. The reason names the refusal so the caller can tell a
+    genuine failure from a deliberate gate."""
+    print_result_line(False, reason=reason)
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(code)
 
@@ -339,6 +346,132 @@ def print_result_line(complete, reason=None):
     print(f"RESULT complete={'true' if complete else 'false'}{tail}")
 
 
+# Verdict reasons, most severe first. A run is complete only when nothing
+# was held back, dropped, or left stale — anything else is reported with the
+# reason that most needs the reader's attention.
+VERDICT_ORDER = (
+    ("failed-posts", "documents the server refused"),
+    ("limit", "--limit held rows back"),
+    ("accepted-shortfall", "a shortfall was explicitly accepted"),
+    ("skipped", "unusable input was skipped"),
+    ("stale", "content changed since it was indexed and was not refreshed"),
+)
+
+
+def compute_verdict(failed=0, limited=0, accepted_shortfall=0, skipped=0,
+                    changed=0):
+    """(complete, reason) for the whole run.
+
+    Computed from corpus completeness, not from what this particular
+    invocation happened to do, because the two diverge exactly where it
+    matters: a re-run over a table whose shortfall was accepted earlier has
+    nothing left to ingest, and reporting that as complete flipped the
+    verdict to true while the corpus was still missing a document. Skips and
+    unrefreshed edits count the same way — the index does not hold what the
+    source holds, whichever run failed to put it there."""
+    counts = {
+        "failed-posts": failed,
+        "limit": limited,
+        "accepted-shortfall": accepted_shortfall,
+        "skipped": skipped,
+        "stale": changed,
+    }
+    for reason, _ in VERDICT_ORDER:
+        if counts[reason]:
+            return False, reason
+    return True, None
+
+
+def print_verdict(**kwargs):
+    complete, reason = compute_verdict(**kwargs)
+    print_result_line(complete, reason=reason)
+    return complete
+
+
+def acquire_workspace_lock(workspace):
+    """Refuse to run twice against one workspace at the same time.
+
+    Reading the manifest, checking for collisions and writing `inflight` is
+    three steps, not one, so two concurrent runs could both pass the check
+    and then overwrite each other's state — landing silently on
+    `already-present` with no sign that anything was lost. A lock is cheap
+    next to that. A lock left behind by a killed process is detected (its
+    pid is gone) and taken over with a note, so a crash does not need manual
+    cleanup."""
+    lock = workspace / "ingest.lock"
+    try:
+        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        try:
+            holder = int(lock.read_text().strip())
+        except (ValueError, OSError):
+            holder = None
+        if holder is not None:
+            try:
+                os.kill(holder, 0)
+            except ProcessLookupError:
+                print(f"  note: removing a stale lock left by pid {holder} "
+                      f"(no longer running)")
+                lock.unlink(missing_ok=True)
+                return acquire_workspace_lock(workspace)
+            except PermissionError:
+                pass  # alive, owned by another user
+            die(f"another ingest is already running against {workspace} "
+                f"(pid {holder}). Concurrent runs on one workspace corrupt the "
+                f"progress manifest, so this one stopped without touching "
+                f"anything. Wait for it, or delete {lock} if you are certain "
+                f"that process is gone.", reason="locked")
+        die(f"{lock} exists but is unreadable. Delete it if no ingest is "
+            f"running.", reason="locked")
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
+    return lock
+
+
+def release_workspace_lock(lock):
+    if lock is not None:
+        Path(lock).unlink(missing_ok=True)
+
+
+def detect_stale_inflight(progress, work):
+    """Documents interrupted mid-ingest whose source has changed since.
+
+    `inflight` means the POST was sent and the answer never recorded, so the
+    server may already hold that document. If the content has changed since,
+    a resumed run POSTs the new text, the server rejects it as a duplicate,
+    and the collision is filed as `already-present` — which records the NEW
+    hash against rows holding the OLD text. The manifest then claims the
+    current version is indexed when it is not, and nothing ever says
+    otherwise. Refuse instead: this is one of the few states that genuinely
+    needs a human to decide what the index holds."""
+    stale = []
+    for w in work:
+        entry = progress.get(w["source"])
+        if entry is None:
+            continue
+        if entry.get("status") == "inflight" and entry.get("hash") not in (None, w["hash"]):
+            stale.append(w["source"])
+    return stale
+
+
+def die_on_stale_inflight(stale, progress_path):
+    if not stale:
+        return
+    head = "\n    ".join(stale[:10])
+    more = f"\n    (+{len(stale) - 10} more)" if len(stale) > 10 else ""
+    die(
+        f"{len(stale)} document(s) were interrupted mid-ingest and have changed "
+        f"since:\n    {head}{more}\n"
+        f"  The server may already hold the older text under the same id. "
+        f"Re-sending the new text would collide, be recorded as\n"
+        f"  'already-present', and stamp the NEW hash onto rows holding the OLD "
+        f"content — leaving the manifest claiming a version the index\n"
+        f"  does not have. Decide explicitly: delete those rows "
+        f"(DELETE FROM <table> WHERE source = '...') and drop their entries from\n"
+        f"  {progress_path}, then re-run. Nothing was ingested.",
+        reason="stale-inflight")
+
+
 def mark_inflight(progress, pending, set_id, progress_path):
     """Record every pending source BEFORE its POST goes out.
 
@@ -436,6 +569,14 @@ def main():
     print(f"  concurrency: {args.concurrency}")
     print(f"  chunk_size:  {args.chunk_size}  overlap: {args.overlap}")
 
+    lock = acquire_workspace_lock(workspace)
+    try:
+        run(args, workspace, corpus, progress_path, endpoint)
+    finally:
+        release_workspace_lock(lock)
+
+
+def run(args, workspace, corpus, progress_path, endpoint):
     progress = load_progress(progress_path)
 
     # Build the work list. Each entry is one source file; the server will
@@ -525,6 +666,7 @@ def main():
     die_on_collisions(
         detect_source_collisions(progress, work, set_id, KIND_CORPUS),
         set_id, progress_path)
+    die_on_stale_inflight(detect_stale_inflight(progress, work), progress_path)
 
     pending = []
     changed = []
@@ -580,8 +722,6 @@ def main():
           f"{limited_note}  "
           f"already ok: {len(work) - len(pending) - len(changed)}  "
           f"changed (see warning): {len(changed)}  to ingest: {len(pending)}")
-    incomplete_run = bool(limited)
-    incomplete_reason = "limit" if limited else None
     if limited:
         print(f"  INCOMPLETE: --limit held back {limited} ingestable file(s). This is a "
               f"trial run over part of the corpus;\n"
@@ -597,7 +737,7 @@ def main():
 
     if not pending:
         print("  nothing to do (every ingestable file is already ok in the manifest)")
-        print_result_line(not limited, reason="limit" if limited else None)
+        print_verdict(limited=limited, skipped=total_skipped, changed=len(changed))
         return
 
     mark_inflight(progress, pending, set_id, progress_path)
@@ -678,13 +818,13 @@ def main():
         )
 
     if failed:
-        print_result_line(False, reason="failed-posts")
+        print_verdict(failed=len(failed))
         print("  failures (first 10):")
         for src, err in failed[:10]:
             print(f"    {src}  {err}")
         sys.exit(1)
 
-    print_result_line(not incomplete_run, reason=incomplete_reason)
+    print_verdict(limited=limited, skipped=total_skipped, changed=len(changed))
 
 
 if __name__ == "__main__":

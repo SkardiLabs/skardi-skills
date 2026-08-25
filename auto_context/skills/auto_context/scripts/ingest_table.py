@@ -37,7 +37,9 @@ landing step (references/fetch_and_land.md) is where boilerplate gets
 removed — by the time text is in a table it is what gets indexed.
 """
 import argparse
+import hashlib
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -53,14 +55,18 @@ from ingest_corpus import (
     build_body,
     content_hash,
     KIND_TABLE,
+    acquire_workspace_lock,
     detect_source_collisions,
+    detect_stale_inflight,
     die,
     die_on_collisions,
+    die_on_stale_inflight,
     load_progress,
     mark_inflight,
     ndjson_set_id,
     post_doc,
-    print_result_line,
+    print_verdict,
+    release_workspace_lock,
     save_progress,
     sqlite_set_id,
     stable_doc_id,
@@ -76,6 +82,19 @@ SKIP_REASONS = (
     "non-text content",
     "too large for one request",
 )
+
+
+def shortfall_token(missing_sources):
+    """`<count>:<digest>` naming one exact set of missing documents.
+
+    The count alone was not enough: a shortfall of three can become a
+    different three while the number stays put, and an override written for
+    the first set would wave the second through. The digest is over the
+    sorted source strings, so the token changes whenever the set does. Six
+    hex characters is plenty to catch an accidentally reused token, which is
+    the threat here — not a forged one."""
+    joined = "\n".join(sorted(missing_sources)).encode("utf-8")
+    return f"{len(missing_sources)}:{hashlib.blake2b(joined, digest_size=3).hexdigest()}"
 
 
 def open_sqlite_readonly(db_path):
@@ -252,16 +271,17 @@ def main():
     )
     ap.add_argument(
         "--accept-missing",
-        type=int,
         default=None,
-        metavar="N",
+        metavar="N:DIGEST",
         help=(
-            "Proceed under --require-complete even though N rows are not "
-            "ingestable. N must equal the actual count exactly, so the "
-            "override cannot be set once and forgotten: if the shortfall "
-            "later grows or shrinks, the run refuses again and names the "
-            "new number. Use only for documents that are genuinely "
-            "unavailable at the source, after showing the user the list."
+            "Proceed under --require-complete despite rows that were listed "
+            "but never fetched. Takes the token the refusal prints — a count "
+            "and a digest of the exact missing sources — so the override is "
+            "bound to that specific set, not merely to how many there were: "
+            "swap one missing document for another and the count still "
+            "matches but the digest does not, and the run refuses again. "
+            "Only `no text content` rows can be waived; every other skip "
+            "reason is a defect in the input and always fails."
         ),
     )
     ap.add_argument(
@@ -289,9 +309,12 @@ def main():
     if args.accept_missing is not None and not args.require_complete:
         die("--accept-missing only means something with --require-complete: without "
             "the gate there is nothing to override.")
-    if args.accept_missing is not None and args.accept_missing < 0:
-        die("--accept-missing takes the exact number of unusable rows, which cannot "
-            "be negative.")
+    if args.accept_missing is not None and not re.fullmatch(r"\d+:[0-9a-f]{6}",
+                                                            args.accept_missing):
+        die("--accept-missing takes the `<count>:<digest>` token printed by the "
+            "refusal, e.g. 3:7f3a1c. Run without it first and copy the token it "
+            "names, so the override is bound to the shortfall you actually saw.",
+            reason="bad-override")
 
     if args.db:
         for flag, val in (("--table", args.table), ("--key-column", args.key_column),
@@ -346,6 +369,15 @@ def main():
     print(f"  concurrency: {args.concurrency}")
     print(f"  chunk_size:  {args.chunk_size}  overlap: {args.overlap}")
 
+    lock = acquire_workspace_lock(workspace)
+    try:
+        run(args, workspace, progress_path, endpoint, label, set_id,
+            db_path if args.db else None)
+    finally:
+        release_workspace_lock(lock)
+
+
+def run(args, workspace, progress_path, endpoint, label, set_id, db_path):
     progress = load_progress(progress_path)
 
     skipped = {reason: [] for reason in SKIP_REASONS}
@@ -412,37 +444,53 @@ def main():
     if args.require_complete and total_skipped:
         detail = "\n    ".join(f"{reason}: {len(names)}"
                                for reason, names in skipped.items() if names)
-        empty = len(skipped["no text content"])
-        hint = (
-            "\n  The `no text content` rows are the ones that matter most here: on a "
-            "table filled by a fetch-and-land run they are documents that were listed "
-            "and never fetched.\n  Fix the fetch (re-run stage B), or — if they are "
-            "genuinely unavailable at the source — accept the shortfall explicitly "
-            "with\n  --accept-missing %d after showing the user the list above."
-            % total_skipped if empty else
-            "\n  If these rows are genuinely unusable at the source, accept the "
-            "shortfall explicitly with --accept-missing %d." % total_skipped
-        )
-        if args.accept_missing is None:
+        never_fetched = sorted(skipped["no text content"])
+        other = {r: n for r, n in skipped.items() if n and r != "no text content"}
+
+        # Only "listed but never fetched" is a shortfall at the SOURCE, which
+        # is what the documented exception covers. Everything else — a
+        # malformed NDJSON line, a duplicate source, a numeric content
+        # column, an oversized body — is a defect in the input that the
+        # operator can actually fix, and waving those through under the same
+        # flag let a broken export pass as an accepted shortfall.
+        if other:
+            reasons = ", ".join(f"{r} ({len(n)})" for r, n in other.items())
             die(
                 f"--require-complete: {total_skipped} of {rows} row(s) are not "
-                f"ingestable, so this corpus would be indexed incomplete.\n    "
-                f"{detail}{hint}\n"
-                f"  Nothing was ingested. The named rows are listed above."
-            )
-        if args.accept_missing != total_skipped:
+                f"ingestable, and these are not a source-side shortfall:\n    "
+                f"{reasons}\n"
+                f"  --accept-missing does not cover them — they are defects in "
+                f"the input, not documents the source cannot give you.\n"
+                f"  Fix the export (or the columns named on the command line) "
+                f"and re-run. Nothing was ingested.",
+                reason="unusable-input")
+
+        token = shortfall_token(never_fetched)
+        if args.accept_missing is None:
             die(
-                f"--accept-missing {args.accept_missing} does not match the actual "
-                f"shortfall of {total_skipped} row(s):\n    {detail}\n"
-                f"  The count must be exact, so that a shortfall which changed since "
-                f"the override was written stops the run instead of\n  passing "
-                f"unnoticed. Re-check the list above, then pass "
-                f"--accept-missing {total_skipped} if it is still what you intend."
-            )
+                f"--require-complete: {len(never_fetched)} of {rows} row(s) were "
+                f"listed but never fetched, so this corpus would be indexed\n"
+                f"  incomplete:\n    {detail}\n"
+                f"  Fix the fetch (re-run stage B), or — if these documents are "
+                f"genuinely unavailable at the source — show the user the list\n"
+                f"  above and then accept the shortfall explicitly with:\n"
+                f"    --accept-missing {token}\n"
+                f"  Nothing was ingested.",
+                reason="incomplete-corpus")
+        if args.accept_missing != token:
+            die(
+                f"--accept-missing {args.accept_missing} does not match the "
+                f"shortfall this run found, which is:\n    --accept-missing "
+                f"{token}\n"
+                f"  The token carries both the count and a digest of the exact "
+                f"missing sources, so an override written for a different\n"
+                f"  shortfall — even one of the same size — stops the run "
+                f"instead of passing unnoticed. Re-check the list above.",
+                reason="stale-override")
         print(f"  ACCEPTED SHORTFALL: proceeding without {total_skipped} row(s) by "
               f"explicit --accept-missing. This index is knowingly incomplete;\n"
               f"                     say so when reporting it.")
-        accepted_shortfall = total_skipped
+        accepted_shortfall = len(never_fetched)
 
     # Same three-way split as ingest_corpus.py: pending (never ingested or
     # last attempt errored), changed (hash differs from what was ingested —
@@ -452,6 +500,7 @@ def main():
     die_on_collisions(
         detect_source_collisions(progress, work, set_id, KIND_TABLE),
         set_id, progress_path)
+    die_on_stale_inflight(detect_stale_inflight(progress, work), progress_path)
 
     pending = []
     changed = []
@@ -489,9 +538,6 @@ def main():
           f"{limited_note}  "
           f"already ok: {len(work) - len(pending) - len(changed)}  "
           f"changed (see warning): {len(changed)}  to ingest: {len(pending)}")
-    incomplete_run = bool(limited) or bool(accepted_shortfall)
-    incomplete_reason = ("limit" if limited else
-                         "accepted-shortfall" if accepted_shortfall else None)
     if limited:
         print(f"  INCOMPLETE: --limit held back {limited} ingestable row(s). This is a "
               f"trial run over part of the table;\n"
@@ -504,7 +550,8 @@ def main():
     if not pending:
         save_progress(progress_path, progress)  # persist any hash backfill
         print("  nothing to do (every ingestable row is already ok in the manifest)")
-        print_result_line(not limited, reason="limit" if limited else None)
+        print_verdict(limited=limited, accepted_shortfall=accepted_shortfall,
+                      skipped=total_skipped, changed=len(changed))
         return
 
     mark_inflight(progress, pending, set_id, progress_path)
@@ -572,13 +619,14 @@ def main():
         )
 
     if failed:
-        print_result_line(False, reason="failed-posts")
+        print_verdict(failed=len(failed))
         print("  failures (first 10):")
         for src, err in failed[:10]:
             print(f"    {src}  {err}")
         sys.exit(1)
 
-    print_result_line(not incomplete_run, reason=incomplete_reason)
+    print_verdict(limited=limited, accepted_shortfall=accepted_shortfall,
+                  skipped=total_skipped, changed=len(changed))
 
 
 if __name__ == "__main__":

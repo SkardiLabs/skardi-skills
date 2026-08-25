@@ -16,6 +16,8 @@ Run: uvx pytest tests/test_ingest_table.py
 """
 import hashlib
 import json
+import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -459,7 +461,7 @@ def test_require_complete_refuses_a_partially_fetched_table(
     err = capsys.readouterr().err
     assert e.value.code != 0
     assert "no text content: 1" in err
-    assert "listed and never fetched" in err
+    assert "listed but never fetched" in err
     # and nothing reached the index or the manifest
     assert not (ws / "ingest_progress.json").exists()
 
@@ -585,6 +587,12 @@ def _gate_argv(ws, db):
             "--source-column", "source", "--require-complete"]
 
 
+def _token_from_refusal(err):
+    m = re.search(r"--accept-missing (\d+:[0-9a-f]{6})", err)
+    assert m, f"no override token in refusal:\n{err}"
+    return m.group(1)
+
+
 def test_the_gate_names_the_override_instead_of_dead_ending(
         tmp_path, monkeypatch, capsys):
     """Stage C allows an explicitly accepted shortfall, so the gate must
@@ -594,33 +602,110 @@ def test_the_gate_names_the_override_instead_of_dead_ending(
     ws = _make_workspace(tmp_path)
     with pytest.raises(SystemExit):
         _run_main(monkeypatch, _gate_argv(ws, _partial_staging(tmp_path)))
-    assert "--accept-missing 1" in capsys.readouterr().err
+    assert _token_from_refusal(capsys.readouterr().err).startswith("1:")
 
 
 def test_accept_missing_lets_an_explicit_shortfall_through(
         tmp_path, monkeypatch, capsys):
     ws = _make_workspace(tmp_path)
-    posted = _run_main(monkeypatch,
-                       _gate_argv(ws, _partial_staging(tmp_path))
-                       + ["--accept-missing", "1"])
+    db = _partial_staging(tmp_path)
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, _gate_argv(ws, db))
+    token = _token_from_refusal(capsys.readouterr().err)
+
+    posted = _run_main(monkeypatch, _gate_argv(ws, db)
+                       + ["--accept-missing", token])
     out = capsys.readouterr().out
     assert len(posted) == 1
     assert "ACCEPTED SHORTFALL" in out
     assert "RESULT complete=false reason=accepted-shortfall" in out
 
 
-def test_accept_missing_must_match_the_actual_count(
+def test_an_accepted_shortfall_still_reports_incomplete_on_a_rerun(
         tmp_path, monkeypatch, capsys):
-    """The count is exact so the override cannot be written once and left in
-    place: a shortfall that later grows stops the run again."""
+    """The verdict must describe the CORPUS, not this invocation.
+
+    After the shortfall was accepted once, a re-run has nothing left to
+    ingest — and reporting that as complete flipped the machine-readable
+    verdict to true while the corpus was still missing a document, which is
+    precisely what a pipeline would act on."""
+    ws = _make_workspace(tmp_path)
+    db = _partial_staging(tmp_path)
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, _gate_argv(ws, db))
+    token = _token_from_refusal(capsys.readouterr().err)
+    _run_main(monkeypatch, _gate_argv(ws, db) + ["--accept-missing", token])
+    capsys.readouterr()
+
+    _run_main(monkeypatch, _gate_argv(ws, db) + ["--accept-missing", token])
+    out = capsys.readouterr().out
+    assert "nothing to do" in out
+    assert "RESULT complete=false" in out
+    assert "RESULT complete=true" not in out
+
+
+def test_the_override_is_bound_to_the_set_not_the_count(
+        tmp_path, monkeypatch, capsys):
+    """Swap which document is missing, keep the count — the override written
+    for the first set must not wave the second one through."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [
+        ("k1", "https://wiki/p1", "one", "body one"),
+        ("k2", "https://wiki/p2", "two", None)])
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, _gate_argv(ws, db))
+    token = _token_from_refusal(capsys.readouterr().err)
+
+    conn = sqlite3.connect(db)                 # now p1 is the missing one
+    conn.execute("UPDATE staged_documents SET content = NULL WHERE key = 'k1'")
+    conn.execute("UPDATE staged_documents SET content = 'body two' WHERE key = 'k2'")
+    conn.commit()
+    conn.close()
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, _gate_argv(ws, db) + ["--accept-missing", token])
+    err = capsys.readouterr().err
+    assert e.value.code != 0
+    assert "does not match the shortfall this run found" in err
+
+
+def test_only_unfetched_rows_can_be_waived(tmp_path, monkeypatch, capsys):
+    """A malformed export is a defect the operator can fix, not a document
+    the source cannot give you — so it must never pass under the flag whose
+    documented purpose is a source-side shortfall."""
+    ws = _make_workspace(tmp_path)
+    nd = tmp_path / "rows.ndjson"
+    nd.write_text('{"key": "a", "content": "good"}\nbroken line\n')
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, [
+            "--workspace", str(ws), "--ndjson", str(nd), "--label", "nd",
+            "--require-complete", "--accept-missing", "1:000000"])
+    err = capsys.readouterr().err
+    assert e.value.code != 0
+    assert "not a source-side shortfall" in err
+    assert "not valid JSON" in err
+
+
+def test_accept_missing_must_match_the_actual_shortfall(
+        tmp_path, monkeypatch, capsys):
+    """The token is exact so the override cannot be written once and left in
+    place: a shortfall that later changes stops the run again."""
     ws = _make_workspace(tmp_path)
     with pytest.raises(SystemExit) as e:
         _run_main(monkeypatch,
                   _gate_argv(ws, _partial_staging(tmp_path))
-                  + ["--accept-missing", "5"])
+                  + ["--accept-missing", "5:abcdef"])
     err = capsys.readouterr().err
     assert e.value.code != 0
-    assert "does not match the actual shortfall of 1" in err
+    assert "does not match the shortfall this run found" in err
+
+
+def test_a_malformed_override_token_is_refused(tmp_path, monkeypatch, capsys):
+    ws = _make_workspace(tmp_path)
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch,
+                  _gate_argv(ws, _partial_staging(tmp_path))
+                  + ["--accept-missing", "1"])
+    assert "`<count>:<digest>` token" in capsys.readouterr().err
 
 
 def test_accept_missing_needs_the_gate(tmp_path, monkeypatch, capsys):
@@ -684,3 +769,92 @@ def test_a_pending_source_is_recorded_before_its_post(tmp_path, monkeypatch):
     entry = seen["manifest"]["https://wiki/p1"]
     assert entry["status"] == "inflight"
     assert entry["set"].endswith("staging.db::staged_documents")
+
+
+# ------------------------------------------------------ concurrency & resume
+
+def test_a_second_run_on_one_workspace_is_refused(tmp_path, monkeypatch, capsys):
+    """Read manifest → check collisions → write inflight is three steps, so
+    two concurrent runs could both pass the check and then overwrite each
+    other's state, landing silently on `already-present`."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [("k1", None, None, "body")])
+    (ws / "ingest.lock").write_text(str(os.getpid()))     # a live holder
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, [
+            "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content"])
+    err = capsys.readouterr().err
+    assert e.value.code != 0
+    assert "another ingest is already running" in err
+
+
+def test_a_stale_lock_is_taken_over(tmp_path, monkeypatch, capsys):
+    """A crash must not need manual cleanup."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [("k1", None, None, "body")])
+    (ws / "ingest.lock").write_text("999999")             # nobody
+    posted = _run_main(monkeypatch, [
+        "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+        "--key-column", "key", "--content-column", "content"])
+    assert len(posted) == 1
+    assert "stale lock" in capsys.readouterr().out
+
+
+def test_the_lock_is_released_after_a_run(tmp_path, monkeypatch):
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [("k1", None, None, "body")])
+    argv = ["--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content"]
+    _run_main(monkeypatch, argv)
+    assert not (ws / "ingest.lock").exists()
+    _run_main(monkeypatch, argv)          # and a second run still works
+
+
+def test_an_interrupted_document_that_changed_since_is_refused(
+        tmp_path, monkeypatch, capsys):
+    """`inflight` means the POST went out and the answer was never recorded,
+    so the server may already hold that document. If the content changed
+    since, resuming re-POSTs the new text, the server rejects it as a
+    duplicate, and the collision is filed as `already-present` — stamping
+    the NEW hash onto rows holding the OLD content. The manifest then claims
+    a version the index does not have, and nothing says otherwise."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [("k1", "https://wiki/p1", None, "new body")])
+    (ws / "ingest_progress.json").write_text(json.dumps({
+        "https://wiki/p1": {"status": "inflight",
+                            "hash": hashlib.sha256(b"old body").hexdigest(),
+                            "set": f"{db}::staged_documents"}}))
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, [
+            "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content",
+            "--source-column", "source"])
+    captured = capsys.readouterr()
+    assert e.value.code != 0
+    assert "interrupted mid-ingest and have changed since" in captured.err
+    assert "RESULT complete=false reason=stale-inflight" in captured.out
+
+
+def test_every_exit_path_prints_a_verdict(tmp_path, monkeypatch, capsys):
+    """A consumer reading the verdict must never have to interpret its
+    absence — refusals emit it too, with the reason."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [])          # zero rows: a die() path
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, [
+            "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content"])
+    assert "RESULT complete=false" in capsys.readouterr().out
+
+
+def test_ordinary_skips_make_the_verdict_incomplete(tmp_path, monkeypatch, capsys):
+    """Without --require-complete a skip is tolerated, but the corpus still
+    does not hold what the source holds, so the verdict must say so."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [
+        ("k1", None, None, "body one"), ("k2", None, None, None)])
+    _run_main(monkeypatch, [
+        "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+        "--key-column", "key", "--content-column", "content"])
+    assert "RESULT complete=false reason=skipped" in capsys.readouterr().out

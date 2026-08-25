@@ -116,12 +116,13 @@ Acceptance criteria — all three, before stage D:
 2. **Fetched equals listed** — or the shortfall is explicitly accepted. Not
    by omitting a flag: show the user the exact list of missing documents
    (keys, titles, per-row reason), and if they decide the corpus should be
-   built anyway, pass `--accept-missing N` at stage D with the exact count.
-   That records the decision in the command, and it self-invalidates — if
-   the shortfall later changes, the count no longer matches and the run
-   stops again with the new number. Reserve it for documents that are
-   genuinely unavailable at the source; anything transient (rate limits,
-   timeouts) is a reason to re-run stage B instead.
+   built anyway, pass the `--accept-missing <count>:<digest>` token that the
+   stage-D refusal prints. The token is bound to that exact set of missing
+   documents, not to how many there were, so swapping one missing document
+   for another leaves the count intact and the digest different — and the
+   run refuses again with the new token. Reserve it for documents genuinely
+   unavailable at the source; anything transient (rate limits, timeouts) is
+   a reason to re-run stage B instead.
 3. **The numbers go in your report to the user** — listed, fetched, failed,
    and the named misses. Not in a log file: in the message the user reads.
    An index built from a shortfall the user never saw is worse than no
@@ -172,12 +173,18 @@ listed and never fetched. Without it the run prints the same counts and
 indexes the partial corpus anyway, which is the exact failure this process
 exists to prevent.
 
-If the user accepted a shortfall at stage C, add `--accept-missing N` with
-the exact count. The run then proceeds, prints `ACCEPTED SHORTFALL`, and ends
-with `RESULT complete=false reason=accepted-shortfall` — so the index is on
-record as knowingly partial, and you say so when reporting it. A wrong count
-is refused rather than rounded, which is the point: the override cannot be
-written once and left behind.
+If the user accepted a shortfall at stage C, add the `--accept-missing` token
+the refusal printed. The run then proceeds, prints `ACCEPTED SHORTFALL`, and
+ends with `RESULT complete=false reason=accepted-shortfall` — and it keeps
+saying that on every later run over the same table, because the verdict
+describes the corpus rather than what one invocation happened to do.
+
+**Only "listed but never fetched" can be waived.** Every other skip reason —
+a malformed NDJSON line, a duplicate source, a non-text content column, an
+oversized body — is a defect in the input you can actually fix, so the gate
+refuses it outright and `--accept-missing` does not apply. That distinction
+is the whole point of the exception: it exists for documents the *source*
+cannot give you, not for a broken export.
 
 It is still not a substitute for stage C: a document your listing never
 captured produces no row at all, so nothing here can notice it. Only stage
@@ -188,11 +195,22 @@ Use `--limit` only for a trial POST or two while debugging. It holds rows
 back by design, so the run reports itself INCOMPLETE and refuses to combine
 with `--require-complete`; its result never counts as a finished ingest.
 
-Every run ends with one machine-readable line — `RESULT complete=true`, or
-`complete=false` with a reason (`limit`, `accepted-shortfall`,
-`failed-posts`). Check that line, not the exit code, when something
-downstream consumes the run: a deliberate trial exits 0 like a finished
-ingest does.
+Every run ends with one machine-readable line, refusals included — `RESULT
+complete=true`, or `complete=false` with a reason (`limit`,
+`accepted-shortfall`, `skipped`, `stale`, `failed-posts`, or the name of
+whatever refused). Check that line, not the exit code: a deliberate trial
+exits 0 exactly like a finished ingest.
+
+The verdict describes **the corpus**, not the invocation. A re-run with
+nothing left to do still reports `complete=false` while rows are skipped,
+edited-but-unrefreshed, or covered by an accepted shortfall — otherwise the
+one number a pipeline reads would flip to "complete" on a no-op.
+
+**One run per workspace at a time.** Reading the manifest, checking for
+collisions and recording work in flight are separate steps, so two
+concurrent runs could both pass the checks and then overwrite each other.
+A lock file in the workspace enforces this; a lock left by a killed process
+is detected and taken over automatically.
 
 ## Source notes (state of 2026-08, verify before relying on them)
 
