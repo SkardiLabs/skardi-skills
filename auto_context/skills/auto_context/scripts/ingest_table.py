@@ -52,6 +52,7 @@ from ingest_corpus import (
     _ensure_localhost_no_proxy,
     build_body,
     content_hash,
+    ORIGIN_TABLE,
     detect_origin_collisions,
     die,
     die_on_collisions,
@@ -392,7 +393,7 @@ def main():
     # surfaced, never auto-re-ingested), and ok. Hashes recorded by an older
     # run of either script are honoured; the manifest is shared because the
     # index is shared, and identity is the source string in both.
-    origin = f"table:{label}"
+    origin = ORIGIN_TABLE
     die_on_collisions(detect_origin_collisions(progress, work, origin),
                       origin, progress_path)
 

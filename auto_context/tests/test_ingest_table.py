@@ -334,7 +334,7 @@ def test_table_run_refuses_a_source_already_held_by_the_folder_entry(
             "--source-column", "source"])
     err = capsys.readouterr().err
     assert e.value.code != 0
-    assert "guide.md" in err and "already ingested from corpus" in err
+    assert "guide.md" in err and "already ingested from the corpus entry" in err
     assert "Nothing was ingested" in err
 
 
@@ -355,7 +355,7 @@ def test_folder_run_refuses_a_source_already_held_by_a_table_entry(
         _run_corpus(monkeypatch, ["--workspace", str(ws), "--corpus", str(corpus)])
     err = capsys.readouterr().err
     assert e.value.code != 0
-    assert "already ingested from table:staged_documents" in err
+    assert "already ingested from the table entry" in err
 
 
 def test_two_entries_coexist_when_sources_are_distinct(tmp_path, monkeypatch):
@@ -374,7 +374,27 @@ def test_two_entries_coexist_when_sources_are_distinct(tmp_path, monkeypatch):
     assert [p["source"] for p in posted] == ["https://wiki/p1"]
     manifest = json.loads((ws / "ingest_progress.json").read_text())
     assert manifest["guide.md"]["origin"] == "corpus"
-    assert manifest["https://wiki/p1"]["origin"] == "table:staged_documents"
+    assert manifest["https://wiki/p1"]["origin"] == "table"
+
+
+def test_changing_the_label_is_not_a_collision_when_sources_are_a_column(
+        tmp_path, monkeypatch, capsys):
+    """The guard keys on the ENTRY, not on its parameters.
+
+    Recording the table entry as `table:<label>` looked more precise and was
+    wrong: with --source-column the label is not part of any source string,
+    so re-running the same table under a different label refused every row —
+    and the refusal advised using --source-column, which the run was already
+    doing. A parameter change must not read as a document change."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [("k1", "https://wiki/p1", None, "body one")])
+    argv = ["--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content",
+            "--source-column", "source"]
+    assert len(_run_main(monkeypatch, argv + ["--label", "A"])) == 1
+    posted = _run_main(monkeypatch, argv + ["--label", "B"])
+    assert posted == []                       # already ingested, not refused
+    assert "nothing to do" in capsys.readouterr().out
 
 
 def test_legacy_manifest_entries_count_as_corpus(tmp_path, monkeypatch, capsys):
@@ -389,7 +409,7 @@ def test_legacy_manifest_entries_count_as_corpus(tmp_path, monkeypatch, capsys):
             "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
             "--key-column", "key", "--content-column", "content",
             "--source-column", "source"])
-    assert "already ingested from corpus" in capsys.readouterr().err
+    assert "already ingested from the corpus entry" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------- --require-complete

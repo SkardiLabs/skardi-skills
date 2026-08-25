@@ -123,7 +123,17 @@ def _ensure_localhost_no_proxy(host: str) -> None:
     os.environ["no_proxy"] = ",".join(new)
 
 
+# Which raw-material entry produced a source string. Deliberately coarse —
+# the entry, not its parameters. An earlier version recorded the table entry
+# as "table:<label>", which mistook a *parameter* change for a *document*
+# change: re-running the same table with --source-column and a different
+# --label refused every row as a collision, and advised using
+# --source-column, which the run was already doing. The label only shapes
+# identity when it is IN the source string (the "<label>#<key>" default), and
+# in that case differing labels already yield differing sources, so recording
+# it here bought nothing.
 ORIGIN_CORPUS = "corpus"
+ORIGIN_TABLE = "table"
 
 
 def load_progress(path):
@@ -187,18 +197,20 @@ def detect_origin_collisions(progress, work, origin):
 def die_on_collisions(collisions, origin, progress_path):
     if not collisions:
         return
-    head = "\n    ".join(f"{src}  (already ingested from {rec})"
+    head = "\n    ".join(f"{src}  (already ingested from the {rec} entry)"
                          for src, rec in collisions[:10])
     more = f"\n    (+{len(collisions) - 10} more)" if len(collisions) > 10 else ""
     die(
         f"{len(collisions)} source string(s) in this run are already in this "
         f"workspace under a different raw-material entry:\n    {head}{more}\n"
-        f"  This run is {origin}. Source strings are document identity here — "
-        f"same string means same doc id — so ingesting these would either be\n"
-        f"  skipped as 'already ok' or reported as a changed file and never "
-        f"indexed. Nothing was ingested. Fix by making the sources distinct\n"
-        f"  (a different --label, or --source-column pointing at real "
-        f"locators), or by rendering a separate workspace for this material.\n"
+        f"  This run is the {origin} entry. Source strings are document "
+        f"identity here — same string means same doc id — so ingesting these\n"
+        f"  would either be skipped as 'already ok' or reported as a changed "
+        f"document and never indexed. Nothing was ingested.\n"
+        f"  Fix by making the two sets of source strings distinct — point "
+        f"--source-column at real locators (URLs), or give the table run a\n"
+        f"  --label that does not collide with corpus paths — or by rendering "
+        f"a separate workspace for this material.\n"
         f"  Manifest: {progress_path}"
     )
 
