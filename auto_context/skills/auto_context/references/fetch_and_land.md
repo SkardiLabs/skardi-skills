@@ -224,18 +224,19 @@ provider sources in 2026-08:
   `has_child`. Bodies come from the gateway's `fetch_document`, one document
   per call; that single-object shape is exactly what the pack row model
   cannot map ([skardi#197](https://github.com/SkardiLabs/skardi/issues/197)),
-  which is why bodies are fetched by you instead of arriving as a table.
-  The `feishu_connector` skill in this repo is one implementation of exactly
-  these four stages, and **its docs output can be ingested directly**: a
-  fixed `(doc_id, title, url, content_md, synced_at)` shape maps onto
+  which is why **Feishu doc bodies have to be fetched one at a time** rather
+  than arriving as a table. Land them in the stage-A shape — one row per
+  document, keyed by the doc token, with the doc's URL as the source — and
+  stage D is then the ordinary table entry:
   `--key-column doc_id --content-column content_md --source-column url`.
-  Its **Bitable output cannot** be assumed ingestable — that table's columns
-  are whatever fields the Bitable happens to have, so there is no guaranteed
-  stable key and no single text column. Use it only after picking a column
-  that is genuinely stable and unique as the key and deciding what the
-  content column is (often one long-text field, sometimes several fields
-  concatenated in a view or a `SELECT` you land yourself). An upstream pack
-  for Bitable rows is planned but unscheduled as of 2026-08.
+  Feishu **Bitable** is a different case in the same tenant: a table derived
+  from a Bitable has whatever columns that Bitable happens to define, so it
+  has no guaranteed stable key and no single text column. Treat it as raw
+  material only after choosing both explicitly — a column that is genuinely
+  stable and unique for the key, and a decision about what the content
+  column is (often one long-text field, sometimes several concatenated in a
+  view or a `SELECT` you land yourself). An upstream pack for Bitable rows
+  is planned but unscheduled as of 2026-08.
 - **Notion**: bodies are nested blocks — stage B must recurse
   `has_children` to the bottom of every page, and an unexpanded level is
   precisely the silent under-fetch stage C exists to catch. The pack maps

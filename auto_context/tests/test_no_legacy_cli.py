@@ -122,3 +122,36 @@ if __name__ == "__main__":
             print(f"  FAIL  {name}: {e}")
     print(f"\n{'FAILED' if failures else 'all passed'} ({failures} failure(s))")
     sys.exit(1 if failures else 0)
+
+
+# Sibling skills live and die on their own schedule. auto_context's own
+# instructions must not depend on one existing, or retiring that skill turns
+# into an edit here — and the edit would be to a paragraph that only just
+# landed. Note the asymmetry: the repo README and the marketplace manifest
+# SHOULD list sibling plugins (that is what they are for), so this guard
+# covers the skill directory only.
+SIBLING_SKILLS = ["feishu_connector", "feishu-connector",
+                  "skardi_query_log", "skardi-query-log"]
+
+
+def test_the_skill_does_not_depend_on_a_sibling_skill():
+    offenders = []
+    for dirpath, dirnames, filenames in os.walk(SKILL):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        for fn in filenames:
+            if not fn.endswith(SCANNED_SUFFIXES):
+                continue
+            path = os.path.join(dirpath, fn)
+            with open(path, encoding="utf-8") as fh:
+                for lineno, line in enumerate(fh, 1):
+                    for name in SIBLING_SKILLS:
+                        if name in line:
+                            rel = os.path.relpath(path, ROOT)
+                            offenders.append(
+                                f"{rel}:{lineno}  names sibling skill "
+                                f"{name!r}\n      {line.strip()[:150]}")
+    assert not offenders, (
+        "auto_context must stand on its own — state the source's shape and "
+        "the table it should land in, not which other skill produces it:\n    "
+        + "\n    ".join(offenders)
+    )
