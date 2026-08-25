@@ -71,14 +71,14 @@ To scope the skills to a single project instead, copy them into that repo's `.ag
 
 #### OpenClaw
 
-[OpenClaw](https://docs.openclaw.ai/tools/skills) installs from a local path through its own CLI rather than by copying:
+[OpenClaw](https://docs.openclaw.ai/tools/skills) installs from a local path through its own CLI rather than by copying. It requires a hyphenated slug and rejects the underscored directory names in this repo, so name each one with `--as`:
 
 ```bash
-openclaw skills install ./auto_context/skills/auto_context
-openclaw skills install ./feishu_connector/skills/feishu_connector
+openclaw skills install ./auto_context/skills/auto_context --as auto-context
+openclaw skills install ./feishu_connector/skills/feishu_connector --as feishu-connector
 ```
 
-That puts the skills in the active workspace's `skills/` directory. OpenClaw's shared location, visible to every local agent, is `~/.openclaw/skills/`; its docs pair the `--global` flag with that directory for ClawHub installs and don't say whether the flag also applies to a local path.
+That installs into `~/.openclaw/workspace/skills/`, scoped to the active agent workspace. Add `--global` to install into `~/.openclaw/skills/` instead, which every local agent sees. The slug names only the install directory — each skill keeps the name its `SKILL.md` declares.
 
 #### Hermes
 
