@@ -35,6 +35,20 @@
       "prompt": "I set up that local knowledge base over ./notes yesterday and already ingested everything. I just added three new files to the folder — please get them in too.",
       "expected_output": "Does NOT re-run setup_context.py with --force: the workspace and kb.db already exist and --force would drop every ingested row. Reuses the existing workspace, re-exports SQLITE_VEC_PATH, starts the server, and re-runs ingest_corpus.py — which journals progress, so the already-ingested files are skipped and only the three new ones are sent. Reports how many were skipped versus ingested.",
       "files": []
+    },
+    {
+      "id": 5,
+      "name": "existing_table_read_only",
+      "prompt": "We keep our support macros in a SQLite file at ./ops/macros.db — table `macros`, columns (slug TEXT PRIMARY KEY, url TEXT, body TEXT), about 300 rows. Make those searchable so you can answer support questions from them with citations. Whatever you do, don't modify that file — other tooling owns it.",
+      "expected_output": "Routes to the existing-table raw-material entry, NOT the folder entry (no exporting rows out to files first) and NOT the override storage path (macros.db is raw material, not where the index lives). Renders a normal local workspace, starts the server, then runs ingest_table.py --db ./ops/macros.db --table macros --key-column slug --content-column body --source-column url. Never writes to macros.db (the script opens it read-only) and never creates schema inside it. Cites the url values as sources when answering.",
+      "files": []
+    },
+    {
+      "id": 6,
+      "name": "fetch_and_land_reconciliation",
+      "prompt": "Our internal wiki (HTTP API, cursor-paginated listing endpoint, one-page-per-call content endpoint, token in WIKI_TOKEN) has around 200 pages. Index it so you can answer questions from it with citations.",
+      "expected_output": "Follows references/fetch_and_land.md instead of inventing an ad-hoc crawl: first lands the COMPLETE listing (paging until the API's own end signal) into a staging SQLite table with key/source/title and empty content, then fetches bodies one page at a time into that table with per-row error recording, then RECONCILES — reports listed vs fetched counts and names the missing pages to the user before ingesting, and does not proceed past a mismatch without the user's explicit go-ahead. Only then ingests via ingest_table.py and answers with citations. Does not claim the index is complete without showing the reconciliation numbers.",
+      "files": []
     }
   ]
 }

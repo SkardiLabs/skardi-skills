@@ -1,11 +1,11 @@
 ---
 name: auto_context
-description: 'Turn a folder of documents, or a datastore the user already runs, into governed searchable context an agent can query — hybrid search (vector + full-text) served over HTTP by skardi-server. Two storage paths, one flow. Default path: the skill creates and owns a local SQLite file, so the user supplies nothing but a corpus. Override path: point it at a database the user already runs (PostgreSQL+pgvector, MongoDB, or Lance), where the user owns the schema and the skill never creates it. Use this skill whenever the user wants to build a knowledge base, index a corpus for search, make documents queryable by an agent, answer questions over a document set, set up RAG or hybrid search, expose retrieval as a REST endpoint, share retrieval across several agents or processes, or plug Skardi into an existing production datastore. Trigger on phrases like build a RAG system, index my docs, local knowledge base, make this folder searchable, agent-native wiki, search API over my postgres, hybrid search service, expose vector search as HTTP, production RAG on our existing DB, or ground answers in a document set. Requires a running skardi-server built with --features rag (the published skardi-server-rag:0.5.0 image, or a source build from the v0.5.0 tag); the skardi CLI is optional and holds no engine of its own.'
+description: 'Turn a folder of documents, a table you already have, or documents still inside a service (a wiki, cloud docs, a mailbox) into governed searchable context an agent can query — hybrid search (vector + full-text) served over HTTP by skardi-server. Three raw-material entries, one flow: ingest a folder; ingest an existing table (SQLite read directly and read-only, any other datastore piped in as NDJSON); or fetch service-resident documents via the fetch-and-land process — list, fetch, reconcile (listed vs fetched vs missing, by name), land in a table, ingest — where your agent writes the per-source fetch code and this skill fixes the flow and the acceptance criteria. Independently of the entry, two storage paths for the index. Default: the skill creates and owns a local SQLite file. Override: point it at a database the user already runs (PostgreSQL+pgvector, MongoDB, or Lance), where the user owns the schema and the skill never creates it. Use this skill whenever the user wants to build a knowledge base, index a corpus or a table for search, make documents queryable by an agent, answer questions over a document set, set up RAG or hybrid search, expose retrieval as a REST endpoint, share retrieval across several agents or processes, plug Skardi into an existing production datastore, or make wiki / cloud-doc / SaaS content searchable. Trigger on phrases like build a RAG system, index my docs, index this table, index the documents in our database, local knowledge base, make this folder searchable, make our wiki searchable, index our Feishu or Notion or Confluence docs, agent-native wiki, search API over my postgres, hybrid search service, expose vector search as HTTP, production RAG on our existing DB, or ground answers in a document set. Requires a running skardi-server built with --features rag (the published skardi-server-rag:0.5.0 image, or a source build from the v0.5.0 tag); the skardi CLI is optional and holds no engine of its own.'
 ---
 
 # auto_context — build searchable context an agent can query
 
-Your job: turn a corpus into a working retrieval surface, then answer questions from it. One flow, two storage choices.
+Your job: turn a corpus into a working retrieval surface, then answer questions from it. One flow; three ways raw material comes in, two places the index can live.
 
 > **A server is not optional.** Since the CLI was reframed as a thin HTTP client (skardi PR #170) it holds no query engine, no data-source registration, and no local execution mode. Every path in this skill starts a `skardi-server`. Do not look for a CLI-only shortcut — there isn't one, and earlier versions of this skill that promised "no server, no Docker" are obsolete.
 
@@ -13,34 +13,54 @@ Your job: turn a corpus into a working retrieval surface, then answer questions 
 >
 > **Pin the tag.** Use `:0.5.0`, the current released version — not `:latest`, which moves under you, and not a build from `main`, which carries unreleased changes you cannot name in a bug report. This skill does not check the `skardi` CLI at all: it is a thin HTTP client, it is never invoked by these scripts, and its version says nothing about the server's UDFs.
 
+## Where the raw material comes from — three entries, one flow
+
+Raw material and index storage are independent choices, and they read confusingly alike because both can involve "a database". This section is about where the source text **comes from**; the next section is about where the **index** lives. In particular: the "bring your own datastore" storage path stores the index in a *new* table created for that purpose — it never reads rows you already have. Reading rows you already have is this section's second entry, and it is read-only.
+
+| Entry | The raw material is | The move |
+|---|---|---|
+| **A folder** (default) | files on disk | `scripts/ingest_corpus.py --corpus ./docs` (Step 3) |
+| **An existing table** | rows that already hold the text — one row = one document | `scripts/ingest_table.py` (Step 3, table form) |
+| **Documents still inside a service** | pages / docs / mail behind an API, fetched one at a time | the fetch-and-land process → a staging table → `ingest_table.py`. Flow and acceptance criteria in [references/fetch_and_land.md](references/fetch_and_land.md) |
+
+All three converge on the same POST per document to `/ingest-chunked/execute` — same chunking, same embedding, same index, same search pipelines, same manifest. Only the first step differs, so a new source is never a reason for a second skill or a second index path.
+
+**The existing-table entry.** The contract is three columns: a stable unique key, the text, and (ideally) a real locator — URL or path — for citations. `ingest_table.py` reads a SQLite file directly and strictly read-only; for a table in any other datastore, pipe rows in as NDJSON (`{"key": …, "content": …, "source": …}` per line) from whatever client already talks to it — psql with `json_build_object`, mongoexport, a five-line script. Rows are ingested as-is, with no front-matter stripping: by the time text is in a table, it is what gets indexed. Point it at a table that holds the text itself — a table of titles and hierarchy (what some source packs expose today) is a listing, not a corpus, and routes through the fetch-and-land process instead.
+
+**The fetch-first entry.** Four stages: land the complete listing → fetch each body into a staging table → **reconcile** → ingest the table. This skill deliberately ships no per-source fetch code — your agent writes the walk for the source at hand — and the reconciliation is what makes that safe: how many documents the source holds, how many were actually fetched, and which ones are missing, *by name*, shown to the user before ingest. Under-fetching does not error — a missed page still yields a working index and well-cited answers — so the count is the only place a shortfall can surface. Treat it as an acceptance criterion, not a nicety; the stage-by-stage criteria are in [references/fetch_and_land.md](references/fetch_and_land.md).
+
 ## The two storage paths
 
-Decide this first. It is the only structural choice; everything downstream is identical.
+Where the **index** lives. Decide it before rendering the workspace; together with the raw-material entry above it is the whole structure — everything downstream is identical.
 
 | | **Local (default)** | **Bring your own datastore** |
 |---|---|---|
-| When | The user hands you a folder and wants it searchable. No mention of existing infra. | The user says "use our Postgres / Mongo / Lance", or wants several agents and processes hitting one shared surface. |
+| When | The user hands you raw material (a folder, a table, a source to fetch) and wants it searchable. No mention of where the index should live. | The user says "store it in our Postgres / Mongo / Lance", or wants several agents and processes hitting one shared surface. |
 | Storage | A SQLite file **this skill creates and owns**, inside the workspace (`<workspace>/kb.db`) — canonical rows plus an FTS5 mirror plus a sqlite-vec `vec0` mirror, kept in sync by triggers. | A table, collection or dataset **the user created**. |
-| User supplies | A corpus path. Nothing about storage. | Connection string, table name, credentials via env vars, and the schema itself. |
+| User supplies | The raw material (folder, table, or source to fetch). Nothing about storage. | Connection string, table name, credentials via env vars, and the schema itself. |
 | Flag | nothing (`--backend sqlite` is the default) | `--backend postgres --connection-string ... --table ...` |
 
-**Do not ask which backend the user wants when they have not raised the topic.** The local path exists so that "make this folder searchable" needs exactly one answer from them: where the folder is. Branch to the override path only when the user names existing infrastructure.
+**Do not ask which backend the user wants when they have not raised the topic.** The local path exists so that "make this folder searchable" needs exactly one answer from them: where the folder is. Branch to the override path only when the user names existing infrastructure *as the place the index should live*. Naming a database as the place the raw material sits — "index the docs table in our postgres" — picks the table **entry**, not the override **storage**: read the rows out (NDJSON), index them wherever the storage decision says, default local.
 
 ## What this skill will and will not do
 
-**Will do.** Render `ctx.yaml` + `semantics.yaml` + the five pipeline YAMLs, start `skardi-server`, ingest a corpus over HTTP (the server chunks and embeds inline), and route each question through `/search-hybrid/execute` or its single-signal siblings to a grounded answer.
+**Will do.** Render `ctx.yaml` + `semantics.yaml` + the five pipeline YAMLs, start `skardi-server`, ingest raw material over HTTP — a folder of files, rows from an existing table, or documents your agent fetched and landed (the server chunks and embeds inline either way) — and route each question through `/search-hybrid/execute` or its single-signal siblings to a grounded answer.
 
 **Will not do — in a datastore the user owns.** Create databases, create schemas, run `CREATE EXTENSION`, install drivers, or hand out credentials. On the override path the user provides every connection string, every credential, and the schema. If the schema does not exist, print the SQL the user must run in their own session and stop. *Never run schema-creation DDL against a user-supplied connection without the user explicitly asking.* A stray `DROP` can lose hours of someone else's work, and `CREATE EXTENSION` on managed Postgres often needs superuser the agent does not have anyway.
 
 **That limit does not apply to the local path.** There the `.db` file is a workspace artifact this skill created; making tables, triggers and indexes inside it is the skill doing its own job, not touching the user's data. Deleting the workspace is a complete undo.
 
+**Will not write to a table handed over as raw material.** The table entry opens SQLite sources read-only (URI `mode=ro`, enforced by SQLite itself); rows are read and nothing else — no writes, no schema changes, no journal files left behind. Landing fetched documents goes into a staging file the agent creates, never into a table the user owns, and never into `kb.db` (the server owns that file).
+
+**Will not carry per-source fetch code.** How to walk a specific wiki, doc service or mailbox is written by your agent when needed, against the flow and acceptance criteria in [references/fetch_and_land.md](references/fetch_and_land.md). The reconciliation there — listed vs fetched vs missing, by name, shown to the user — is mandatory, not advisory.
+
 For testing **the skill itself** during development, disposable Docker containers are fine — that is not "the user's data".
 
 ## What to confirm before starting
 
-Local path — one question, sometimes zero:
+Local path — two questions, sometimes fewer:
 
-1. **Where is the corpus?** If the user already said, do not ask again.
+1. **Where is the raw material — a folder, an existing table, or still inside a service?** For a folder: the path. For a table: which file or datastore, which table, and which columns hold the key and the text. For a service: read [references/fetch_and_land.md](references/fetch_and_land.md) before promising anything. If the user already said, do not ask again.
 2. **Embedding backend.** See below. Do not pick silently; it drives cost and the vector dimension.
 
 Override path — the two above, plus:
@@ -214,6 +234,22 @@ One POST per document to `/ingest-chunked/execute`. Progress is journalled, so a
 
 The caveat is printed with the count and matters if you deleted the manifest on purpose: `already-present` means *rows exist*, not *rows are current*. Nothing was re-indexed. To actually refresh a document, delete its rows (`DELETE FROM <table> WHERE source = '...'`) and its manifest entry, then re-run.
 
+#### Step 3, table form — rows instead of files
+
+```bash
+python scripts/ingest_table.py --workspace ./context \
+  --db ./staging.db --table staged_documents \
+  --key-column key --content-column content --source-column source
+```
+
+One row = one document; everything else matches the folder form — same endpoint, same manifest (`ingest_progress.json` is shared, because the index is shared), same resume, same three-way `ok` / `already-present` / `fail` handling. The SQLite file is opened read-only (URI `mode=ro`), so the run cannot write to, alter, or leave journal files in a table you were handed.
+
+- **Identity is the source string**, exactly as the folder form derives ids from relative paths. Default source is `<label>#<key>` with the label defaulting to the table name; pass `--source-column` when rows carry a real locator (URLs cite better). Keep the label and the source scheme stable across runs — changing them re-ingests every row under new ids *next to* the old rows, the same way moving a corpus root does.
+- **Every row is accounted for**, same contract as files: the `rows: N  ingestable: …  skipped: …` line adds up, and each skip prints its reason and names — `null key`, `duplicate source`, `no text content`, `not UTF-8`, `non-text content`, `too large for one request`, plus `not valid JSON` / `missing key or content field` on the NDJSON path.
+- **Empty-content rows are a signal, not noise.** On a table landed by the fetch-and-land process they are documents that were listed but never fetched; the run says so and points at the reconciliation. Do not trust search results over such a table until stage C in [references/fetch_and_land.md](references/fetch_and_land.md) passes.
+- **A table in Postgres, Mongo, or anything else**: export rows as NDJSON with the client you already use and pipe them in — `… | python scripts/ingest_table.py --workspace ./context --ndjson - --label kb_docs`. One JSON object per line; `key` and `content` required, `source` optional; `--label` is required in this mode (it namespaces ids when rows carry no `source`).
+- **Refreshing changed rows** works like changed files: the manifest hash surfaces them, nothing is re-ingested automatically, and the fix is the same delete-rows-and-manifest-entries-then-rerun described above.
+
 ### Step 4 — Retrieve and answer
 
 ```bash
@@ -279,6 +315,7 @@ The missing `backend` key is the one that mattered. `start_server.py` used to de
 
 ## References
 
+- [references/fetch_and_land.md](references/fetch_and_land.md) — the fetch-and-land process for documents still inside a service: list → fetch → reconcile → ingest, with the acceptance criteria.
 - [references/schemas.md](references/schemas.md) — the SQL the user runs on the override path, per backend.
 - [references/runtimes.md](references/runtimes.md) — local-process vs docker vs kubernetes in full.
 - [references/pipeline_patterns.md](references/pipeline_patterns.md) — pipeline shapes, including the SQLite FTS5 + vec0 mirror design.
@@ -289,4 +326,6 @@ The missing `backend` key is the one that mattered. `start_server.py` used to de
 
 - Never claim a capability without checking it against the running server. If `/pipelines` does not list a pipeline, it does not exist.
 - Never run schema DDL in a datastore the user owns without being asked.
+- Never write to, alter, or lock a table handed over as raw material — reading its rows is the entire interaction.
+- Never call a fetched corpus complete without showing the user the reconciliation numbers: listed, fetched, and the missing documents by name. An index that builds cleanly is not evidence that nothing is missing.
 - Do not promise a CLI-only or serverless mode. There isn't one.
