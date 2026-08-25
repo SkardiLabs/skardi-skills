@@ -32,8 +32,8 @@ Which tables exist, which pipelines are registered, what a column means, what is
 | Is the server up? | `skardi health` | overall status only (`healthy` + timestamp). |
 | Is source X reachable for pipeline Y? | `skardi health <pipeline>` | per-source checks for that pipeline's sources. **Known false negative:** a source registered at catalog level reports `unhealthy — No table named '<source>'` even when queries against it work fine (the probe assumes table-level registration). Confirm with a real `DESCRIBE` before believing a source is down. |
 | What data is there? | `skardi schema` | every source with its type and path/URL, **plus operator-written source and column descriptions** when the server was started with a semantics overlay. Column enumeration depends on how the source was registered — see step 1. |
-| What pre-approved queries exist? | `skardi pipeline list` | pipeline names, versions, endpoints. Names only — no descriptions. |
-| What does pipeline X take? | `skardi pipeline show X` | parameter names and inferred types. **On v0.5.0 this does not return the pipeline's SQL or description**, so judge what a pipeline does from its name and parameter shape, and ask the operator when that is not enough. |
+| Which pipelines are registered? | `skardi pipeline list` | pipeline names, versions, endpoints. Names only — no descriptions, and **registered does not mean approved for you to run**: see the declaration rule in step 2. |
+| What does pipeline X take? | `skardi pipeline show X` | parameter names and inferred types. **On v0.5.0 this does not return the pipeline's SQL or description.** Names and parameters are only good for spotting candidates worth asking about — what makes one callable is an operator declaration covering both read-only and a result bound (step 2). |
 
 ## The retrieval flow
 
