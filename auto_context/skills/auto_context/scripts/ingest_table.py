@@ -52,7 +52,9 @@ from ingest_corpus import (
     _ensure_localhost_no_proxy,
     build_body,
     content_hash,
+    detect_origin_collisions,
     die,
+    die_on_collisions,
     load_progress,
     post_doc,
     save_progress,
@@ -222,7 +224,29 @@ def main():
     ap.add_argument("--timeout", type=float, default=300.0,
                     help="Per-request timeout in seconds (default: 300). One POST chunks "
                          "+ embeds an entire document; keep this generous.")
-    ap.add_argument("--limit", type=int, default=0, help="Only ingest the first N rows (0 = all).")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help=(
+            "Trial run: ingest only the first N rows (0 = all). The run is "
+            "INCOMPLETE by construction — the rest are neither ingested nor "
+            "skipped, they are counted apart as `limited` — so its result "
+            "cannot stand as a finished ingest."
+        ),
+    )
+    ap.add_argument(
+        "--require-complete",
+        action="store_true",
+        help=(
+            "Refuse to ingest unless every row is ingestable. Turns the "
+            "reconciliation into a gate the machine enforces: any skip (most "
+            "importantly `no text content` — listed but never fetched) stops "
+            "the run instead of quietly indexing a partial corpus. Required "
+            "by the fetch-and-land process; see references/fetch_and_land.md "
+            "for what it can and cannot prove."
+        ),
+    )
     args = ap.parse_args()
 
     workspace = Path(args.workspace).expanduser().resolve()
@@ -230,6 +254,9 @@ def main():
         die(f"{workspace}/ctx.yaml not found. Did you run setup_context.py?")
     if args.overlap >= args.chunk_size:
         die(f"--overlap ({args.overlap}) must be strictly less than --chunk-size ({args.chunk_size})")
+    if args.require_complete and args.limit > 0:
+        die("--require-complete and --limit contradict each other: the first demands "
+            "every row be ingested, the second deliberately holds rows back. Pick one.")
 
     if args.db:
         for flag, val in (("--table", args.table), ("--key-column", args.key_column),
@@ -311,7 +338,13 @@ def main():
     # someone exported, so they belong in the denominator.
     rows = consumed + len(skipped["not valid JSON"]) + len(skipped["missing key or content field"])
 
-    if args.limit > 0:
+    # Held back by --limit, counted apart so `rows = ingestable + skipped +
+    # limited` still balances. Folding these into neither bucket is what made
+    # a truncated trial run print `rows: 3  ingestable: 1  skipped: 0` and
+    # exit 0 — indistinguishable from a complete run over a small table.
+    limited = 0
+    if args.limit > 0 and len(work) > args.limit:
+        limited = len(work) - args.limit
         work = work[: args.limit]
 
     for reason, names in skipped.items():
@@ -336,11 +369,33 @@ def main():
             "table or file was named)."
         )
 
+    total_skipped = sum(len(v) for v in skipped.values())
+    if args.require_complete and total_skipped:
+        detail = "\n    ".join(f"{reason}: {len(names)}"
+                               for reason, names in skipped.items() if names)
+        empty = len(skipped["no text content"])
+        hint = (
+            "\n  The `no text content` rows are the ones that matter most here: on a "
+            "table filled by a fetch-and-land run they are documents that were listed "
+            "and never fetched.\n  Fix the fetch (re-run stage B), or drop them from "
+            "the staging table if they are genuinely empty at the source."
+            if empty else ""
+        )
+        die(
+            f"--require-complete: {total_skipped} of {rows} row(s) are not ingestable, "
+            f"so this corpus would be indexed incomplete.\n    {detail}{hint}\n"
+            f"  Nothing was ingested. The named rows are listed above."
+        )
+
     # Same three-way split as ingest_corpus.py: pending (never ingested or
     # last attempt errored), changed (hash differs from what was ingested —
     # surfaced, never auto-re-ingested), and ok. Hashes recorded by an older
     # run of either script are honoured; the manifest is shared because the
     # index is shared, and identity is the source string in both.
+    origin = f"table:{label}"
+    die_on_collisions(detect_origin_collisions(progress, work, origin),
+                      origin, progress_path)
+
     pending = []
     changed = []
     for w in work:
@@ -369,10 +424,16 @@ def main():
             f"  then remove those keys from {progress_path}.\n"
         )
 
-    total_skipped = sum(len(v) for v in skipped.values())
-    print(f"  rows: {rows}  ingestable: {len(work)}  skipped: {total_skipped}  "
+    limited_note = f"  limited (--limit, NOT ingested): {limited}" if limited else ""
+    print(f"  rows: {rows}  ingestable: {len(work)}  skipped: {total_skipped}"
+          f"{limited_note}  "
           f"already ok: {len(work) - len(pending) - len(changed)}  "
           f"changed (see warning): {len(changed)}  to ingest: {len(pending)}")
+    if limited:
+        print(f"  INCOMPLETE: --limit held back {limited} ingestable row(s). This is a "
+              f"trial run over part of the table;\n"
+              f"              do not report it as a finished ingest. Re-run without "
+              f"--limit for the rest.")
 
     if not work:
         die(f"all {rows} row(s) were skipped — see the reasons above. Nothing was ingested.")
@@ -391,13 +452,16 @@ def main():
     def _record(item, status, err):
         nonlocal ok, last_save
         if status == "ok":
-            progress[item["source"]] = {"status": "ok", "hash": item["hash"]}
+            progress[item["source"]] = {"status": "ok", "hash": item["hash"],
+                                        "origin": origin}
             ok += 1
         elif status == "present":
-            progress[item["source"]] = {"status": "ok", "hash": item["hash"]}
+            progress[item["source"]] = {"status": "ok", "hash": item["hash"],
+                                        "origin": origin}
             already_present.append(item["source"])
         else:
-            progress[item["source"]] = {"status": f"err: {err}", "hash": None}
+            progress[item["source"]] = {"status": f"err: {err}", "hash": None,
+                                        "origin": origin}
             failed.append((item["source"], err))
         if time.time() - last_save > 2.0:
             save_progress(progress_path, progress)

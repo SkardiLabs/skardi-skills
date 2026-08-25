@@ -119,6 +119,29 @@ A mismatch is not an error state to route around; it is the finding. Fix the
 walk (the missed page, the unexpanded level), re-run stage B, reconcile
 again.
 
+### What is machine-enforced, and what is not
+
+Be precise about this, because the two halves have very different strength
+and it would be easy to read the enforced half as covering both:
+
+- **Enforced.** "Listed but never fetched" is caught by the tool: pass
+  `--require-complete` at stage D and any row without content stops the
+  ingest, named, before anything is indexed. Criterion 2 above is a gate.
+- **Not enforceable, by anyone.** Whether the *listing itself* is complete —
+  criterion 1 — cannot be checked from inside this process. The staging
+  table is the only thing the tool can see, and a document that was never
+  listed leaves no trace in it. No amount of tooling closes this: the
+  denominator lives at the source.
+
+So do not invent a number to make the check look automatic. Fabricating an
+`expected_count` produces a green reconciliation that proves nothing, which
+is strictly worse than an honest "the source exposes no total; here is how I
+established the end of the listing". Completeness of the listing rests on
+two things and only these: the fetch logic actually following the source's
+own end-of-listing signal, and the evidence you report to the user. Where a
+real total exists, use it — it is the one case where criterion 1 becomes
+checkable.
+
 ## Stage D — ingest the staging table
 
 This is the second raw-material entry, exactly as documented in SKILL.md:
@@ -126,14 +149,25 @@ This is the second raw-material entry, exactly as documented in SKILL.md:
 ```bash
 python scripts/ingest_table.py --workspace ./context \
   --db ./staging.db --table staged_documents \
-  --key-column key --content-column content --source-column source
+  --key-column key --content-column content --source-column source \
+  --require-complete
 ```
 
-Its accounting is a tripwire, not a substitute for stage C: rows that were
-listed but never fetched show up as `no text content` skips — but a document
-your listing never captured produces no row at all, so nothing at this stage
-can notice it. Only stage A's completeness makes stage C's arithmetic mean
-anything.
+**`--require-complete` is part of the command on this path, not an option.**
+It refuses the ingest if any row is not ingestable — most importantly the
+`no text content` rows, which on a landed table are documents that were
+listed and never fetched. Without it the run prints the same counts and
+indexes the partial corpus anyway, which is the exact failure this process
+exists to prevent.
+
+It is still not a substitute for stage C: a document your listing never
+captured produces no row at all, so nothing here can notice it. Only stage
+A's completeness makes stage C's arithmetic mean anything — see the section
+above on which half is enforced.
+
+Use `--limit` only for a trial POST or two while debugging. It holds rows
+back by design, so the run reports itself INCOMPLETE and refuses to combine
+with `--require-complete`; its result never counts as a finished ingest.
 
 ## Source notes (state of 2026-08, verify before relying on them)
 
@@ -148,10 +182,17 @@ provider sources in 2026-08:
   per call; that single-object shape is exactly what the pack row model
   cannot map ([skardi#197](https://github.com/SkardiLabs/skardi/issues/197)),
   which is why bodies are fetched by you instead of arriving as a table.
-  Bitable (structured records, not long documents) is a different case: an
-  upstream pack is planned but unscheduled as of 2026-08; meanwhile the
-  `feishu_connector` skill in this repo lands Bitable rows into SQLite, and
-  its output is already a valid raw-material table for `ingest_table.py`.
+  The `feishu_connector` skill in this repo is one implementation of exactly
+  these four stages, and **its docs output can be ingested directly**: a
+  fixed `(doc_id, title, url, content_md, synced_at)` shape maps onto
+  `--key-column doc_id --content-column content_md --source-column url`.
+  Its **Bitable output cannot** be assumed ingestable — that table's columns
+  are whatever fields the Bitable happens to have, so there is no guaranteed
+  stable key and no single text column. Use it only after picking a column
+  that is genuinely stable and unique as the key and deciding what the
+  content column is (often one long-text field, sometimes several fields
+  concatenated in a view or a `SELECT` you land yourself). An upstream pack
+  for Bitable rows is planned but unscheduled as of 2026-08.
 - **Notion**: bodies are nested blocks — stage B must recurse
   `has_children` to the bottom of every page, and an unexpanded level is
   precisely the silent under-fetch stage C exists to catch. The pack maps

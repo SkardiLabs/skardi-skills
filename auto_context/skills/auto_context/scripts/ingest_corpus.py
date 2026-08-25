@@ -123,13 +123,22 @@ def _ensure_localhost_no_proxy(host: str) -> None:
     os.environ["no_proxy"] = ",".join(new)
 
 
-def load_progress(path):
-    """Return {source: {"status": str, "hash": str|None}}.
+ORIGIN_CORPUS = "corpus"
 
-    Back-compat: older manifests stored a bare string per source ("ok" /
-    "err: ...") with no content hash. Normalise those to the dict shape with
-    hash=None (unknown), so a file ingested by an older version is treated as
-    ok-but-unhashed until it is next hashed on this run."""
+
+def load_progress(path):
+    """Return {source: {"status": str, "hash": str|None, "origin": str}}.
+
+    Back-compat, two generations deep:
+
+      * Older manifests stored a bare string per source ("ok" / "err: ...")
+        with no content hash. Those become the dict shape with hash=None
+        (unknown), so a file ingested by an older version is treated as
+        ok-but-unhashed until it is next hashed on this run.
+      * Manifests written before the table entry existed carry no `origin`.
+        They can only have come from ingest_corpus.py — it was the sole
+        writer — so defaulting them to "corpus" is exact, not a guess, and
+        it lets the collision check below work on upgraded workspaces."""
     if not path.is_file():
         return {}
     try:
@@ -140,10 +149,58 @@ def load_progress(path):
     normalised = {}
     for source, val in raw.items():
         if isinstance(val, str):
-            normalised[source] = {"status": val, "hash": None}
+            normalised[source] = {"status": val, "hash": None, "origin": ORIGIN_CORPUS}
         elif isinstance(val, dict):
-            normalised[source] = {"status": val.get("status", ""), "hash": val.get("hash")}
+            normalised[source] = {
+                "status": val.get("status", ""),
+                "hash": val.get("hash"),
+                "origin": val.get("origin") or ORIGIN_CORPUS,
+            }
     return normalised
+
+
+def detect_origin_collisions(progress, work, origin):
+    """Sources this run would ingest that the manifest holds under a
+    DIFFERENT raw-material entry. Returns [(source, recorded_origin)].
+
+    A document IS its source string: doc_id is derived from it, and the
+    manifest and index are per-workspace, shared by every entry. So two
+    different documents that happen to produce the same source string are
+    indistinguishable downstream, and the failure is silent in both
+    directions — identical content is written off as `already ok`, and
+    differing content is reported as a *changed file* (never re-ingested,
+    because its ids are taken) so the newcomer never reaches the index at
+    all. Neither message mentions that two entries are fighting over one
+    id, which is why this is checked up front and refused rather than left
+    to the hash comparison downstream."""
+    collisions = []
+    for w in work:
+        entry = progress.get(w["source"])
+        if entry is None:
+            continue
+        recorded = entry.get("origin") or ORIGIN_CORPUS
+        if recorded != origin:
+            collisions.append((w["source"], recorded))
+    return collisions
+
+
+def die_on_collisions(collisions, origin, progress_path):
+    if not collisions:
+        return
+    head = "\n    ".join(f"{src}  (already ingested from {rec})"
+                         for src, rec in collisions[:10])
+    more = f"\n    (+{len(collisions) - 10} more)" if len(collisions) > 10 else ""
+    die(
+        f"{len(collisions)} source string(s) in this run are already in this "
+        f"workspace under a different raw-material entry:\n    {head}{more}\n"
+        f"  This run is {origin}. Source strings are document identity here — "
+        f"same string means same doc id — so ingesting these would either be\n"
+        f"  skipped as 'already ok' or reported as a changed file and never "
+        f"indexed. Nothing was ingested. Fix by making the sources distinct\n"
+        f"  (a different --label, or --source-column pointing at real "
+        f"locators), or by rendering a separate workspace for this material.\n"
+        f"  Manifest: {progress_path}"
+    )
 
 
 def save_progress(path, progress):
@@ -255,7 +312,17 @@ def main():
             "on the first request — keep this generous."
         ),
     )
-    ap.add_argument("--limit", type=int, default=0, help="Only ingest the first N files (0 = all).")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help=(
+            "Trial run: ingest only the first N files (0 = all). The run is "
+            "INCOMPLETE by construction — the rest are neither ingested nor "
+            "skipped, they are counted apart as `limited` — so its result "
+            "cannot stand as a finished ingest."
+        ),
+    )
     args = ap.parse_args()
 
     workspace = Path(args.workspace).expanduser().resolve()
@@ -332,7 +399,15 @@ def main():
                 f"{rel} ({len(body) / 1024 / 1024:.1f} MB serialised)")
             continue
         work.append({"source": rel, "body": body, "hash": content_hash(text)})
-    if args.limit > 0:
+
+    # Held back by --limit. Counted on its own line rather than folded into
+    # the work list, because `matched = ingestable + skipped` is a promise the
+    # counts line makes: truncating silently broke it (matched: 3,
+    # ingestable: 1, skipped: 0) while still exiting 0, which reads exactly
+    # like a complete run over a small corpus.
+    limited = 0
+    if args.limit > 0 and len(work) > args.limit:
+        limited = len(work) - args.limit
         work = work[: args.limit]
 
     for reason, names in skipped.items():
@@ -367,6 +442,9 @@ def main():
     # warning below). Files ingested by an older version have hash=None; we
     # backfill the hash in place so future edits are detectable, but treat them
     # as ok for this run because we cannot know whether they changed.
+    die_on_collisions(detect_origin_collisions(progress, work, ORIGIN_CORPUS),
+                      ORIGIN_CORPUS, progress_path)
+
     pending = []
     changed = []
     backfilled = 0
@@ -410,9 +488,16 @@ def main():
         )
 
     total_skipped = sum(len(v) for v in skipped.values())
-    print(f"  matched: {matched}  ingestable: {len(work)}  skipped: {total_skipped}  "
+    limited_note = f"  limited (--limit, NOT ingested): {limited}" if limited else ""
+    print(f"  matched: {matched}  ingestable: {len(work)}  skipped: {total_skipped}"
+          f"{limited_note}  "
           f"already ok: {len(work) - len(pending) - len(changed)}  "
           f"changed (see warning): {len(changed)}  to ingest: {len(pending)}")
+    if limited:
+        print(f"  INCOMPLETE: --limit held back {limited} ingestable file(s). This is a "
+              f"trial run over part of the corpus;\n"
+              f"              do not report it as a finished ingest. Re-run without "
+              f"--limit for the rest.")
 
     if not work:
         # Files matched but none survived. Distinct from "already ingested":
@@ -434,17 +519,20 @@ def main():
     def _record(item, status, err):
         nonlocal ok, last_save
         if status == "ok":
-            progress[item["source"]] = {"status": "ok", "hash": item["hash"]}
+            progress[item["source"]] = {"status": "ok", "hash": item["hash"],
+                                        "origin": ORIGIN_CORPUS}
             ok += 1
         elif status == "present":
             # The rows are in the index; the manifest just did not know. Record
             # ok so the file stops being retried forever, and remember it for
             # the caveat printed below — we cannot compare our hash against
             # what is actually indexed, so "present" is not proof of "current".
-            progress[item["source"]] = {"status": "ok", "hash": item["hash"]}
+            progress[item["source"]] = {"status": "ok", "hash": item["hash"],
+                                        "origin": ORIGIN_CORPUS}
             already_present.append(item["source"])
         else:
-            progress[item["source"]] = {"status": f"err: {err}", "hash": None}
+            progress[item["source"]] = {"status": f"err: {err}", "hash": None,
+                                        "origin": ORIGIN_CORPUS}
             failed.append((item["source"], err))
         if time.time() - last_save > 2.0:
             save_progress(progress_path, progress)

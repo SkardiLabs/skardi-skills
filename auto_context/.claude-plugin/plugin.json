@@ -1,7 +1,7 @@
 {
   "name": "auto-context",
   "version": "0.3.0",
-  "description": "Turn a folder of documents, a table you already have, or documents fetched out of a service (wiki, cloud docs, mail) into governed, searchable context an agent can query — hybrid search (vector + full-text) served by skardi-server over SQLite, Postgres+pgvector, MongoDB, or Lance. Three raw-material entries, one flow: folder, existing table (read-only; NDJSON for any datastore), or fetch-and-land with a hard reconciliation gate. Renders ctx + semantics + ingest/search pipelines, starts the server, then drives ingestion and querying over HTTP. Never creates schema in a datastore you own without asking, never writes to a table given as raw material.",
+  "description": "Turn a folder of documents, a table you already have, or documents fetched out of a service (wiki, cloud docs, mail) into governed, searchable context an agent can query — hybrid search (vector + full-text) served by skardi-server over SQLite, Postgres+pgvector, MongoDB, or Lance. Three raw-material entries, one flow: folder, existing table (read-only; NDJSON for any datastore), or fetch-and-land with a required reconciliation process — enforced at ingest for documents listed but never fetched, and reported as evidence for listing completeness, which no tool can prove. Renders ctx + semantics + ingest/search pipelines, starts the server, then drives ingestion and querying over HTTP. Never creates schema in a datastore you own without asking, never writes to a table given as raw material.",
   "author": { "name": "Skardi Labs" },
   "homepage": "https://github.com/SkardiLabs/skardi-skills",
   "repository": "https://github.com/SkardiLabs/skardi-skills",

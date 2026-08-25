@@ -295,3 +295,178 @@ def test_ndjson_rejects_db_only_flags(tmp_path, monkeypatch, capsys):
             "--workspace", str(ws), "--ndjson", str(nd), "--label", "l",
             "--table", "t"])
     assert "only applies to --db mode" in capsys.readouterr().err
+
+
+# ------------------------------------------------ cross-entry source identity
+
+def _run_corpus(monkeypatch, argv, outcome=("ok", None)):
+    """Drive ingest_corpus.py's main() the same way _run_main drives this one."""
+    import ingest_corpus
+    posted = []
+
+    def fake_post(endpoint, body, timeout):
+        posted.append(json.loads(body))
+        return outcome
+
+    monkeypatch.setattr(ingest_corpus, "post_doc", fake_post)
+    monkeypatch.setattr(sys, "argv", ["ingest_corpus.py"] + argv)
+    ingest_corpus.main()
+    return posted
+
+
+def test_table_run_refuses_a_source_already_held_by_the_folder_entry(
+        tmp_path, monkeypatch, capsys):
+    """The collision that used to pass silently: a table row whose source
+    equals a file's relative path is the SAME doc id, so with identical
+    content it was written off as `already ok` and the row never ingested
+    on its own terms."""
+    ws = _make_workspace(tmp_path)
+    corpus = tmp_path / "docs"
+    corpus.mkdir()
+    (corpus / "guide.md").write_text("shared body")
+    _run_corpus(monkeypatch, ["--workspace", str(ws), "--corpus", str(corpus)])
+
+    db = _make_staging(tmp_path, [("guide.md", "guide.md", None, "shared body")])
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, [
+            "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content",
+            "--source-column", "source"])
+    err = capsys.readouterr().err
+    assert e.value.code != 0
+    assert "guide.md" in err and "already ingested from corpus" in err
+    assert "Nothing was ingested" in err
+
+
+def test_folder_run_refuses_a_source_already_held_by_a_table_entry(
+        tmp_path, monkeypatch, capsys):
+    """Symmetric: the folder entry must refuse too, or the guard is one-way."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [("guide.md", "guide.md", None, "table body")])
+    _run_main(monkeypatch, [
+        "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+        "--key-column", "key", "--content-column", "content",
+        "--source-column", "source"])
+
+    corpus = tmp_path / "docs"
+    corpus.mkdir()
+    (corpus / "guide.md").write_text("file body")
+    with pytest.raises(SystemExit) as e:
+        _run_corpus(monkeypatch, ["--workspace", str(ws), "--corpus", str(corpus)])
+    err = capsys.readouterr().err
+    assert e.value.code != 0
+    assert "already ingested from table:staged_documents" in err
+
+
+def test_two_entries_coexist_when_sources_are_distinct(tmp_path, monkeypatch):
+    """The guard must not punish the normal case — same workspace, two
+    entries, different source strings."""
+    ws = _make_workspace(tmp_path)
+    corpus = tmp_path / "docs"
+    corpus.mkdir()
+    (corpus / "guide.md").write_text("file body")
+    _run_corpus(monkeypatch, ["--workspace", str(ws), "--corpus", str(corpus)])
+    db = _make_staging(tmp_path, [("k1", "https://wiki/p1", None, "table body")])
+    posted = _run_main(monkeypatch, [
+        "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+        "--key-column", "key", "--content-column", "content",
+        "--source-column", "source"])
+    assert [p["source"] for p in posted] == ["https://wiki/p1"]
+    manifest = json.loads((ws / "ingest_progress.json").read_text())
+    assert manifest["guide.md"]["origin"] == "corpus"
+    assert manifest["https://wiki/p1"]["origin"] == "table:staged_documents"
+
+
+def test_legacy_manifest_entries_count_as_corpus(tmp_path, monkeypatch, capsys):
+    """A manifest written before the table entry existed has no `origin`.
+    It can only have come from ingest_corpus.py, so it must be treated as
+    corpus — otherwise the upgrade silently disarms the guard."""
+    ws = _make_workspace(tmp_path)
+    (ws / "ingest_progress.json").write_text(json.dumps({"guide.md": "ok"}))
+    db = _make_staging(tmp_path, [("guide.md", "guide.md", None, "body")])
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, [
+            "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content",
+            "--source-column", "source"])
+    assert "already ingested from corpus" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------- --require-complete
+
+def test_require_complete_refuses_a_partially_fetched_table(
+        tmp_path, monkeypatch, capsys):
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [
+        ("k1", "https://wiki/p1", "one", "body one"),
+        ("k2", "https://wiki/p2", "two", None),      # listed, never fetched
+    ])
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, [
+            "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content",
+            "--source-column", "source", "--require-complete"])
+    err = capsys.readouterr().err
+    assert e.value.code != 0
+    assert "no text content: 1" in err
+    assert "listed and never fetched" in err
+    # and nothing reached the index or the manifest
+    assert not (ws / "ingest_progress.json").exists()
+
+
+def test_require_complete_passes_a_whole_table(tmp_path, monkeypatch):
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [
+        ("k1", "https://wiki/p1", "one", "body one"),
+        ("k2", "https://wiki/p2", "two", "body two"),
+    ])
+    posted = _run_main(monkeypatch, [
+        "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+        "--key-column", "key", "--content-column", "content",
+        "--source-column", "source", "--require-complete"])
+    assert len(posted) == 2
+
+
+def test_require_complete_and_limit_are_mutually_exclusive(
+        tmp_path, monkeypatch, capsys):
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [("k1", None, None, "body")])
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, [
+            "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+            "--key-column", "key", "--content-column", "content",
+            "--require-complete", "--limit", "1"])
+    assert "contradict each other" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------- --limit
+
+def test_limit_keeps_the_accounting_balanced(tmp_path, monkeypatch, capsys):
+    """`rows` must still equal ingestable + skipped + limited. Truncating the
+    work list silently printed `rows: 3  ingestable: 1  skipped: 0` and exited
+    0 — indistinguishable from a complete run over a small table."""
+    ws = _make_workspace(tmp_path)
+    db = _make_staging(tmp_path, [
+        ("k1", None, None, "one"), ("k2", None, None, "two"), ("k3", None, None, "three")])
+    posted = _run_main(monkeypatch, [
+        "--workspace", str(ws), "--db", str(db), "--table", "staged_documents",
+        "--key-column", "key", "--content-column", "content", "--limit", "1"])
+    out = capsys.readouterr().out
+    assert len(posted) == 1
+    assert "rows: 3  ingestable: 1  skipped: 0  limited (--limit, NOT ingested): 2" in out
+    assert "INCOMPLETE" in out
+
+
+def test_corpus_limit_keeps_the_accounting_balanced(tmp_path, monkeypatch, capsys):
+    """Same defect, same contract, on the folder entry."""
+    ws = _make_workspace(tmp_path)
+    corpus = tmp_path / "docs"
+    corpus.mkdir()
+    for name in ("a.md", "b.md", "c.md"):
+        (corpus / name).write_text(f"body of {name}")
+    posted = _run_corpus(monkeypatch, [
+        "--workspace", str(ws), "--corpus", str(corpus), "--limit", "1"])
+    out = capsys.readouterr().out
+    assert len(posted) == 1
+    assert "matched: 3  ingestable: 1  skipped: 0  limited (--limit, NOT ingested): 2" in out
+    assert "INCOMPLETE" in out
