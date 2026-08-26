@@ -81,6 +81,8 @@ Check `skardi pipeline list` for a search surface: the `auto_context` standard n
 
 Everything else — however retrieval-flavored its name — you do not call from this skill. Answer with an ad-hoc `SELECT` (validated read-only on every request) or ask what the pipeline is. Never run a pipeline to find out what it does.
 
+**This rule is a workaround for a gap in v0.5.0, and is meant to go away.** Asking a human to vouch for a pipeline is what you do when the machine cannot answer — and here it nearly can: the server already determines each pipeline's statement kind when it validates the SQL at load time (that is how a pipeline writing to a `read_only` source gets rejected at startup). It simply does not expose that verdict, so `pipeline show` returns parameters and nothing about what the statement does. Once the server reports statement kind — ideally alongside a result-bound signal — this whole declaration dance collapses into one runtime question the agent asks the engine, and the two conditions above should be deleted rather than maintained. That belongs to the runtime capability contract the engine still owes its callers; until it exists, declarations are the only honest way to keep the read-only promise.
+
 Invocation: `skardi run <name> -p key=value` — values parse as JSON first (numbers, booleans), then fall back to plain strings.
 
 ### 3. Ad-hoc SQL: read-only, one statement at a time
