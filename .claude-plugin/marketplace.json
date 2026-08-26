@@ -26,6 +26,22 @@
         "lance",
         "skardi-server"
       ]
+    },
+    {
+      "name": "retrieval",
+      "source": "./retrieval",
+      "description": "Answer questions from live data through a running skardi-server using the skardi CLI. Discovers sources, pipelines, and the table schemas the deployment exposes, searches any semantic surface first, then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached.",
+      "category": "query",
+      "keywords": [
+        "skardi",
+        "retrieval",
+        "query",
+        "sql",
+        "hybrid-search",
+        "skardi-cli",
+        "data-agent",
+        "read-only"
+      ]
     }
   ]
 }

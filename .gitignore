@@ -11,3 +11,13 @@
 # Python bytecode cache from running skill scripts in-place.
 __pycache__/
 *.pyc
+
+# Runtime artifacts of the retrieval eval fixture (setup.sh regenerates
+# all of these; only the generators and YAML sources are tracked).
+retrieval/skills/retrieval/evals/fixtures/*.db
+retrieval/skills/retrieval/evals/fixtures/*.db-shm
+retrieval/skills/retrieval/evals/fixtures/*.db-wal
+retrieval/skills/retrieval/evals/fixtures/server.log
+retrieval/skills/retrieval/evals/fixtures/server.pid
+retrieval/skills/retrieval/evals/fixtures/pipelines.rendered/
+retrieval/skills/retrieval/evals/fixtures/ctx.rendered/

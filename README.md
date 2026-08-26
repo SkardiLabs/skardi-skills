@@ -9,8 +9,9 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 | Directory | Skill name | What it covers |
 |---|---|---|
 | `auto-context/` | `auto-context` | Turn a folder of documents, a table you already have, or documents still inside a service into governed, searchable context an agent can query. Hybrid search (vector + full-text + RRF) served over HTTP by `skardi-server`. Three raw-material entries, one flow: a folder; an existing table (SQLite read directly and read-only, any other datastore piped in as NDJSON); or fetch-and-land — list, fetch each body, reconcile, ingest — where your agent writes the per-source fetch code and the skill fixes the process and its acceptance criteria. Storage is a separate choice: defaults to a local SQLite file the skill creates and owns (FTS5 + sqlite-vec `vec0` mirrors kept in sync by triggers); point it at Postgres+pgvector, MongoDB, or Lance when the index should live in a database you already own. Handles prereq checks, model resolution, chunking and embedding inline in SQL, ingest, and retrieval end-to-end across `candle` / `gguf` / `remote_embed`. Never creates schema in a datastore you own — prints the SQL and waits — and never writes to a table given as raw material. |
+| `retrieval/` | `retrieval` | Answer questions from live data through a running `skardi-server` with the `skardi` CLI. Discovers sources, named pipelines, and the table schemas the deployment exposes, runs the question through any semantic search surface first (`search-hybrid` and friends), then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached. Consumes whatever the server already has — it builds no index, writes no data, and starts no servers. |
 
-> **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server. There is no CLI-only mode.
+> **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
 
 ## Installation
 
@@ -21,6 +22,7 @@ From inside any Claude Code session:
 ```text
 /plugin marketplace add SkardiLabs/skardi-skills
 /plugin install auto-context@skardi-skills
+/plugin install retrieval@skardi-skills
 ```
 
 That's it — the skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
@@ -34,18 +36,22 @@ If you'd rather not use the plugin marketplace, copy the skill(s) into your pers
 ```bash
 # auto-context (searchable context over a folder or your own datastore)
 cp -r auto-context/skills/auto-context ~/.claude/skills/auto-context
+
+# retrieval (answer questions from data a skardi-server already serves)
+cp -r retrieval/skills/retrieval ~/.claude/skills/retrieval
 ```
 
-Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`. You can also invoke it directly:
+Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`, or "query our database" / "how many orders last month" / "what tables do we have" for `retrieval`. You can also invoke them directly:
 
 ```text
 /auto-context
+/retrieval
 ```
 
 ### Other Agent Skills hosts
 
-Codex, Cursor, Pi, dsh, OpenClaw, and Hermes load `auto-context` too; they differ
-in where the skill directory has to go. All of them install from a checkout:
+Codex, Cursor, Pi, dsh, OpenClaw, and Hermes load `auto-context` and `retrieval`
+too; they differ in where the skill directory has to go. All of them install from a checkout:
 
 ```bash
 git clone https://github.com/SkardiLabs/skardi-skills.git && cd skardi-skills
@@ -59,6 +65,7 @@ every one of them:
 ```bash
 mkdir -p ~/.agents/skills
 cp -r auto-context/skills/auto-context ~/.agents/skills/auto-context
+cp -r retrieval/skills/retrieval ~/.agents/skills/retrieval
 ```
 
 To scope the skill to a single project instead, copy it into that repo's
@@ -76,6 +83,7 @@ through its own CLI rather than by copying:
 
 ```bash
 openclaw skills install ./auto-context/skills/auto-context
+openclaw skills install ./retrieval/skills/retrieval
 ```
 
 That installs into `~/.openclaw/workspace/skills/`, scoped to the active agent
@@ -90,6 +98,7 @@ treats `~/.hermes/skills/` as its source of truth:
 ```bash
 mkdir -p ~/.hermes/skills
 cp -r auto-context/skills/auto-context ~/.hermes/skills/auto-context
+cp -r retrieval/skills/retrieval ~/.hermes/skills/retrieval
 ```
 
 Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git
@@ -124,3 +133,14 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 | `references/pipeline_patterns.md` | The exact SQL the skill generates, with commentary on RRF, the DataFusion INSERT-VALUES quirk, and how to extend the pipelines (metadata filters, updates, deletes) |
 | `references/troubleshooting.md` | Symptom → fix for server and own-datastore failures (missing role, missing extension, dim mismatch, tsquery syntax, Docker host-networking, localhost HTTP-proxy interception) |
 | `references/troubleshooting_sqlite.md` | Symptom → fix for the local path (sqlite-vec loading and extension paths, FTS5 syntax, trigger mismatches, model download) |
+
+### `retrieval/`
+
+No scripts — the skill is the procedure. What ships alongside it is the eval harness:
+
+| Path | Purpose |
+|---|---|
+| `evals/evals.json` | Seven behavioural cases: no search surface present, semantic-first with a stale-document conflict, a catalog whose tables cannot be enumerated, an undeclared pipeline that must not be probed, truncated rows that must not feed client-side statistics, no learning-chain claim on v0.5.0, and a `limit`-named parameter that does not bound anything |
+| `evals/fixtures/make_data.py` | Deterministic fixture data (seed 7): 1500 orders across four statuses, plus a full-text table holding a current policy note and a superseded one that outranks it |
+| `evals/fixtures/setup.sh` | Starts a `skardi-server` on the fixture in one of three shapes — full, `--bare` (a catalog with no table names anywhere), `--no-search` (no search surface registered). Refuses a port that is already answering before it touches any fixture state |
+| `evals/fixtures/pipelines/` | Includes two deliberate traps: `refresh-orders` really inserts into a writable source, and `recent-orders` is truthfully declared read-only yet uses its `limit` parameter as an id threshold |
