@@ -10,7 +10,7 @@
 """
 import os, sys, sqlite3, tempfile
 
-SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "skills", "feishu_connector", "scripts")
+SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "skills", "feishu-connector", "scripts")
 sys.path.insert(0, SCRIPTS)
 import sync_bitable          # noqa: E402  (import 不会跑 main —— 有 __main__ 卫语句)
 import sync_chat             # noqa: E402

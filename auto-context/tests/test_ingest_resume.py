@@ -16,7 +16,7 @@ import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent
-                       / "skills" / "auto_context" / "scripts"))
+                       / "skills" / "auto-context" / "scripts"))
 
 import ingest_corpus  # noqa: E402
 

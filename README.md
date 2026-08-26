@@ -8,10 +8,10 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 
 | Directory | Skill name | What it covers |
 |---|---|---|
-| `auto_context/` | `auto_context` | Turn a folder of documents, a table you already have, or documents still inside a service into governed, searchable context an agent can query. Hybrid search (vector + full-text + RRF) served over HTTP by `skardi-server`. Three raw-material entries, one flow: a folder; an existing table (SQLite read directly and read-only, any other datastore piped in as NDJSON); or fetch-and-land — list, fetch each body, reconcile, ingest — where your agent writes the per-source fetch code and the skill fixes the process and its acceptance criteria. Storage is a separate choice: defaults to a local SQLite file the skill creates and owns (FTS5 + sqlite-vec `vec0` mirrors kept in sync by triggers); point it at Postgres+pgvector, MongoDB, or Lance when the index should live in a database you already own. Handles prereq checks, model resolution, chunking and embedding inline in SQL, ingest, and retrieval end-to-end across `candle` / `gguf` / `remote_embed`. Never creates schema in a datastore you own — prints the SQL and waits — and never writes to a table given as raw material. |
-| `feishu_connector/` | `feishu_connector` | Sync a Feishu/Lark Bitable into local SQLite via `lark-cli`, then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync, Bitable only. |
+| `auto-context/` | `auto-context` | Turn a folder of documents, a table you already have, or documents still inside a service into governed, searchable context an agent can query. Hybrid search (vector + full-text + RRF) served over HTTP by `skardi-server`. Three raw-material entries, one flow: a folder; an existing table (SQLite read directly and read-only, any other datastore piped in as NDJSON); or fetch-and-land — list, fetch each body, reconcile, ingest — where your agent writes the per-source fetch code and the skill fixes the process and its acceptance criteria. Storage is a separate choice: defaults to a local SQLite file the skill creates and owns (FTS5 + sqlite-vec `vec0` mirrors kept in sync by triggers); point it at Postgres+pgvector, MongoDB, or Lance when the index should live in a database you already own. Handles prereq checks, model resolution, chunking and embedding inline in SQL, ingest, and retrieval end-to-end across `candle` / `gguf` / `remote_embed`. Never creates schema in a datastore you own — prints the SQL and waits — and never writes to a table given as raw material. |
+| `feishu-connector/` | `feishu-connector` | Sync a Feishu/Lark Bitable into local SQLite via `lark-cli`, then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync, Bitable only. |
 
-> **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto_context` starts a server. There is no CLI-only mode.
+> **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server. There is no CLI-only mode.
 
 ## Installation
 
@@ -34,18 +34,18 @@ That's it — the skills are now available across all your projects, and `/plugi
 If you'd rather not use the plugin marketplace, copy the skill(s) into your personal skills directory so they're available across all projects:
 
 ```bash
-# auto_context (searchable context over a folder or your own datastore)
-cp -r auto_context/skills/auto_context ~/.claude/skills/auto_context
+# auto-context (searchable context over a folder or your own datastore)
+cp -r auto-context/skills/auto-context ~/.claude/skills/auto-context
 
-# feishu_connector (query a Feishu Bitable through Skardi)
-cp -r feishu_connector/skills/feishu_connector ~/.claude/skills/feishu_connector
+# feishu-connector (query a Feishu Bitable through Skardi)
+cp -r feishu-connector/skills/feishu-connector ~/.claude/skills/feishu-connector
 ```
 
-Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto_context`. You can also invoke it directly:
+Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`. You can also invoke it directly:
 
 ```text
-/auto_context
-/feishu_connector
+/auto-context
+/feishu-connector
 ```
 
 ### Other Agent Skills hosts
@@ -56,26 +56,26 @@ Codex, Cursor, Pi, OpenClaw, and Hermes load these skills too; they differ in wh
 git clone https://github.com/SkardiLabs/skardi-skills.git && cd skardi-skills
 ```
 
-`*/skills/*` in the commands below copies every skill in this repo. To install a single one, name it instead: `cp -r auto_context/skills/auto_context <destination>`.
+`*/skills/*` in the commands below copies every skill in this repo. To install a single one, name it instead: `cp -r auto-context/skills/auto-context <destination>`.
 
-#### Codex, Cursor, Pi
+#### Codex, Cursor, Pi, dsh
 
-All three read the cross-tool `~/.agents/skills/` convention, so one copy covers every one of them:
+All four read the cross-tool `~/.agents/skills/` convention, so one copy covers every one of them:
 
 ```bash
 mkdir -p ~/.agents/skills
 cp -r */skills/* ~/.agents/skills/
 ```
 
-To scope the skills to a single project instead, copy them into that repo's `.agents/skills/`. Cursor and Pi also keep native directories if you'd rather install per tool — `~/.cursor/skills/` for [Cursor](https://cursor.com/docs/skills), `~/.pi/agent/skills/` for [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md) — while [Codex](https://learn.chatgpt.com/docs/build-skills) uses `~/.agents/skills/` as its only personal location.
+To scope the skills to a single project instead, copy them into that repo's `.agents/skills/`. Each host also keeps a native directory if you'd rather install per tool — `~/.cursor/skills/` for [Cursor](https://cursor.com/docs/skills), `~/.pi/agent/skills/` for [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md), `~/.dsh/skills/` for [dsh](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/skills.md) — while [Codex](https://learn.chatgpt.com/docs/build-skills) uses `~/.agents/skills/` as its only personal location.
 
 #### OpenClaw
 
-[OpenClaw](https://docs.openclaw.ai/cli/skills) installs from a local path through its own CLI rather than by copying. OpenClaw validates the install slug. The two skills in this repository use underscored names, so install them with `--as` and a hyphenated slug:
+[OpenClaw](https://docs.openclaw.ai/cli/skills) installs from a local path through its own CLI rather than by copying:
 
 ```bash
-openclaw skills install ./auto_context/skills/auto_context --as auto-context
-openclaw skills install ./feishu_connector/skills/feishu_connector --as feishu-connector
+openclaw skills install ./auto-context/skills/auto-context
+openclaw skills install ./feishu-connector/skills/feishu-connector
 ```
 
 That installs into `~/.openclaw/workspace/skills/`, scoped to the active agent workspace. Add `--global` to install into `~/.openclaw/skills/` instead, which every local agent sees. The slug names only the install directory — each skill keeps the name its `SKILL.md` declares.
@@ -91,15 +91,13 @@ cp -r */skills/* ~/.hermes/skills/
 
 Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git repo it reads `<repo>/.hermes/skills/` and `<repo>/.agents/skills/`. To share one personal folder with the hosts above, add it under `skills.external_dirs` in `~/.hermes/config.yaml`.
 
-#### Not yet supported: dsh
+#### Anything else
 
-[dsh](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/skills.md) reads `~/.agents/skills/` like the hosts above, but it only accepts kebab-case skill names and silently ignores any skill whose `SKILL.md` declares something else. Both skills here are named with underscores, so copying them into a dsh skills directory loads nothing. Renaming them would fix it, but it also changes the Claude Code command names, so it is not part of this change.
-
-If your host isn't listed, put the skill directory wherever it resolves personal or project skills and restart it. These files follow the [Agent Skills open standard](https://agentskills.io/), but a host may add rules of its own — as dsh does above.
+If your host isn't listed, put the skill directory wherever it resolves personal or project skills and restart it. These files follow the [Agent Skills open standard](https://agentskills.io/), but conforming to the format does not guarantee a host will load them — hosts add rules of their own. Both skills here are named in kebab-case for that reason: dsh rejects any other shape outright, and OpenClaw derives its install slug from the same field.
 
 ## Bundled resources per skill
 
-### `auto_context/`
+### `auto-context/`
 
 Executable scripts, per-backend YAML templates, and reference docs the skill invokes:
 

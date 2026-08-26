@@ -16,7 +16,7 @@ import os
 import sys
 import tempfile
 
-SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "skills", "auto_context", "scripts")
+SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "skills", "auto-context", "scripts")
 sys.path.insert(0, SCRIPTS)
 import _diagnose  # noqa: E402
 
