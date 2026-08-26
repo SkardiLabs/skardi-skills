@@ -9,7 +9,6 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 | Directory | Skill name | What it covers |
 |---|---|---|
 | `auto-context/` | `auto-context` | Turn a folder of documents, a table you already have, or documents still inside a service into governed, searchable context an agent can query. Hybrid search (vector + full-text + RRF) served over HTTP by `skardi-server`. Three raw-material entries, one flow: a folder; an existing table (SQLite read directly and read-only, any other datastore piped in as NDJSON); or fetch-and-land — list, fetch each body, reconcile, ingest — where your agent writes the per-source fetch code and the skill fixes the process and its acceptance criteria. Storage is a separate choice: defaults to a local SQLite file the skill creates and owns (FTS5 + sqlite-vec `vec0` mirrors kept in sync by triggers); point it at Postgres+pgvector, MongoDB, or Lance when the index should live in a database you already own. Handles prereq checks, model resolution, chunking and embedding inline in SQL, ingest, and retrieval end-to-end across `candle` / `gguf` / `remote_embed`. Never creates schema in a datastore you own — prints the SQL and waits — and never writes to a table given as raw material. |
-| `feishu_connector/` | `feishu_connector` | Sync a Feishu/Lark Bitable into local SQLite via `lark-cli`, then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync, Bitable only. |
 
 > **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server. There is no CLI-only mode.
 
@@ -22,12 +21,11 @@ From inside any Claude Code session:
 ```text
 /plugin marketplace add SkardiLabs/skardi-skills
 /plugin install auto-context@skardi-skills
-/plugin install feishu-connector@skardi-skills
 ```
 
 That's it — the skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
 
-> **Upgrading from an earlier version:** `auto-knowledge-base` and `auto-rag` have been merged into `auto-context`, and `skardi-deploy-and-patterns` has been retired (its still-current material now lives in the main repo's `docs/`). Installed copies of the old plugins are not migrated automatically — install `auto-context` and remove the old ones.
+> **Upgrading from an earlier version:** `auto-knowledge-base` and `auto-rag` have been merged into `auto-context`; `skardi-deploy-and-patterns` and `feishu-connector` have been retired. Feishu cloud docs are now raw material for `auto-context`, and Feishu Bitables and chats are moving to Skardi's own Feishu source pack. Installed copies of retired plugins are not removed automatically — run `/plugin uninstall feishu-connector`.
 
 ### Claude Code (manual copy)
 
@@ -36,16 +34,12 @@ If you'd rather not use the plugin marketplace, copy the skill(s) into your pers
 ```bash
 # auto-context (searchable context over a folder or your own datastore)
 cp -r auto-context/skills/auto-context ~/.claude/skills/auto-context
-
-# feishu_connector (query a Feishu Bitable through Skardi)
-cp -r feishu_connector/skills/feishu_connector ~/.claude/skills/feishu_connector
 ```
 
 Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`. You can also invoke it directly:
 
 ```text
 /auto-context
-/feishu_connector
 ```
 
 ### Other Agent Skills hosts
@@ -56,10 +50,6 @@ in where the skill directory has to go. All of them install from a checkout:
 ```bash
 git clone https://github.com/SkardiLabs/skardi-skills.git && cd skardi-skills
 ```
-
-Only `auto-context` is covered below. `feishu_connector` is being retired — its
-cloud-doc half now lives in `auto-context`, and its Bitable and chat halves move
-to Skardi's Feishu source pack — so it is not worth installing anywhere new.
 
 #### Codex, Cursor, Pi, dsh
 
