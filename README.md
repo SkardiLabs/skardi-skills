@@ -8,11 +8,10 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 
 | Directory | Skill name | What it covers |
 |---|---|---|
-| `auto_context/` | `auto_context` | Turn a folder of documents — or a datastore you already run — into governed, searchable context an agent can query. Hybrid search (vector + full-text + RRF) served over HTTP by `skardi-server`. Defaults to a local SQLite file the skill creates and owns (FTS5 + sqlite-vec `vec0` mirrors kept in sync by triggers), so you supply only a corpus; point it at Postgres+pgvector, MongoDB, or Lance when the data should live in a database you already own. Handles prereq checks, model resolution, chunking and embedding inline in SQL, ingest, and retrieval end-to-end across `candle` / `gguf` / `remote_embed`. Never creates schema in a datastore you own — prints the SQL and waits. |
-| `feishu_connector/` | `feishu_connector` | Sync Feishu/Lark data into local SQLite via `lark-cli` — a Bitable (rows/columns), cloud docs (one row per doc), or a chat (one row per message) — then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync; Sheets not covered. |
-| `retrieval/` | `retrieval` | Answer questions from live data through a running `skardi-server` with the `skardi` CLI. Discovers sources, named pipelines, and the table schemas the deployment exposes, runs the question through any semantic search surface first (`search-hybrid` and friends), then writes read-only SQL against exact qualified table names, checks the truncated flag before trusting counts, and reports with the query attached. Consumes whatever the server already has — builds nothing, writes nothing. |
+| `auto-context/` | `auto-context` | Turn a folder of documents, a table you already have, or documents still inside a service into governed, searchable context an agent can query. Hybrid search (vector + full-text + RRF) served over HTTP by `skardi-server`. Three raw-material entries, one flow: a folder; an existing table (SQLite read directly and read-only, any other datastore piped in as NDJSON); or fetch-and-land — list, fetch each body, reconcile, ingest — where your agent writes the per-source fetch code and the skill fixes the process and its acceptance criteria. Storage is a separate choice: defaults to a local SQLite file the skill creates and owns (FTS5 + sqlite-vec `vec0` mirrors kept in sync by triggers); point it at Postgres+pgvector, MongoDB, or Lance when the index should live in a database you already own. Handles prereq checks, model resolution, chunking and embedding inline in SQL, ingest, and retrieval end-to-end across `candle` / `gguf` / `remote_embed`. Never creates schema in a datastore you own — prints the SQL and waits — and never writes to a table given as raw material. |
+| `retrieval/` | `retrieval` | Answer questions from live data through a running `skardi-server` with the `skardi` CLI. Discovers sources, named pipelines, and the table schemas the deployment exposes, runs the question through any semantic search surface first (`search-hybrid` and friends), then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached. Consumes whatever the server already has — it builds no index, writes no data, and starts no servers. |
 
-> **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto_context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
+> **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
 
 ## Installation
 
@@ -23,54 +22,102 @@ From inside any Claude Code session:
 ```text
 /plugin marketplace add SkardiLabs/skardi-skills
 /plugin install auto-context@skardi-skills
-/plugin install feishu-connector@skardi-skills
 /plugin install retrieval@skardi-skills
 ```
 
 That's it — the skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
 
-> **Upgrading from an earlier version:** `auto-knowledge-base` and `auto-rag` have been merged into `auto-context`, and `skardi-deploy-and-patterns` has been retired (its still-current material now lives in the main repo's `docs/`). Installed copies of the old plugins are not migrated automatically — install `auto-context` and remove the old ones.
+> **Upgrading from an earlier version:** `auto-knowledge-base` and `auto-rag` have been merged into `auto-context`; `skardi-deploy-and-patterns` and `feishu-connector` have been retired. Feishu cloud docs are now raw material for `auto-context`, and Feishu Bitables and chats are moving to Skardi's own Feishu source pack. Installed copies of retired plugins are not removed automatically — run `/plugin uninstall feishu-connector`.
 
 ### Claude Code (manual copy)
 
 If you'd rather not use the plugin marketplace, copy the skill(s) into your personal skills directory so they're available across all projects:
 
 ```bash
-# auto_context (searchable context over a folder or your own datastore)
-cp -r auto_context/skills/auto_context ~/.claude/skills/auto_context
-
-# feishu_connector (query Feishu Bitables, cloud docs & chats through Skardi)
-cp -r feishu_connector/skills/feishu_connector ~/.claude/skills/feishu_connector
+# auto-context (searchable context over a folder or your own datastore)
+cp -r auto-context/skills/auto-context ~/.claude/skills/auto-context
 
 # retrieval (answer questions from data a skardi-server already serves)
 cp -r retrieval/skills/retrieval ~/.claude/skills/retrieval
 ```
 
-Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto_context`, or "query our database" / "how many orders last month" / "what tables do we have" for `retrieval`. You can also invoke it directly:
+Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`, or "query our database" / "how many orders last month" / "what tables do we have" for `retrieval`. You can also invoke them directly:
 
 ```text
-/auto_context
-/feishu_connector
+/auto-context
 /retrieval
 ```
 
-### Cursor
+### Other Agent Skills hosts
 
-Copy the skill(s) into the project-level skills directory:
+Codex, Cursor, Pi, dsh, OpenClaw, and Hermes load `auto-context` and `retrieval`
+too; they differ in where the skill directory has to go. All of them install from a checkout:
 
 ```bash
-cp -r auto_context/skills/auto_context .cursor/skills/auto_context
-cp -r feishu_connector/skills/feishu_connector .cursor/skills/feishu_connector
-cp -r retrieval/skills/retrieval .cursor/skills/retrieval
+git clone https://github.com/SkardiLabs/skardi-skills.git && cd skardi-skills
 ```
 
-### Other Agent Skills-compatible tools
+#### Codex, Cursor, Pi, dsh
 
-The `SKILL.md` files follow the [Agent Skills open standard](https://agentskills.io/) and work with any compatible tool. Place the skill directory wherever your tool resolves personal or project skills.
+All four read the cross-tool `~/.agents/skills/` convention, so one copy covers
+every one of them:
+
+```bash
+mkdir -p ~/.agents/skills
+cp -r auto-context/skills/auto-context ~/.agents/skills/auto-context
+cp -r retrieval/skills/retrieval ~/.agents/skills/retrieval
+```
+
+To scope the skill to a single project instead, copy it into that repo's
+`.agents/skills/`. Each host also keeps a native directory if you'd rather
+install per tool — `~/.cursor/skills/` for [Cursor](https://cursor.com/docs/skills),
+`~/.pi/agent/skills/` for [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md),
+`~/.dsh/skills/` for [dsh](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/skills.md)
+— while [Codex](https://learn.chatgpt.com/docs/build-skills) uses
+`~/.agents/skills/` as its only personal location.
+
+#### OpenClaw
+
+[OpenClaw](https://docs.openclaw.ai/cli/skills) installs from a local path
+through its own CLI rather than by copying:
+
+```bash
+openclaw skills install ./auto-context/skills/auto-context
+openclaw skills install ./retrieval/skills/retrieval
+```
+
+That installs into `~/.openclaw/workspace/skills/`, scoped to the active agent
+workspace. Add `--global` to install into `~/.openclaw/skills/` instead, which
+every local agent sees.
+
+#### Hermes
+
+[Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)
+treats `~/.hermes/skills/` as its source of truth:
+
+```bash
+mkdir -p ~/.hermes/skills
+cp -r auto-context/skills/auto-context ~/.hermes/skills/auto-context
+cp -r retrieval/skills/retrieval ~/.hermes/skills/retrieval
+```
+
+Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git
+repo it reads `<repo>/.hermes/skills/` and `<repo>/.agents/skills/`. To share one
+personal folder with the hosts above, add it under `skills.external_dirs` in
+`~/.hermes/config.yaml`.
+
+#### Anything else
+
+If your host isn't listed, put the skill directory wherever it resolves personal
+or project skills and restart it. These files follow the
+[Agent Skills open standard](https://agentskills.io/), but conforming to the
+format does not guarantee a host will load them — hosts add rules of their own.
+`auto-context` is named in kebab-case for that reason: dsh rejects any other
+shape outright, and OpenClaw derives its install slug from the same field.
 
 ## Bundled resources per skill
 
-### `auto_context/`
+### `auto-context/`
 
 Executable scripts, per-backend YAML templates, and reference docs the skill invokes:
 
@@ -86,3 +133,14 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 | `references/pipeline_patterns.md` | The exact SQL the skill generates, with commentary on RRF, the DataFusion INSERT-VALUES quirk, and how to extend the pipelines (metadata filters, updates, deletes) |
 | `references/troubleshooting.md` | Symptom → fix for server and own-datastore failures (missing role, missing extension, dim mismatch, tsquery syntax, Docker host-networking, localhost HTTP-proxy interception) |
 | `references/troubleshooting_sqlite.md` | Symptom → fix for the local path (sqlite-vec loading and extension paths, FTS5 syntax, trigger mismatches, model download) |
+
+### `retrieval/`
+
+No scripts — the skill is the procedure. What ships alongside it is the eval harness:
+
+| Path | Purpose |
+|---|---|
+| `evals/evals.json` | Seven behavioural cases: no search surface present, semantic-first with a stale-document conflict, a catalog whose tables cannot be enumerated, an undeclared pipeline that must not be probed, truncated rows that must not feed client-side statistics, no learning-chain claim on v0.5.0, and a `limit`-named parameter that does not bound anything |
+| `evals/fixtures/make_data.py` | Deterministic fixture data (seed 7): 1500 orders across four statuses, plus a full-text table holding a current policy note and a superseded one that outranks it |
+| `evals/fixtures/setup.sh` | Starts a `skardi-server` on the fixture in one of three shapes — full, `--bare` (a catalog with no table names anywhere), `--no-search` (no search surface registered). Refuses a port that is already answering before it touches any fixture state |
+| `evals/fixtures/pipelines/` | Includes two deliberate traps: `refresh-orders` really inserts into a writable source, and `recent-orders` is truthfully declared read-only yet uses its `limit` parameter as an id threshold |

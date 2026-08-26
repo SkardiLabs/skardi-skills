@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent
-                       / "skills" / "auto_context" / "scripts"))
+                       / "skills" / "auto-context" / "scripts"))
 
 import start_server  # noqa: E402
 
@@ -76,4 +76,4 @@ def test_non_local_runtimes_are_left_alone(tmp_path, ext, monkeypatch):
 def test_a_stale_exported_path_warns_but_does_not_override(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("SQLITE_VEC_PATH", str(tmp_path / "missing.dylib"))
     _call(tmp_path, {})
-    assert "does not exist" in capsys.readouterr().err
+    assert "no extension is there" in capsys.readouterr().err
