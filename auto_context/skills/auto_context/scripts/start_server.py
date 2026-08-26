@@ -45,6 +45,7 @@ from pathlib import Path
 from _diagnose import emit_startup_diagnosis
 from _platform import require_supported_platform
 from _report import Report
+from setup_context import sqlite_vec_extension_present
 
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -169,15 +170,15 @@ def ensure_sqlite_vec_path(workspace, breadcrumb, backend, runtime):
 
     from_env = os.environ.get("SQLITE_VEC_PATH")
     if from_env:
-        if not Path(from_env).is_file():
-            print(f"  warning: SQLITE_VEC_PATH={from_env} is set but that file "
-                  f"does not exist.", file=sys.stderr)
+        if not sqlite_vec_extension_present(from_env):
+            print(f"  warning: SQLITE_VEC_PATH={from_env} is set but no "
+                  f"extension is there.", file=sys.stderr)
             print("           Leaving it as-is (your export wins), but expect "
                   "vector queries to fail.", file=sys.stderr)
         return
 
     recorded = breadcrumb.get("sqlite_vec_path")
-    if recorded and Path(recorded).is_file():
+    if recorded and sqlite_vec_extension_present(recorded):
         os.environ["SQLITE_VEC_PATH"] = recorded
         print(f"  note: SQLITE_VEC_PATH was not set; using the path "
               f"setup_context.py recorded")
@@ -190,8 +191,8 @@ def ensure_sqlite_vec_path(workspace, breadcrumb, backend, runtime):
     # would otherwise reach "healthy" and only fail at query time.
     if recorded:
         die(
-            f"SQLITE_VEC_PATH is not set, and the path recorded at setup time "
-            f"no longer exists:\n"
+            f"SQLITE_VEC_PATH is not set, and no extension is present at the "
+            f"path recorded at setup time:\n"
             f"    {recorded}\n"
             f"  sqlite-vec was probably reinstalled or the virtualenv changed. "
             f"Re-resolve it with:\n"
