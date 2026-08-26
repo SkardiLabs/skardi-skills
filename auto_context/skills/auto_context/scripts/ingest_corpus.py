@@ -61,7 +61,14 @@ SERVER_BODY_LIMIT = 2 * 1024 * 1024
 FRONT_MATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
 
 
-def die(msg, code=1):
+def die(msg, code=1, reason="error"):
+    """Exit with a reason, and emit the verdict line first.
+
+    Every exit prints a RESULT line, including refusals — a consumer that
+    reads the verdict must never have to fall back to guessing from an
+    absent line. The reason names the refusal so the caller can tell a
+    genuine failure from a deliberate gate."""
+    print_result_line(False, reason=reason)
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(code)
 
@@ -123,13 +130,46 @@ def _ensure_localhost_no_proxy(host: str) -> None:
     os.environ["no_proxy"] = ",".join(new)
 
 
-def load_progress(path):
-    """Return {source: {"status": str, "hash": str|None}}.
+# Identity of the raw-material SET a source string came from — the corpus
+# root, the db file plus table, or the NDJSON label. Recorded per document
+# so a collision can be told apart from an edit.
+#
+# Two earlier attempts were both too coarse. "corpus" / "table" only caught
+# collisions ACROSS entries, so the commonest case slipped through: two
+# corpus roots each holding a README.md landed on one source string, and the
+# second one was reported as a *changed file* and never indexed — two
+# different documents, one silently lost, with a warning telling the user to
+# delete rows and re-run. Adding the table's --label instead mistook a
+# parameter change for a document change. The set identity fixes both: it is
+# specific enough to tell two corpora apart, and collisions are judged
+# together with the content hash so a re-run under a new path or label is
+# recognised as the same document rather than refused.
+SET_LEGACY_CORPUS = "corpus"
+KIND_CORPUS = "corpus"
+KIND_TABLE = "table"
 
-    Back-compat: older manifests stored a bare string per source ("ok" /
-    "err: ...") with no content hash. Normalise those to the dict shape with
-    hash=None (unknown), so a file ingested by an older version is treated as
-    ok-but-unhashed until it is next hashed on this run."""
+
+def corpus_set_id(corpus_root):
+    return str(corpus_root)
+
+
+def sqlite_set_id(db_path, table):
+    return f"{db_path}::{table}"
+
+
+def ndjson_set_id(label):
+    return f"ndjson:{label}"
+
+
+def load_progress(path):
+    """Return {source: {"status", "hash", "set"}}.
+
+    Back-compat, three generations deep. Older manifests stored a bare
+    string per source ("ok" / "err: ...") with no hash; then a dict with a
+    hash; then a dict carrying `origin` ("corpus" / "table"). Anything
+    without a `set` is normalised to its `origin`, defaulting to "corpus" —
+    exact for the oldest generation, because ingest_corpus.py was the only
+    writer before the table entry existed."""
     if not path.is_file():
         return {}
     try:
@@ -140,9 +180,14 @@ def load_progress(path):
     normalised = {}
     for source, val in raw.items():
         if isinstance(val, str):
-            normalised[source] = {"status": val, "hash": None}
+            normalised[source] = {"status": val, "hash": None,
+                                  "set": SET_LEGACY_CORPUS}
         elif isinstance(val, dict):
-            normalised[source] = {"status": val.get("status", ""), "hash": val.get("hash")}
+            normalised[source] = {
+                "status": val.get("status", ""),
+                "hash": val.get("hash"),
+                "set": val.get("set") or val.get("origin") or SET_LEGACY_CORPUS,
+            }
     return normalised
 
 
@@ -220,6 +265,230 @@ def post_doc(endpoint, body, timeout):
         return "fail", f"unexpected: {type(e).__name__}: {e}"
 
 
+def detect_source_collisions(progress, work, set_id, entry_kind):
+    """Sources that mean a DIFFERENT document than the one already recorded.
+
+    A document IS its source string: doc_id is derived from it, and the
+    manifest and index are per-workspace. So a source arriving from another
+    raw-material set is only safe when the content is identical; when the
+    content differs too, the two are genuinely different documents fighting
+    over one id, and the failure is silent in both directions — identical
+    content is written off as `already ok`, differing content is reported as
+    a changed document and never re-ingested, because its ids are taken.
+
+    Judged on (set, hash) together, not set alone: re-running the same
+    material from a moved directory or under a new label yields a different
+    set with an unchanged hash, and refusing that would block an ordinary
+    re-run. Anything the hashes cannot prove identical is refused, including
+    an entry whose hash is unknown.
+
+    `entry_kind` ("corpus" / "table") exists only for the legacy sentinel.
+    A manifest written before set ids carries `corpus` in place of a real
+    set, with no hash — unknowable, but definitely written by the corpus
+    entry, because nothing else could write then. Treating that as a
+    different set would refuse the next ordinary run of every upgraded
+    workspace, so it counts as the same set for a corpus run and as a
+    different one for a table run. Entries get real set ids on that run, so
+    the blind spot lasts exactly one pass.
+
+    Returns [(source, recorded_set)]."""
+    collisions = []
+    for w in work:
+        entry = progress.get(w["source"])
+        if entry is None:
+            continue
+        recorded = entry.get("set") or SET_LEGACY_CORPUS
+        if recorded == SET_LEGACY_CORPUS:
+            same_set = entry_kind == KIND_CORPUS
+        else:
+            same_set = recorded == set_id
+        if not same_set and entry.get("hash") != w["hash"]:
+            collisions.append((w["source"], recorded))
+    return collisions
+
+
+def die_on_collisions(collisions, set_id, progress_path):
+    if not collisions:
+        return
+    head = "\n    ".join(f"{src}\n        already indexed from: {rec}"
+                          for src, rec in collisions[:10])
+    more = f"\n    (+{len(collisions) - 10} more)" if len(collisions) > 10 else ""
+    die(
+        f"{len(collisions)} source string(s) in this run already name a "
+        f"DIFFERENT document in this workspace:\n    {head}{more}\n"
+        f"  This run is: {set_id}\n"
+        f"  Source strings are document identity here — same string means "
+        f"same doc id — so ingesting these would either be skipped as\n"
+        f"  'already ok' or reported as a changed document and never indexed. "
+        f"Nothing was ingested.\n"
+        f"  Fix by making the two sets of source strings distinct: ingest "
+        f"each corpus root into its own workspace, or give the table run\n"
+        f"  a --label that cannot collide, or point --source-column at real "
+        f"locators (URLs).\n"
+        f"  A recorded set of just \"corpus\" means a manifest written before "
+        f"set ids existed: its content hash is unknown, so the two cannot be\n"
+        f"  proven to be the same document either way.\n"
+        f"  Manifest: {progress_path}"
+    )
+
+
+def print_result_line(complete, reason=None):
+    """One machine-readable line, always printed, on every exit path that
+    reaches the end of a run.
+
+    The human-facing INCOMPLETE banner is unambiguous to a reader but
+    invisible to a pipeline reading only the exit code, which stays 0 for a
+    deliberate trial run — so a --limit smoke test could be consumed as a
+    finished ingest. This gives a consumer something uniform to test
+    (`complete=true` / `complete=false`) without inventing an exit code that
+    would make an intentional trial look like a failure."""
+    tail = f" reason={reason}" if reason else ""
+    print(f"RESULT complete={'true' if complete else 'false'}{tail}")
+
+
+# Verdict reasons, most severe first. A run is complete only when nothing
+# was held back, dropped, or left stale — anything else is reported with the
+# reason that most needs the reader's attention.
+VERDICT_ORDER = (
+    ("failed-posts", "documents the server refused"),
+    ("limit", "--limit held rows back"),
+    ("accepted-shortfall", "a shortfall was explicitly accepted"),
+    ("skipped", "unusable input was skipped"),
+    ("stale", "content changed since it was indexed and was not refreshed"),
+)
+
+
+def compute_verdict(failed=0, limited=0, accepted_shortfall=0, skipped=0,
+                    changed=0):
+    """(complete, reason) for the whole run.
+
+    Computed from corpus completeness, not from what this particular
+    invocation happened to do, because the two diverge exactly where it
+    matters: a re-run over a table whose shortfall was accepted earlier has
+    nothing left to ingest, and reporting that as complete flipped the
+    verdict to true while the corpus was still missing a document. Skips and
+    unrefreshed edits count the same way — the index does not hold what the
+    source holds, whichever run failed to put it there."""
+    counts = {
+        "failed-posts": failed,
+        "limit": limited,
+        "accepted-shortfall": accepted_shortfall,
+        "skipped": skipped,
+        "stale": changed,
+    }
+    for reason, _ in VERDICT_ORDER:
+        if counts[reason]:
+            return False, reason
+    return True, None
+
+
+def print_verdict(**kwargs):
+    complete, reason = compute_verdict(**kwargs)
+    print_result_line(complete, reason=reason)
+    return complete
+
+
+def acquire_workspace_lock(workspace):
+    """Refuse to run twice against one workspace at the same time.
+
+    Reading the manifest, checking for collisions and writing `inflight` is
+    three steps, not one, so two concurrent runs could both pass the check
+    and then overwrite each other's state — landing silently on
+    `already-present` with no sign that anything was lost. A lock is cheap
+    next to that. A lock left behind by a killed process is detected (its
+    pid is gone) and taken over with a note, so a crash does not need manual
+    cleanup."""
+    lock = workspace / "ingest.lock"
+    try:
+        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        try:
+            holder = int(lock.read_text().strip())
+        except (ValueError, OSError):
+            holder = None
+        if holder is not None:
+            try:
+                os.kill(holder, 0)
+            except ProcessLookupError:
+                print(f"  note: removing a stale lock left by pid {holder} "
+                      f"(no longer running)")
+                lock.unlink(missing_ok=True)
+                return acquire_workspace_lock(workspace)
+            except PermissionError:
+                pass  # alive, owned by another user
+            die(f"another ingest is already running against {workspace} "
+                f"(pid {holder}). Concurrent runs on one workspace corrupt the "
+                f"progress manifest, so this one stopped without touching "
+                f"anything. Wait for it, or delete {lock} if you are certain "
+                f"that process is gone.", reason="locked")
+        die(f"{lock} exists but is unreadable. Delete it if no ingest is "
+            f"running.", reason="locked")
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
+    return lock
+
+
+def release_workspace_lock(lock):
+    if lock is not None:
+        Path(lock).unlink(missing_ok=True)
+
+
+def detect_stale_inflight(progress, work):
+    """Documents interrupted mid-ingest whose source has changed since.
+
+    `inflight` means the POST was sent and the answer never recorded, so the
+    server may already hold that document. If the content has changed since,
+    a resumed run POSTs the new text, the server rejects it as a duplicate,
+    and the collision is filed as `already-present` — which records the NEW
+    hash against rows holding the OLD text. The manifest then claims the
+    current version is indexed when it is not, and nothing ever says
+    otherwise. Refuse instead: this is one of the few states that genuinely
+    needs a human to decide what the index holds."""
+    stale = []
+    for w in work:
+        entry = progress.get(w["source"])
+        if entry is None:
+            continue
+        if entry.get("status") == "inflight" and entry.get("hash") not in (None, w["hash"]):
+            stale.append(w["source"])
+    return stale
+
+
+def die_on_stale_inflight(stale, progress_path):
+    if not stale:
+        return
+    head = "\n    ".join(stale[:10])
+    more = f"\n    (+{len(stale) - 10} more)" if len(stale) > 10 else ""
+    die(
+        f"{len(stale)} document(s) were interrupted mid-ingest and have changed "
+        f"since:\n    {head}{more}\n"
+        f"  The server may already hold the older text under the same id. "
+        f"Re-sending the new text would collide, be recorded as\n"
+        f"  'already-present', and stamp the NEW hash onto rows holding the OLD "
+        f"content — leaving the manifest claiming a version the index\n"
+        f"  does not have. Decide explicitly: delete those rows "
+        f"(DELETE FROM <table> WHERE source = '...') and drop their entries from\n"
+        f"  {progress_path}, then re-run. Nothing was ingested.",
+        reason="stale-inflight")
+
+
+def mark_inflight(progress, pending, set_id, progress_path):
+    """Record every pending source BEFORE its POST goes out.
+
+    Without this the manifest only learns about a document after the server
+    answers, and it is flushed at most every two seconds — so an interrupt
+    leaves rows committed server-side that the manifest has never heard of.
+    A later run from a different raw-material set then finds no entry, the
+    collision check has nothing to compare against, and the newcomer
+    collides on the primary key and is filed as `already ok`: the exact
+    silent loss the check exists to prevent. One write up front closes the
+    window; `inflight` is not `ok`, so these are retried normally."""
+    for item in pending:
+        progress[item["source"]] = {"status": "inflight", "hash": item["hash"],
+                                    "set": set_id}
+    save_progress(progress_path, progress)
+
+
 def main():
     require_supported_platform("ingest_corpus.py")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -255,7 +524,17 @@ def main():
             "on the first request — keep this generous."
         ),
     )
-    ap.add_argument("--limit", type=int, default=0, help="Only ingest the first N files (0 = all).")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help=(
+            "Trial run: ingest only the first N files (0 = all). The run is "
+            "INCOMPLETE by construction — the rest are neither ingested nor "
+            "skipped, they are counted apart as `limited` — so its result "
+            "cannot stand as a finished ingest."
+        ),
+    )
     args = ap.parse_args()
 
     workspace = Path(args.workspace).expanduser().resolve()
@@ -290,6 +569,14 @@ def main():
     print(f"  concurrency: {args.concurrency}")
     print(f"  chunk_size:  {args.chunk_size}  overlap: {args.overlap}")
 
+    lock = acquire_workspace_lock(workspace)
+    try:
+        run(args, workspace, corpus, progress_path, endpoint)
+    finally:
+        release_workspace_lock(lock)
+
+
+def run(args, workspace, corpus, progress_path, endpoint):
     progress = load_progress(progress_path)
 
     # Build the work list. Each entry is one source file; the server will
@@ -332,7 +619,15 @@ def main():
                 f"{rel} ({len(body) / 1024 / 1024:.1f} MB serialised)")
             continue
         work.append({"source": rel, "body": body, "hash": content_hash(text)})
-    if args.limit > 0:
+
+    # Held back by --limit. Counted on its own line rather than folded into
+    # the work list, because `matched = ingestable + skipped` is a promise the
+    # counts line makes: truncating silently broke it (matched: 3,
+    # ingestable: 1, skipped: 0) while still exiting 0, which reads exactly
+    # like a complete run over a small corpus.
+    limited = 0
+    if args.limit > 0 and len(work) > args.limit:
+        limited = len(work) - args.limit
         work = work[: args.limit]
 
     for reason, names in skipped.items():
@@ -367,6 +662,12 @@ def main():
     # warning below). Files ingested by an older version have hash=None; we
     # backfill the hash in place so future edits are detectable, but treat them
     # as ok for this run because we cannot know whether they changed.
+    set_id = corpus_set_id(corpus)
+    die_on_collisions(
+        detect_source_collisions(progress, work, set_id, KIND_CORPUS),
+        set_id, progress_path)
+    die_on_stale_inflight(detect_stale_inflight(progress, work), progress_path)
+
     pending = []
     changed = []
     backfilled = 0
@@ -378,9 +679,15 @@ def main():
         stored_hash = entry.get("hash")
         if stored_hash is None:
             progress[w["source"]]["hash"] = w["hash"]  # backfill, don't re-ingest
+            progress[w["source"]]["set"] = set_id
             backfilled += 1
         elif stored_hash != w["hash"]:
             changed.append(w["source"])
+        elif entry.get("set") != set_id:
+            # Same source, same bytes, different set — the collision check
+            # already cleared it as the same document reached another way
+            # (a moved corpus root). Record where it is served from now.
+            progress[w["source"]]["set"] = set_id
 
     if backfilled:
         # Persist the backfill NOW, not only on the ingest path. A run with
@@ -410,9 +717,16 @@ def main():
         )
 
     total_skipped = sum(len(v) for v in skipped.values())
-    print(f"  matched: {matched}  ingestable: {len(work)}  skipped: {total_skipped}  "
+    limited_note = f"  limited (--limit, NOT ingested): {limited}" if limited else ""
+    print(f"  matched: {matched}  ingestable: {len(work)}  skipped: {total_skipped}"
+          f"{limited_note}  "
           f"already ok: {len(work) - len(pending) - len(changed)}  "
           f"changed (see warning): {len(changed)}  to ingest: {len(pending)}")
+    if limited:
+        print(f"  INCOMPLETE: --limit held back {limited} ingestable file(s). This is a "
+              f"trial run over part of the corpus;\n"
+              f"              do not report it as a finished ingest. Re-run without "
+              f"--limit for the rest.")
 
     if not work:
         # Files matched but none survived. Distinct from "already ingested":
@@ -423,7 +737,10 @@ def main():
 
     if not pending:
         print("  nothing to do (every ingestable file is already ok in the manifest)")
+        print_verdict(limited=limited, skipped=total_skipped, changed=len(changed))
         return
+
+    mark_inflight(progress, pending, set_id, progress_path)
 
     started = time.time()
     last_save = started
@@ -434,17 +751,20 @@ def main():
     def _record(item, status, err):
         nonlocal ok, last_save
         if status == "ok":
-            progress[item["source"]] = {"status": "ok", "hash": item["hash"]}
+            progress[item["source"]] = {"status": "ok", "hash": item["hash"],
+                                        "set": set_id}
             ok += 1
         elif status == "present":
             # The rows are in the index; the manifest just did not know. Record
             # ok so the file stops being retried forever, and remember it for
             # the caveat printed below — we cannot compare our hash against
             # what is actually indexed, so "present" is not proof of "current".
-            progress[item["source"]] = {"status": "ok", "hash": item["hash"]}
+            progress[item["source"]] = {"status": "ok", "hash": item["hash"],
+                                        "set": set_id}
             already_present.append(item["source"])
         else:
-            progress[item["source"]] = {"status": f"err: {err}", "hash": None}
+            progress[item["source"]] = {"status": f"err: {err}", "hash": None,
+                                        "set": set_id}
             failed.append((item["source"], err))
         if time.time() - last_save > 2.0:
             save_progress(progress_path, progress)
@@ -498,10 +818,13 @@ def main():
         )
 
     if failed:
+        print_verdict(failed=len(failed))
         print("  failures (first 10):")
         for src, err in failed[:10]:
             print(f"    {src}  {err}")
         sys.exit(1)
+
+    print_verdict(limited=limited, skipped=total_skipped, changed=len(changed))
 
 
 if __name__ == "__main__":
