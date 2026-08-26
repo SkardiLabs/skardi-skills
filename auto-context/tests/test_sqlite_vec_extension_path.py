@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent
-                       / "skills" / "auto_context" / "scripts"))
+                       / "skills" / "auto-context" / "scripts"))
 
 from setup_context import sqlite_vec_extension_present  # noqa: E402
 
@@ -76,7 +76,7 @@ def test_the_real_install_passes():
 def test_start_server_uses_the_shared_check_not_is_file():
     """Pin the fix at the call sites too. Both scripts must go through one
     function; the whole defect was two places disagreeing about one contract."""
-    src = (Path(__file__).resolve().parent.parent / "skills" / "auto_context"
+    src = (Path(__file__).resolve().parent.parent / "skills" / "auto-context"
            / "scripts" / "start_server.py").read_text()
     body = src[src.index("def ensure_sqlite_vec_path"):
                src.index("def port_is_taken")]

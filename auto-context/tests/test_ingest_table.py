@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent
-                       / "skills" / "auto_context" / "scripts"))
+                       / "skills" / "auto-context" / "scripts"))
 
 import ingest_table  # noqa: E402
 from ingest_corpus import stable_doc_id  # noqa: E402
