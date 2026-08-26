@@ -18,7 +18,7 @@
     },
     {
       "name": "feishu-connector",
-      "source": "./feishu-connector",
+      "source": "./feishu_connector",
       "description": "Sync a Feishu/Lark Bitable into local SQLite via lark-cli, then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync, Bitable only.",
       "category": "connector",
       "keywords": ["skardi", "feishu", "lark", "bitable", "sqlite", "connector"]

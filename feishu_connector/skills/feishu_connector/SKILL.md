@@ -1,5 +1,5 @@
 ---
-name: feishu-connector
+name: feishu_connector
 description: 'Sync Feishu/Lark data into a local SQLite database via the official lark-cli, then register that SQLite as a Skardi data source so an AI agent can query it with plain SQL (skardi query). Three sources: (A) a Bitable / 多维表格 becomes one SQLite table of rows and columns; (B) cloud docs / 云文档 (docx) become one row per doc holding the full markdown body; (C) a chat / 聊天记录 (IM) — group or 1:1 — becomes one row per message (sender, time, type, content). Use whenever the user wants an agent to read / query / analyze data living in Feishu — e.g. 让 AI 查飞书多维表格 / 把飞书表接进来给 agent / query my Feishu base / 让 AI 读我的飞书云文档 / 把飞书文档接进来 / 让 AI 读飞书群聊天记录 / 把飞书群聊接进来 / query my Feishu chat. v1 scope — Bitable + docs + chat (not Sheets), manual one-shot sync; Bitable special fields stored as text; docs stored as whole-doc markdown (no chunking/embedding — for semantic search over a large corpus use the auto_context skill instead); chat stores message text + metadata (images/files as placeholders).'
 ---
 
