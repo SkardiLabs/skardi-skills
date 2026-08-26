@@ -100,16 +100,39 @@ def ensure_pkg(pkg, import_name=None):
         die(f"Installed {pkg} but still cannot import {import_name}: {e}")
 
 
+def sqlite_vec_extension_present(path):
+    """Does this loadable-extension path resolve to a file on disk?
+
+    The path is a STEM, not a filename: `sqlite_vec.loadable_path()` returns
+    `.../sqlite_vec/vec0`, and SQLite's `load_extension` appends the platform
+    suffix itself (`.dylib` / `.so` / `.dll`). So the check is "is there a
+    `vec0.*` next to it", never `Path(p).is_file()` — that is False for every
+    correctly resolved path, and a caller that used it refused to start on a
+    perfectly good workspace. Both the resolver here and start_server.py's
+    re-export go through this one function so the two cannot drift again.
+
+    A path that already carries its suffix is accepted too: users export
+    SQLITE_VEC_PATH by hand, and pointing at the actual file is a reasonable
+    thing to do — SQLite loads that as-is.
+    """
+    p = Path(path)
+    if p.is_file():
+        return True
+    parent = p.parent
+    if not parent.is_dir():
+        return False
+    return any(f.name.startswith(p.name + ".") for f in parent.iterdir())
+
+
 def resolve_sqlite_vec():
     """Absolute path to the sqlite-vec loadable extension (no file suffix)."""
     ensure_pkg("sqlite-vec", "sqlite_vec")
     import sqlite_vec
 
     path = sqlite_vec.loadable_path()
-    parent = Path(path).parent
-    stem = Path(path).name
-    if not any(p.name.startswith(stem + ".") for p in parent.iterdir()):
-        die(f"sqlite_vec loadable path missing: no {stem}.* file in {parent}")
+    if not sqlite_vec_extension_present(path):
+        die(f"sqlite_vec loadable path missing: no {Path(path).name}.* file "
+            f"in {Path(path).parent}")
     return path
 
 
