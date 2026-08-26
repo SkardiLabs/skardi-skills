@@ -50,7 +50,7 @@ Claude Code will automatically load the relevant skill when your request matches
 
 ### Other Agent Skills hosts
 
-Codex, Cursor, Pi, dsh, OpenClaw, and Hermes read the same `SKILL.md` format Claude Code does — they differ only in where the skill directory has to go. All of them install from a checkout:
+Codex, Cursor, Pi, OpenClaw, and Hermes load these skills too; they differ in where the skill directory has to go. All of them install from a checkout:
 
 ```bash
 git clone https://github.com/SkardiLabs/skardi-skills.git && cd skardi-skills
@@ -58,20 +58,20 @@ git clone https://github.com/SkardiLabs/skardi-skills.git && cd skardi-skills
 
 `*/skills/*` in the commands below copies every skill in this repo. To install a single one, name it instead: `cp -r auto_context/skills/auto_context <destination>`.
 
-#### Codex, Cursor, Pi, dsh
+#### Codex, Cursor, Pi
 
-All four read the cross-tool `~/.agents/skills/` convention, so one copy covers every one of them:
+All three read the cross-tool `~/.agents/skills/` convention, so one copy covers every one of them:
 
 ```bash
 mkdir -p ~/.agents/skills
 cp -r */skills/* ~/.agents/skills/
 ```
 
-To scope the skills to a single project instead, copy them into that repo's `.agents/skills/`. Each host also keeps a native directory if you'd rather install per tool — `~/.cursor/skills/` for [Cursor](https://cursor.com/docs/skills), `~/.pi/agent/skills/` for [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md), `~/.dsh/skills/` for [dsh](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/skills.md) — while [Codex](https://learn.chatgpt.com/docs/build-skills) uses `~/.agents/skills/` as its only personal location.
+To scope the skills to a single project instead, copy them into that repo's `.agents/skills/`. Cursor and Pi also keep native directories if you'd rather install per tool — `~/.cursor/skills/` for [Cursor](https://cursor.com/docs/skills), `~/.pi/agent/skills/` for [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md) — while [Codex](https://learn.chatgpt.com/docs/build-skills) uses `~/.agents/skills/` as its only personal location.
 
 #### OpenClaw
 
-[OpenClaw](https://docs.openclaw.ai/tools/skills) installs from a local path through its own CLI rather than by copying. It requires a hyphenated slug and rejects the underscored directory names in this repo, so name each one with `--as`:
+[OpenClaw](https://docs.openclaw.ai/cli/skills) installs from a local path through its own CLI rather than by copying. OpenClaw validates the install slug. The two skills in this repository use underscored names, so install them with `--as` and a hyphenated slug:
 
 ```bash
 openclaw skills install ./auto_context/skills/auto_context --as auto-context
@@ -91,9 +91,11 @@ cp -r */skills/* ~/.hermes/skills/
 
 Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git repo it reads `<repo>/.hermes/skills/` and `<repo>/.agents/skills/`. To share one personal folder with the hosts above, add it under `skills.external_dirs` in `~/.hermes/config.yaml`.
 
-#### Anything else
+#### Not yet supported: dsh
 
-The `SKILL.md` files follow the [Agent Skills open standard](https://agentskills.io/), so any compatible host works. Place the skill directory wherever your tool resolves personal or project skills, and restart the host if the skill doesn't show up.
+[dsh](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/skills.md) reads `~/.agents/skills/` like the hosts above, but it only accepts kebab-case skill names and silently ignores any skill whose `SKILL.md` declares something else. Both skills here are named with underscores, so copying them into a dsh skills directory loads nothing. Renaming them would fix it, but it also changes the Claude Code command names, so it is not part of this change.
+
+If your host isn't listed, put the skill directory wherever it resolves personal or project skills and restart it. These files follow the [Agent Skills open standard](https://agentskills.io/), but a host may add rules of its own — as dsh does above.
 
 ## Bundled resources per skill
 
