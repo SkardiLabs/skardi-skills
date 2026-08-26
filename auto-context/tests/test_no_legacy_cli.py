@@ -30,7 +30,7 @@ import re
 import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-SKILL = os.path.join(ROOT, "skills", "auto_context")
+SKILL = os.path.join(ROOT, "skills", "auto-context")
 
 # (regex, why it is banned)
 BANNED = [

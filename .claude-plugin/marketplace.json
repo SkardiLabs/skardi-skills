@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "auto-context",
-      "source": "./auto_context",
+      "source": "./auto-context",
       "description": "Turn a folder of documents, a table you already have, or documents still inside a service (a wiki, cloud docs, a mailbox) into governed, searchable context an agent can query. Hybrid search (vector + full-text) served over HTTP by skardi-server. Three raw-material entries, one flow: a folder; an existing table (read-only; NDJSON for any datastore); or fetch-and-land, where your agent writes the per-source fetch code and the skill fixes the process and its reconciliation. Storage is a separate choice: defaults to a local SQLite file the skill creates and owns, or point it at Postgres+pgvector, MongoDB, or Lance when the index should live in a database you already own.",
       "category": "rag",
       "keywords": ["skardi", "context", "rag", "knowledge-base", "hybrid-search", "sqlite", "pgvector", "mongodb", "lance", "skardi-server"]

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent
-                       / "skills" / "auto_context" / "scripts"))
+                       / "skills" / "auto-context" / "scripts"))
 
 import start_server  # noqa: E402
 
