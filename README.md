@@ -8,109 +8,139 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 
 | Directory | Skill name | What it covers |
 |---|---|---|
-| `skardi_on_sealos/` | `skardi-deploy-and-patterns` | Core Skardi concepts (auth, pipelines, CSRF, DataFusion SQL dialect) + deploying to [Sealos](https://sealos.io/) via kubectl |
-| `auto_knowledge_base/` | `auto_knowledge_base` | Agent-autonomous knowledge-base construction — turn any directory of text/markdown into a queryable KB using Skardi CLI + SQLite + sqlite-vec + FTS5 (Postgres/pgvector and Lance supported as overrides). Handles prereq detection, model download, chunking, ingest, and hybrid (vector + full-text + RRF) retrieval end-to-end. Supports `candle`, `gguf`, and `remote_embed` UDFs. |
-| `auto_rag/` | `auto_rag` | Server-backed RAG over a user-supplied datastore (Postgres+pgvector, MongoDB, or Lance) — runs `skardi-server` in front of the user's DB so retrieval lives on a network endpoint instead of a local SQLite file. Renders ctx + ingest/search-vector/search-fulltext/search-hybrid pipelines, starts the server (local-process / Docker / Kubernetes), drives ingestion and querying over HTTP, and embeds client-side via the host CLI so the same templates run unchanged across all three runtimes. Never creates schema for the user — prints the SQL and waits. |
+| `auto-context/` | `auto-context` | Turn a folder of documents, a table you already have, or documents still inside a service into governed, searchable context an agent can query. Hybrid search (vector + full-text + RRF) served over HTTP by `skardi-server`. Three raw-material entries, one flow: a folder; an existing table (SQLite read directly and read-only, any other datastore piped in as NDJSON); or fetch-and-land — list, fetch each body, reconcile, ingest — where your agent writes the per-source fetch code and the skill fixes the process and its acceptance criteria. Storage is a separate choice: defaults to a local SQLite file the skill creates and owns (FTS5 + sqlite-vec `vec0` mirrors kept in sync by triggers); point it at Postgres+pgvector, MongoDB, or Lance when the index should live in a database you already own. Handles prereq checks, model resolution, chunking and embedding inline in SQL, ingest, and retrieval end-to-end across `candle` / `gguf` / `remote_embed`. Never creates schema in a datastore you own — prints the SQL and waits — and never writes to a table given as raw material. |
+| `retrieval/` | `retrieval` | Answer questions from live data through a running `skardi-server` with the `skardi` CLI. Discovers sources, named pipelines, and the table schemas the deployment exposes, runs the question through any semantic search surface first (`search-hybrid` and friends), then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached. Consumes whatever the server already has — it builds no index, writes no data, and starts no servers. |
+
+> **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
 
 ## Installation
 
 ### Claude Code (plugin marketplace, recommended)
 
-All three skills are published as plugins in this repo. From inside any Claude Code session:
+From inside any Claude Code session:
 
 ```text
 /plugin marketplace add SkardiLabs/skardi-skills
-/plugin install skardi-deploy-and-patterns@skardi-skills
-/plugin install auto-knowledge-base@skardi-skills
-/plugin install auto-rag@skardi-skills
+/plugin install auto-context@skardi-skills
+/plugin install retrieval@skardi-skills
 ```
 
 That's it — the skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
+
+> **Upgrading from an earlier version:** `auto-knowledge-base` and `auto-rag` have been merged into `auto-context`; `skardi-deploy-and-patterns` and `feishu-connector` have been retired. Feishu cloud docs are now raw material for `auto-context`, and Feishu Bitables and chats are moving to Skardi's own Feishu source pack. Installed copies of retired plugins are not removed automatically — run `/plugin uninstall feishu-connector`.
 
 ### Claude Code (manual copy)
 
 If you'd rather not use the plugin marketplace, copy the skill(s) into your personal skills directory so they're available across all projects:
 
 ```bash
-# skardi-deploy-and-patterns (deployment + core concepts)
-cp -r skardi_on_sealos/skills/skardi-deploy-and-patterns ~/.claude/skills/skardi-deploy-and-patterns
+# auto-context (searchable context over a folder or your own datastore)
+cp -r auto-context/skills/auto-context ~/.claude/skills/auto-context
 
-# auto_knowledge_base (agent-autonomous KB construction)
-cp -r auto_knowledge_base/skills/auto_knowledge_base ~/.claude/skills/auto_knowledge_base
-
-# auto_rag (server-backed RAG over a user-supplied datastore)
-cp -r auto_rag/skills/auto_rag ~/.claude/skills/auto_rag
+# retrieval (answer questions from data a skardi-server already serves)
+cp -r retrieval/skills/retrieval ~/.claude/skills/retrieval
 ```
 
-Claude Code will automatically load the relevant skill when your request matches it — e.g. deployment/auth/pipelines for `skardi-deploy-and-patterns`, "index these docs" / "build a RAG" / "make this folder searchable" for `auto_knowledge_base`, or "expose hybrid search as HTTP" / "RAG service over our pgvector DB" / "skardi-server with MongoDB" for `auto_rag`. You can also invoke any of them directly:
+Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`, or "query our database" / "how many orders last month" / "what tables do we have" for `retrieval`. You can also invoke them directly:
 
 ```text
-/skardi-deploy-and-patterns
-/auto_knowledge_base
-/auto_rag
+/auto-context
+/retrieval
 ```
 
-### Cursor
+### Other Agent Skills hosts
 
-Copy the skill(s) into the project-level skills directory:
+Codex, Cursor, Pi, dsh, OpenClaw, and Hermes load `auto-context` and `retrieval`
+too; they differ in where the skill directory has to go. All of them install from a checkout:
 
 ```bash
-# skardi-deploy-and-patterns
-cp -r skardi_on_sealos/skills/skardi-deploy-and-patterns .cursor/skills/skardi-deploy-and-patterns
-
-# auto_knowledge_base
-cp -r auto_knowledge_base/skills/auto_knowledge_base .cursor/skills/auto_knowledge_base
-
-# auto_rag
-cp -r auto_rag/skills/auto_rag .cursor/skills/auto_rag
+git clone https://github.com/SkardiLabs/skardi-skills.git && cd skardi-skills
 ```
 
-### Other Agent Skills-compatible tools
+#### Codex, Cursor, Pi, dsh
 
-The `SKILL.md` files follow the [Agent Skills open standard](https://agentskills.io/) and work with any compatible tool. Place the skill directory wherever your tool resolves personal or project skills.
+All four read the cross-tool `~/.agents/skills/` convention, so one copy covers
+every one of them:
+
+```bash
+mkdir -p ~/.agents/skills
+cp -r auto-context/skills/auto-context ~/.agents/skills/auto-context
+cp -r retrieval/skills/retrieval ~/.agents/skills/retrieval
+```
+
+To scope the skill to a single project instead, copy it into that repo's
+`.agents/skills/`. Each host also keeps a native directory if you'd rather
+install per tool — `~/.cursor/skills/` for [Cursor](https://cursor.com/docs/skills),
+`~/.pi/agent/skills/` for [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md),
+`~/.dsh/skills/` for [dsh](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/skills.md)
+— while [Codex](https://learn.chatgpt.com/docs/build-skills) uses
+`~/.agents/skills/` as its only personal location.
+
+#### OpenClaw
+
+[OpenClaw](https://docs.openclaw.ai/cli/skills) installs from a local path
+through its own CLI rather than by copying:
+
+```bash
+openclaw skills install ./auto-context/skills/auto-context
+openclaw skills install ./retrieval/skills/retrieval
+```
+
+That installs into `~/.openclaw/workspace/skills/`, scoped to the active agent
+workspace. Add `--global` to install into `~/.openclaw/skills/` instead, which
+every local agent sees.
+
+#### Hermes
+
+[Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)
+treats `~/.hermes/skills/` as its source of truth:
+
+```bash
+mkdir -p ~/.hermes/skills
+cp -r auto-context/skills/auto-context ~/.hermes/skills/auto-context
+cp -r retrieval/skills/retrieval ~/.hermes/skills/retrieval
+```
+
+Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git
+repo it reads `<repo>/.hermes/skills/` and `<repo>/.agents/skills/`. To share one
+personal folder with the hosts above, add it under `skills.external_dirs` in
+`~/.hermes/config.yaml`.
+
+#### Anything else
+
+If your host isn't listed, put the skill directory wherever it resolves personal
+or project skills and restart it. These files follow the
+[Agent Skills open standard](https://agentskills.io/), but conforming to the
+format does not guarantee a host will load them — hosts add rules of their own.
+`auto-context` is named in kebab-case for that reason: dsh rejects any other
+shape outright, and OpenClaw derives its install slug from the same field.
 
 ## Bundled resources per skill
 
-### `skardi_on_sealos/skills/skardi-deploy-and-patterns/templates/`
-
-Ready-to-use files referenced by `skardi-deploy-and-patterns`:
-
-| File | Purpose |
-|---|---|
-| `skardi-sealos.yaml` | Kubernetes manifest for deploying Skardi on Sealos |
-| `nextjs-sealos.yaml` | Kubernetes manifest for a Next.js frontend on Sealos |
-| `Dockerfile.nextjs` | Dockerfile for a Next.js app |
-| `nextjs-proxy.ts` | Next.js API route that proxies requests to Skardi |
-| `docker-compose.yml` | Local development stack |
-| `init-db.py` | Database initialisation script |
-
-### `auto_knowledge_base/`
-
-Executable scripts, YAML templates, and reference docs the skill invokes:
-
-| Path | Purpose |
-|---|---|
-| `scripts/setup_kb.py` | Creates a KB workspace — checks prereqs, installs missing Python deps, resolves/downloads the embedding model, renders the ctx + pipeline YAMLs with absolute paths, and initialises the SQLite schema with FTS5 + `vec0` mirrors and triggers |
-| `scripts/ingest_corpus.py` | Walks a corpus directory and ingests every file in one bulk `skardi query`. Chunking (via the 0.4.0 `chunk()` UDF) and embedding both happen inline in SQL, so `candle` / `gguf` / `remote_embed` all work with the model loaded once. (Replaces the old `chunk_corpus.py` + `bulk_ingest.py` pair.) |
-| `assets/ctx.yaml.tpl`, `assets/aliases.yaml.tpl` | Skardi v0.3 ctx + aliases templates (rendered with absolute DB path at setup) |
-| `assets/pipelines/*.yaml.tpl` | The four pipelines: `ingest`, `search_vector`, `search_fulltext`, `search_hybrid` (RRF over sqlite_knn + sqlite_fts) |
-| `references/backends.md` | Trade-offs and migration notes for Postgres + pgvector and Lance overrides |
-| `references/pipeline_patterns.md` | The exact SQL the skill generates, with commentary on RRF, the DataFusion INSERT-VALUES quirk, and how to extend the pipelines (metadata filters, updates, deletes) |
-| `references/troubleshooting.md` | Symptom → fix lookup for common failures (missing features, FTS5 syntax errors, trigger mismatches, dim mismatches, remote-API issues) |
-
-### `auto_rag/`
+### `auto-context/`
 
 Executable scripts, per-backend YAML templates, and reference docs the skill invokes:
 
 | Path | Purpose |
 |---|---|
-| `scripts/setup_rag.py` | Renders the workspace — checks `skardi` CLI is on PATH, records the embedding choice (model path / provider args / dim) in a breadcrumb, renders `ctx.yaml` + the four pipeline YAMLs against the user's connection string + table, and runs a `SELECT 1` health probe before exiting |
-| `scripts/start_server.py` | Starts `skardi-server` in one of three runtimes (`local-process` / `docker` / `kubernetes`), polls `/health`, verifies the four pipelines are registered, writes `server.runtime` + `server.port` for follow-up scripts |
+| `scripts/setup_context.py` | Renders the workspace — resolves the embedding choice (model path / provider args / dim), renders `ctx.yaml` + `semantics.yaml` + the five pipeline YAMLs for the chosen backend, and records a breadcrumb (`.embedding.txt`) the later scripts read. Defaults to `--backend sqlite`, where it owns the `.db` inside the workspace; `--backend postgres` requires a connection string and table the user created |
+| `scripts/start_server.py` | Starts `skardi-server` in one of three runtimes (`local-process` / `docker` / `kubernetes`), polls `/health`, verifies the five pipelines are registered, writes `server.runtime` + `server.port` for follow-up scripts. Server startup **is** the connectivity check — it fails naming the source it could not open |
 | `scripts/stop_server.py` | Tears down whichever runtime was launched (kills the local pid, removes the docker container, or `kubectl delete`s the rendered manifests) |
-| `scripts/chunk_corpus.py` | Same markdown-aware chunker as `auto_knowledge_base` — emits NDJSON with stable `(source, chunk_idx)`-derived ids so re-runs are idempotent |
-| `scripts/embed.py` | Computes a single query embedding via the host `skardi` CLI and parses the float array out of the table-format output — used both at query time and inside `http_ingest.py` |
-| `scripts/http_ingest.py` | Two-phase ingest: embeds every chunk via the host CLI (warm model cache), then POSTs `{doc_id, source, chunk_idx, content, embedding}` to `/ingest/execute` at `--concurrency N`. Tracks per-chunk status in `ingest_progress.json` so retries skip already-ok ids |
-| `assets/postgres/ctx.yaml.tpl`, `assets/postgres/pipelines/*.yaml.tpl` | Postgres+pgvector ctx + the four pipelines (`ingest`, `search_vector`, `search_fulltext`, `search_hybrid` via RRF over `pg_knn` + `pg_fts`). Mongo and Lance asset trees follow the same layout when added |
-| `references/runtimes.md` | Per-runtime walk-through (mounts, networking, lifecycle, kubectl flags, port-forward, cleanup) for `local-process` / `docker` / `kubernetes` |
-| `references/schemas.md` | The exact DDL the user must run themselves for each backend (Postgres+pgvector, MongoDB index commands, Lance dataset bootstrap) |
-| `references/troubleshooting.md` | Symptom → fix lookup (missing role, missing extension, dim mismatch, FTS5/tsquery syntax errors, Docker host-networking, localhost HTTP-proxy interception) |
+| `scripts/ingest_corpus.py` | Walks a corpus directory and POSTs one document per request to `/ingest-chunked/execute`. Chunking (`chunk()`) and embedding both happen inline in server-side SQL, so a document lands completely or not at all. Progress is journalled, so a re-run resumes instead of duplicating |
+| `assets/sqlite/`, `assets/postgres/` | Per-backend `ctx.yaml` + `semantics.yaml` + `pipelines/*.yaml` templates. Same five pipeline names on both sides (`ingest`, `ingest_chunked`, `search_vector`, `search_fulltext`, `search_hybrid`), so only the backend-specific lines differ. Mongo and Lance trees follow the same layout when added |
+| `references/schemas.md` | The exact DDL the user must run themselves per backend (Postgres+pgvector, MongoDB index commands, Lance dataset bootstrap) |
+| `references/runtimes.md` | Per-runtime walk-through (mounts, networking, lifecycle, kubectl flags, port-forward, cleanup) |
+| `references/pipeline_patterns.md` | The exact SQL the skill generates, with commentary on RRF, the DataFusion INSERT-VALUES quirk, and how to extend the pipelines (metadata filters, updates, deletes) |
+| `references/troubleshooting.md` | Symptom → fix for server and own-datastore failures (missing role, missing extension, dim mismatch, tsquery syntax, Docker host-networking, localhost HTTP-proxy interception) |
+| `references/troubleshooting_sqlite.md` | Symptom → fix for the local path (sqlite-vec loading and extension paths, FTS5 syntax, trigger mismatches, model download) |
+
+### `retrieval/`
+
+No scripts — the skill is the procedure. What ships alongside it is the eval harness:
+
+| Path | Purpose |
+|---|---|
+| `evals/evals.json` | Seven behavioural cases: no search surface present, semantic-first with a stale-document conflict, a catalog whose tables cannot be enumerated, an undeclared pipeline that must not be probed, truncated rows that must not feed client-side statistics, no learning-chain claim on v0.5.0, and a `limit`-named parameter that does not bound anything |
+| `evals/fixtures/make_data.py` | Deterministic fixture data (seed 7): 1500 orders across four statuses, plus a full-text table holding a current policy note and a superseded one that outranks it |
+| `evals/fixtures/setup.sh` | Starts a `skardi-server` on the fixture in one of three shapes — full, `--bare` (a catalog with no table names anywhere), `--no-search` (no search surface registered). Refuses a port that is already answering before it touches any fixture state |
+| `evals/fixtures/pipelines/` | Includes two deliberate traps: `refresh-orders` really inserts into a writable source, and `recent-orders` is truthfully declared read-only yet uses its `limit` parameter as an id threshold |

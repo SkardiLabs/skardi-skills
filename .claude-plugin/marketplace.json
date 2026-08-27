@@ -5,44 +5,56 @@
     "url": "https://github.com/SkardiLabs"
   },
   "metadata": {
-    "description": "Agent Skills for working with Skardi — SQL pipelines as HTTP endpoints. Distributes plugins that teach AI coding agents Skardi's patterns for RAG, hybrid search, and pipeline deployment.",
-    "version": "0.1.0"
+    "description": "Agent Skills for working with Skardi — SQL pipelines as HTTP endpoints. Distributes plugins that teach AI coding agents Skardi's patterns for building searchable context, hybrid search, and connectors.",
+    "version": "0.2.0"
   },
   "plugins": [
     {
-      "name": "skardi-deploy-and-patterns",
-      "source": "./skardi_on_sealos",
-      "description": "Core Skardi concepts (auth, SQLite, pipelines, CSRF, DataFusion SQL dialect) plus deploying Skardi to Sealos via kubectl. Includes ready-to-use K8s manifest, Dockerfiles, Next.js proxy, docker-compose for local dev, and an init-db scaffold.",
-      "category": "deployment",
-      "keywords": ["skardi", "sealos", "kubernetes", "deployment", "auth", "datafusion", "nextjs"]
-    },
-    {
-      "name": "auto-knowledge-base",
-      "source": "./auto_knowledge_base",
-      "description": "Build a hybrid-search (vector + FTS) knowledge base over a folder of docs using Skardi CLI + SQLite + sqlite-vec. No servers, no API keys.",
+      "name": "auto-context",
+      "source": "./auto-context",
+      "description": "Turn a folder of documents, a table you already have, or documents still inside a service (a wiki, cloud docs, a mailbox) into governed, searchable context an agent can query. Hybrid search (vector + full-text) served over HTTP by skardi-server. Three raw-material entries, one flow: a folder; an existing table (read-only; NDJSON for any datastore); or fetch-and-land, where your agent writes the per-source fetch code and the skill fixes the process and its reconciliation. Storage is a separate choice: defaults to a local SQLite file the skill creates and owns, or point it at Postgres+pgvector, MongoDB, or Lance when the index should live in a database you already own.",
       "category": "rag",
-      "keywords": ["rag", "knowledge-base", "sqlite", "embeddings", "hybrid-search"]
+      "keywords": [
+        "skardi",
+        "context",
+        "rag",
+        "knowledge-base",
+        "hybrid-search",
+        "sqlite",
+        "pgvector",
+        "mongodb",
+        "lance",
+        "skardi-server"
+      ]
     },
     {
-      "name": "auto-rag",
-      "source": "./auto_rag",
-      "description": "Server-backed RAG over a user-supplied datastore (Postgres+pgvector, MongoDB, or Lance) via skardi-server. Exposes hybrid search as REST endpoints.",
-      "category": "rag",
-      "keywords": ["rag", "skardi-server", "pgvector", "mongodb", "lance", "rest"]
-    },
-    {
-      "name": "feishu-connector",
-      "source": "./feishu_connector",
-      "description": "Sync a Feishu/Lark Bitable into local SQLite via lark-cli, then register it as a Skardi data source so an agent can query it with SQL. v1: manual one-shot sync, Bitable only.",
-      "category": "connector",
-      "keywords": ["skardi", "feishu", "lark", "bitable", "sqlite", "connector"]
+      "name": "retrieval",
+      "source": "./retrieval",
+      "description": "Answer questions from live data through a running skardi-server using the skardi CLI. Discovers sources, pipelines, and the table schemas the deployment exposes, searches any semantic surface first, then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached.",
+      "category": "query",
+      "keywords": [
+        "skardi",
+        "retrieval",
+        "query",
+        "sql",
+        "hybrid-search",
+        "skardi-cli",
+        "data-agent",
+        "read-only"
+      ]
     },
     {
       "name": "skardi-query-log",
-      "source": "./skardi_query_log",
+      "source": "./skardi-query-log",
       "description": "Turn questions the user keeps asking into pipelines. Reads the query audit log written by `skardi-server --query-audit-db`, spots repeating ad-hoc SQL, and installs the pipeline itself with self-verification and automatic rollback. Requires Skardi newer than v0.5.0.",
       "category": "automation",
-      "keywords": ["skardi", "pipelines", "query-audit", "observability", "automation"]
+      "keywords": [
+        "skardi",
+        "pipelines",
+        "query-audit",
+        "observability",
+        "automation"
+      ]
     }
   ]
 }
