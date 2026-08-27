@@ -136,11 +136,4 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 
 ### `retrieval/`
 
-No scripts — the skill is the procedure. What ships alongside it is the eval harness:
-
-| Path | Purpose |
-|---|---|
-| `evals/evals.json` | Seven behavioural cases: no search surface present, semantic-first with a stale-document conflict, a catalog whose tables cannot be enumerated, an undeclared pipeline that must not be probed, truncated rows that must not feed client-side statistics, no learning-chain claim on v0.5.0, and a `limit`-named parameter that does not bound anything |
-| `evals/fixtures/make_data.py` | Deterministic fixture data (seed 7): 1500 orders across four statuses, plus a full-text table holding a current policy note and a superseded one that outranks it |
-| `evals/fixtures/setup.sh` | Starts a `skardi-server` on the fixture in one of three shapes — full, `--bare` (a catalog with no table names anywhere), `--no-search` (no search surface registered). Refuses a port that is already answering before it touches any fixture state |
-| `evals/fixtures/pipelines/` | Includes two deliberate traps: `refresh-orders` really inserts into a writable source, and `recent-orders` is truthfully declared read-only yet uses its `limit` parameter as an id threshold |
+No scripts — the skill is the procedure: `SKILL.md` is the whole plugin.
