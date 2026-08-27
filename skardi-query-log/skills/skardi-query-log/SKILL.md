@@ -1,5 +1,5 @@
 ---
-name: skardi_query_log
+name: skardi-query-log
 description: 'Turn a question the user keeps asking into a Skardi pipeline. **You trigger this yourself — the user will not ask for it.** They say "show me X"; they never say "analyse my query log". Whenever you are about to hand Skardi another ad-hoc SQL statement and the question feels familiar, check the query audit log first (it is your cross-session memory), and if the question really does repeat, build the pipeline. Also use it when the user asks "what do I keep querying?" or "should we make a pipeline for this?". Not for querying data itself (send SQL to /query for that) and not for configuring Skardi (that is the install docs).'
 ---
 
@@ -29,14 +29,15 @@ How you set that up depends on where you run (Claude Code has scheduled tasks an
 
 ## What this log is, precisely
 
-When `skardi-server` starts with `--query-audit-db <path>`, every ad-hoc statement that goes through `/query` is written to a SQLite database. **It is off by default.**
+When `skardi-server` starts with `--query-audit-db <path>`, statements are written to a SQLite database. **It is off by default.**
 
 One row holds: when, which SQL, the caller's own `ai_context` (a JSON blob, commonly `purpose` and `session_id`), succeeded or failed, how many rows came back, and the verbatim error if it failed.
 
-> **Three things it cannot see. Know them before you draw conclusions, or you will read "not recorded" as "did not happen":**
-> ① Only ad-hoc `/query` statements are recorded — **pipeline executions are not**, so you cannot see how often an already-hardened query runs;
-> ② **Rejected statements are not recorded** (DDL, for instance, is blocked before the write — 12 statements sent, 11 rows in the database when measured), so you cannot see what the user tried and was refused;
-> ③ `ai_context` is supplied by the caller and optional, so **many rows have none**.
+**The ledger holds more than ad-hoc SQL.** A `statement_kind` column separates `query` (ad-hoc `/query`) from `pipeline` and `job` runs, which land in the same table. `read_log.py` reads `query` by default, and that default is load-bearing: a pipeline execution is the *result* of an earlier hardening decision, so counting it as another instance of a repeating question would let one pipeline argue for hardening itself again. Pass `--kind pipeline` deliberately, when the question is whether a pipeline you built is being used — a pipeline nobody calls was the wrong pipeline, and that is the other half of this loop. A ledger written before pipeline auditing has no such column; the script detects that and reads everything, which is correct there because everything in it *is* ad-hoc.
+
+> **Two things it cannot see. Know them before you draw conclusions, or you will read "not recorded" as "did not happen":**
+> ① **Rejected statements are not recorded** (DDL, for instance, is blocked before the write — 12 statements sent, 11 rows in the database when measured), so you cannot see what the user tried and was refused;
+> ② `ai_context` is supplied by the caller and optional, so **many rows have none**. Whether the CLI can supply it depends on the version: `skardi query --purpose/--session-id` fills it, older builds have no flag for it and leave the column empty however the agent phrases the SQL.
 
 > **This database holds raw SQL, which may contain secrets and personal data; the file is mode 600.** Reading it is a local matter — do not send its contents anywhere, and do not copy literal values into a report. Describing the shape and the intent is enough.
 
@@ -50,6 +51,8 @@ python3 scripts/read_log.py --db "$DB" --overview          # totals first: rows,
 python3 scripts/read_log.py --db "$DB" --limit 40          # the last 40
 python3 scripts/read_log.py --db "$DB" --session s-restock  # reconstruct one session
 python3 scripts/read_log.py --db "$DB" --failed            # failures only
+python3 scripts/read_log.py --db "$DB" --kind pipeline     # are the pipelines you built getting called?
+python3 scripts/read_log.py --db "$DB" --overview --kind all  # everything, including pipeline and job runs
 ```
 
 The script is read-only, and it fetches and formats rows — **it makes no judgements.** Don't pull everything at once; the log can be long and how much you pull is your call.
