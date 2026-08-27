@@ -42,6 +42,19 @@
         "data-agent",
         "read-only"
       ]
+    },
+    {
+      "name": "skardi-query-log",
+      "source": "./skardi-query-log",
+      "description": "Turn questions the user keeps asking into pipelines. Reads the query audit log written by `skardi-server --query-audit-db`, spots repeating ad-hoc SQL, and installs the pipeline itself with self-verification and automatic rollback. Requires Skardi newer than v0.5.0.",
+      "category": "automation",
+      "keywords": [
+        "skardi",
+        "pipelines",
+        "query-audit",
+        "observability",
+        "automation"
+      ]
     }
   ]
 }

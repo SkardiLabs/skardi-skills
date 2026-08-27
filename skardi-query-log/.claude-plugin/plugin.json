@@ -1,0 +1,10 @@
+{
+  "name": "skardi-query-log",
+  "version": "0.1.0",
+  "description": "Turn questions the user keeps asking into Skardi pipelines. Reads the query audit log written by `skardi-server --query-audit-db` (read-only), spots ad-hoc SQL that repeats, and installs the pipeline itself — writing the YAML, restarting, probing health, and rolling back if the server does not come up. Requires Skardi newer than v0.5.0.",
+  "author": { "name": "Skardi Labs" },
+  "homepage": "https://github.com/SkardiLabs/skardi-skills",
+  "repository": "https://github.com/SkardiLabs/skardi-skills",
+  "license": "Apache-2.0",
+  "keywords": ["skardi", "pipelines", "query-audit", "observability", "sqlite", "automation"]
+}
