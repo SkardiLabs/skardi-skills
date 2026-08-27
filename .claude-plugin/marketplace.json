@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Agent Skills for working with Skardi — SQL pipelines as HTTP endpoints. Distributes plugins that teach AI coding agents Skardi's patterns for building searchable context, hybrid search, and connectors.",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "plugins": [
     {
@@ -40,6 +40,23 @@
         "hybrid-search",
         "skardi-cli",
         "data-agent",
+        "read-only"
+      ]
+    },
+    {
+      "name": "graph-source",
+      "source": "./graph-source",
+      "description": "Connect a property graph (knowledge graph, GraphRAG corpus, Apache AGE / openCypher data) to Skardi and query it through SQL, end to end: provision the AGE backend with a least-privilege role, declare the type: graph source and its views in context YAML, verify registration health (healthy/degraded/refused), write correct queries (cypher_query, graph_schema, the JSON getters), and wire Cypher parameters into pipelines. Encodes the traps: positional column binding, no predicate pushdown into view Cypher, wrong-getter silent NULLs, and the one working {params} pipeline spelling.",
+      "category": "query",
+      "keywords": [
+        "skardi",
+        "graph",
+        "cypher",
+        "age",
+        "opencypher",
+        "knowledge-graph",
+        "graphrag",
+        "postgres",
         "read-only"
       ]
     }
