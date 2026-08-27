@@ -31,6 +31,12 @@ order swap **silently** — no error, plausible-looking wrong data. When
 you touch a query, re-check the declaration order against the RETURN
 clause; when you review one, check it there first.
 
+**AGE cannot `ORDER BY` a RETURN alias.** `RETURN p.name AS name
+ORDER BY name` fails with the backend's `[42703] could not find rte for
+name`. Order by the ORIGINAL expression (`ORDER BY p.age`), or leave
+ordering to the SQL side (`… FROM cypher_query(…) ORDER BY name`) —
+the SQL side sorts the declared columns and has no such restriction.
+
 Type mismatches, by contrast, fail loudly: each returned value converts
 against its declared type, and a mismatch is a typed error carrying
 column name, row index, expected type, and found JSON kind.
@@ -96,6 +102,8 @@ argument**.
 kind: pipeline
 metadata:
   name: people-over-age
+  version: "0.1.0"     # REQUIRED — a version-less pipeline fails to load
+                       # ("missing field `version`")
 spec:
   query: |
     SELECT name, age

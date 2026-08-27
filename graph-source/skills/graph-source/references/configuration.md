@@ -4,6 +4,9 @@
 
 ```yaml
 kind: context
+metadata:
+  name: my-graph-ctx   # metadata.name is REQUIRED — omitting the block fails
+                       # config load with "missing field `metadata`"
 spec:
   data_sources:
     - name: kg                        # the catalog name: views live at kg.main.<view>
