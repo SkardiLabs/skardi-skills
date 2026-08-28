@@ -57,6 +57,12 @@ too; they differ in where the skill directory has to go. All of them install fro
 git clone https://github.com/SkardiLabs/skardi-skills.git && cd skardi-skills
 ```
 
+> **How far each of these has been checked.** The OpenClaw commands below were run: both skills
+> install and the host lists them as ready. The rest follow each host's own published skills
+> documentation and have not been installed and launched by us. They are the documented paths,
+> not measured ones — if one of them does not pick the skill up, please open an issue and say
+> which host and version, since that is the kind of thing only a user on that host can catch.
+
 #### Codex, Cursor, Pi, dsh
 
 All four read the cross-tool `~/.agents/skills/` convention, so one copy covers

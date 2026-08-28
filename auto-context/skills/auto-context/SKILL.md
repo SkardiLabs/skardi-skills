@@ -63,7 +63,7 @@ For testing **the skill itself** during development, disposable Docker container
 Local path — two questions, sometimes fewer:
 
 1. **Where is the raw material — a folder, an existing table, or still inside a service?** For a folder: the path. For a table: which file or datastore, which table, and which columns hold the key and the text. For a service: read [references/fetch_and_land.md](references/fetch_and_land.md) before promising anything. If the user already said, do not ask again.
-2. **Embedding backend.** See below. Do not pick silently; it drives cost and the vector dimension.
+2. **Embedding backend.** See below. Do not pick silently: it decides the vector dimension, the cost, and whether the corpus leaves the machine.
 
 Override path — the two above, plus:
 
@@ -80,7 +80,9 @@ Three UDFs, all returning `List<Float32>`, all slotting into the same pipeline s
 |---|---|---|---|
 | `candle(model_dir, text)` | local HuggingFace SafeTensors (BERT / RoBERTa / DistilBERT / Jina) | Local, simple deps, general English text. The default for self-hosted when the corpus fits on one box. Common: `bge-small-en-v1.5` (384-d, ~130 MB), `bge-base-en-v1.5` (768-d), `bge-large-en-v1.5` (1024-d), `all-MiniLM-L6-v2` (384-d, tiny), `multilingual-e5-large` (1024-d), `jina-embeddings-v2-base-code` (768-d) for code. | bundled in `--features rag`, or `--features candle` |
 | `gguf(model_dir, text)` | local llama.cpp quantised weights | Local, RAM-constrained, or the model only ships as GGUF. Common: `embeddinggemma-300m-qat-Q8_0.gguf` (256-d), `nomic-embed-text-v1.5` GGUF (768-d). **Read the gguf note below before choosing this** — it is the one backend with a build prerequisite. | `--features gguf` |
-| `remote_embed(provider, model, text)` | hosted API | No local compute, top-tier quality, willing to pay per call. `('openai','text-embedding-3-small')` 1536-d, `('openai','text-embedding-3-large')` 3072-d, `('voyage','voyage-3')` 1024-d, `('voyage','voyage-code-3')` 1024-d for code, `('gemini','text-embedding-004')` 768-d, `('mistral','mistral-embed')` 1024-d. Each needs its key in the server environment. | `--features remote-embed` |
+| `remote_embed(provider, model, text)` | hosted API | No local compute, top-tier quality, willing to pay per call — **and the corpus may leave the machine**, see the note under this table. `('openai','text-embedding-3-small')` 1536-d, `('openai','text-embedding-3-large')` 3072-d, `('voyage','voyage-3')` 1024-d, `('voyage','voyage-code-3')` 1024-d for code, `('gemini','text-embedding-004')` 768-d, `('mistral','mistral-embed')` 1024-d. Each needs its key in the server environment. | `--features remote-embed` |
+
+**`remote_embed` sends the corpus off the machine — say so before choosing it.** Embedding happens inside the ingest statement, so every chunk of every document is transmitted to the provider (OpenAI, Voyage, Google, Mistral) as request text. That is the whole corpus, not a sample, and it happens again for the query text on every vector or hybrid search. `candle` and `gguf` run the model in the server process and transmit nothing. This is a property of the corpus, not of the budget: for internal documents, customer records, unreleased work or anything under an agreement that restricts sub-processors, name the provider and get an explicit yes before you render the workspace — and prefer a local backend when the user has not raised the topic at all.
 
 **Decision rule.** Local-only, or is a hosted API acceptable? If local, choose candle vs gguf on memory budget. Code corpus → `voyage-code-3` or `jina-embeddings-v2-base-code`. Multilingual → `multilingual-e5-large` or `text-embedding-3-large`. Chunks over 512 tokens → `nomic-embed-text`. Otherwise bge on candle. **A 512-token cap interacts with `--chunk-size`, which is measured in characters** — see the note under Step 3 before indexing a code corpus.
 
