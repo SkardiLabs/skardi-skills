@@ -20,7 +20,7 @@ cargo install --locked --path crates/server --features rag
 
 Pin the tag. Do **not** install from `main`: `main` carries unreleased changes, so a workspace that works today can break on the next pull with no version to point at.
 
-> The **override path** (`--backend postgres` / `mongo` / `lance`) has no such constraint — use `--runtime docker` with `ghcr.io/skardilabs/skardi/skardi-server-rag:0.5.0` and skip the toolchain entirely.
+> The **override path** (`--backend postgres` / `mongo` / `lance`) has no such constraint — use `--runtime docker` with `ghcr.io/skardilabs/skardi/skardi-server-full:X.Y.Z` and skip the toolchain entirely.
 
 ## `error: Invalid function 'chunk'` (or `Unknown function: chunk`) at ingest time
 
