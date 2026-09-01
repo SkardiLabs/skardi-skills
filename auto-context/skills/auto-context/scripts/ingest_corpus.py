@@ -57,9 +57,25 @@ DEFAULT_CHUNK_SIZE = 1200
 # 1200 characters of Chinese prose into 1202 tokens (max 510 chars under the
 # cap); multilingual-e5-large managed 1.36 chars/token (max 699).
 EMBED_TOKEN_CAP = 512
-# The lowest of the measured limits, so the guard is safe for whichever of
-# those models is in use rather than only for the roomiest one.
+# Two ceilings, because the characters-per-token ratio is what differs and it
+# differs by roughly 4x. Both measured 2026-09-01 against the real
+# bge-small-en-v1.5 vocabulary (30522 WordPiece entries), counting the way
+# BERT does — whitespace/punctuation split, then longest-match subwords, with
+# CJK characters isolated first:
+#
+#   English prose        1200 chars -> 266 tokens   4.51 ch/tok   ~2300 @ cap
+#   English technical    1200 chars -> 305 tokens   3.93 ch/tok   ~2014 @ cap
+#   English + code ids   1200 chars -> 410 tokens   2.93 ch/tok   ~1498 @ cap
+#   Chinese prose        1200 chars -> 1160 tokens  1.00 ch/tok   ~512  @ cap
+#
+# The CJK figure matches the independent measurement in skardi-skills#14
+# (1202 tokens, 510 chars under the cap), taken from the tokenizers directly.
 CJK_SAFE_CHUNK_CHARS = 500
+# Set below the DENSEST English sample (1498), not the average: identifier-
+# heavy prose is still English, and a ceiling that only holds for the airiest
+# case would let exactly the corpora that need the guard through. The shipped
+# 1200 default sits under this, so an unmodified English run never sees it.
+LATIN_SAFE_CHUNK_CHARS = 1400
 
 DEFAULT_OVERLAP = 200
 
@@ -643,21 +659,42 @@ def main():
     # invalid index 512 with dim size 512`, an error that says nothing about
     # chunk size. Refuse before the first request rather than after the user
     # has waited through a model download and a partial ingest.
-    if args.chunk_size > CJK_SAFE_CHUNK_CHARS and corpus_is_mostly_cjk(corpus):
-        die(
-            f"--chunk-size {args.chunk_size} is measured in characters, but "
-            f"the embedding model caps at {EMBED_TOKEN_CAP} tokens — and in "
-            f"Chinese, Japanese and Korean text roughly one character is one "
-            f"token, so every chunk would exceed the cap and fail at INSERT.\n"
-            f"  This corpus is largely CJK. Use --chunk-size "
-            f"{CJK_SAFE_CHUNK_CHARS} or less (measured 2026-08-25: 510 chars "
-            f"for the bge family, 699 for multilingual-e5-large; "
-            f"skardi-skills#14).\n"
-            f"  --overlap should stay well below that — the default "
-            f"{DEFAULT_OVERLAP} is fine at 500.\n"
-            f"  Latin-script corpora are unaffected and keep the "
-            f"{DEFAULT_CHUNK_SIZE} default."
-        )
+    is_cjk = corpus_is_mostly_cjk(corpus)
+    if is_cjk is not None:
+        ceiling = CJK_SAFE_CHUNK_CHARS if is_cjk else LATIN_SAFE_CHUNK_CHARS
+        if args.chunk_size > ceiling:
+            if is_cjk:
+                why = (
+                    "in Chinese, Japanese and Korean text roughly one "
+                    "character is one token, so EVERY chunk would exceed the "
+                    "cap"
+                )
+                evidence = (
+                    "measured: 1200 chars of Chinese prose = 1160 tokens; "
+                    "skardi-skills#14 measured 1202 on the same family"
+                )
+            else:
+                why = (
+                    "identifier- and symbol-heavy English runs about 2.9 "
+                    "characters per token, so a chunk this large can exceed "
+                    "the cap even though ordinary prose at the same size "
+                    "would not"
+                )
+                evidence = (
+                    "measured: prose 4.51 ch/tok, technical 3.93, "
+                    "identifier-heavy 2.93 — the last caps out near 1498 chars"
+                )
+            die(
+                f"--chunk-size {args.chunk_size} is measured in characters, "
+                f"but the embedding model caps at {EMBED_TOKEN_CAP} tokens — "
+                f"and {why}, failing at INSERT with an index-select error "
+                f"that names no cause.\n"
+                f"  Use --chunk-size {ceiling} or less ({evidence}).\n"
+                f"  --overlap should stay well below that; the default "
+                f"{DEFAULT_OVERLAP} is fine.\n"
+                f"  The shipped default is {DEFAULT_CHUNK_SIZE}, which is "
+                f"safe for Latin script and not for CJK."
+            )
 
     # A CJK corpus landing in a unicode61 index is the skardi-skills#26 shape:
     # full-text search will answer `success: true` with zero rows for terms

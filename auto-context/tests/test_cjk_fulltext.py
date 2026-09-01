@@ -200,11 +200,16 @@ def test_default_chunk_size_would_overflow_cjk():
 def _guard_fires(chunk_size, corpus_dir):
     """The guard's condition, kept in one place so the test pins the rule
     rather than a copy of it."""
-    return (chunk_size > ingest_corpus.CJK_SAFE_CHUNK_CHARS
-            and bool(ingest_corpus.corpus_is_mostly_cjk(corpus_dir)))
+    is_cjk = ingest_corpus.corpus_is_mostly_cjk(corpus_dir)
+    if is_cjk is None:
+        return False
+    ceiling = (ingest_corpus.CJK_SAFE_CHUNK_CHARS if is_cjk
+               else ingest_corpus.LATIN_SAFE_CHUNK_CHARS)
+    return chunk_size > ceiling
 
 
-def test_guard_fires_only_for_oversized_cjk(tmp_path):
+def test_each_script_gets_its_own_ceiling(tmp_path):
+    """One cap, two ceilings: what differs is characters per token, ~4x."""
     cjk = tmp_path / "cjk"
     cjk.mkdir()
     (cjk / "a.md").write_text("预跑一遍再定 schema，上下文这块用 Agent 来做检索。" * 10,
@@ -214,10 +219,29 @@ def test_guard_fires_only_for_oversized_cjk(tmp_path):
     (en / "a.md").write_text("the cat sat on the mat and nothing else happened. " * 20,
                              encoding="utf-8")
 
-    assert _guard_fires(1200, cjk) is True, "CJK at the default must be refused"
-    assert _guard_fires(500, cjk) is False, "CJK within the ceiling must pass"
-    assert _guard_fires(1200, en) is False, "Latin script is unaffected"
-    assert _guard_fires(4000, en) is False, "still unaffected at any size"
+    assert _guard_fires(1200, cjk) is True, "CJK at the shipped default must be refused"
+    assert _guard_fires(500, cjk) is False, "CJK within its ceiling passes"
+    assert _guard_fires(1200, en) is False, "the shipped default is safe for Latin"
+    assert _guard_fires(4000, en) is True, (
+        "Latin script has a ceiling too — an identifier-heavy corpus at 4000 "
+        "chars/chunk overflows the same cap"
+    )
+
+
+def test_shipped_default_sits_under_the_latin_ceiling():
+    """So an unmodified English run never meets the guard at all."""
+    assert ingest_corpus.DEFAULT_CHUNK_SIZE < ingest_corpus.LATIN_SAFE_CHUNK_CHARS
+
+
+def test_latin_ceiling_follows_the_densest_measurement():
+    """1400 comes from identifier-heavy English (2.93 ch/tok -> ~1498), not
+    from prose (4.51 -> ~2300). A ceiling set by the airiest sample would let
+    exactly the corpora that need the guard through."""
+    assert 1200 < ingest_corpus.LATIN_SAFE_CHUNK_CHARS < 1498
+    assert (ingest_corpus.LATIN_SAFE_CHUNK_CHARS
+            > 2 * ingest_corpus.CJK_SAFE_CHUNK_CHARS), (
+        "the two ceilings differ by roughly the ratio difference itself"
+    )
 
 
 def test_guard_stays_silent_when_the_corpus_cannot_be_sampled(tmp_path):
