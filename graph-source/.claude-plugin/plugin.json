@@ -1,0 +1,10 @@
+{
+  "name": "graph-source",
+  "version": "0.1.0",
+  "description": "Connect a property graph (knowledge graph, GraphRAG corpus, Apache AGE / openCypher data) to Skardi and query it through SQL, end to end: provision the AGE backend with a least-privilege role, declare the type: graph source and its views in context YAML, verify registration health, write correct queries (cypher_query, graph_schema, the JSON getters), and wire Cypher parameters into pipelines.",
+  "author": { "name": "Skardi Labs" },
+  "homepage": "https://github.com/SkardiLabs/skardi-skills",
+  "repository": "https://github.com/SkardiLabs/skardi-skills",
+  "license": "Apache-2.0",
+  "keywords": ["skardi", "graph", "cypher", "age", "opencypher", "knowledge-graph", "graphrag", "postgres", "read-only"]
+}
