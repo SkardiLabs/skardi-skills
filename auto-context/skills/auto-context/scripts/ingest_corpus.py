@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 import urllib.error
@@ -59,6 +60,76 @@ DEFAULT_OVERLAP = 200
 SERVER_BODY_LIMIT = 2 * 1024 * 1024
 
 FRONT_MATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
+
+
+def fts_tokenizer_of(db_path):
+    """Which tokenizer an existing documents_fts was built with, or None.
+
+    None means the question does not apply — no file, no FTS table, or the
+    file could not be read. Callers stay silent in that case rather than
+    warning about a database they could not inspect.
+    """
+    if not db_path.exists():
+        return None
+    try:
+        db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = db.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='documents_fts'"
+            ).fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return None
+    if not row or not row[0]:
+        return None
+    return "trigram" if "trigram" in row[0].lower() else "unicode61"
+
+
+def corpus_is_mostly_cjk(corpus_dir, sample_bytes=200_000, threshold=0.15):
+    """Whether enough of a corpus is CJK to be worth indexing for it.
+
+    Reads at most `sample_bytes` across the first files it finds and returns
+    True when CJK codepoints exceed `threshold` of the non-whitespace text.
+    The threshold is low on purpose: a corpus that is 15% Chinese still has
+    Chinese nobody can search for, while the English half loses only word
+    precision, not the ability to find anything.
+
+    Returns None when there is nothing to sample — the caller then keeps the
+    English-safe default rather than guessing from an empty corpus.
+    """
+    if corpus_dir is None:
+        return None
+    root = Path(corpus_dir)
+    if not root.exists():
+        return None
+    read = 0
+    cjk = 0
+    total = 0
+    for path in sorted(root.rglob("*")):
+        if read >= sample_bytes:
+            break
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        read += len(text.encode("utf-8", errors="ignore"))
+        for ch in text:
+            if ch.isspace():
+                continue
+            total += 1
+            # CJK ideographs, kana, and Hangul syllables — the ranges whose
+            # runs carry no token boundary for unicode61.
+            o = ord(ch)
+            if (0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF
+                    or 0x3040 <= o <= 0x30FF or 0xAC00 <= o <= 0xD7AF):
+                cjk += 1
+    if total == 0:
+        return None
+    return (cjk / total) >= threshold
 
 
 def die(msg, code=1, reason="error"):
@@ -545,6 +616,29 @@ def main():
         die(f"--corpus {corpus} is not a directory")
     if args.overlap >= args.chunk_size:
         die(f"--overlap ({args.overlap}) must be strictly less than --chunk-size ({args.chunk_size})")
+
+    # A CJK corpus landing in a unicode61 index is the skardi-skills#26 shape:
+    # full-text search will answer `success: true` with zero rows for terms
+    # that are plainly in the text, and hybrid search will hide it because the
+    # vector half still works. The index tokenizer is fixed at CREATE TABLE
+    # time, so this cannot be repaired here — say it clearly instead of
+    # ingesting into a search that cannot find the content.
+    tokenizer = fts_tokenizer_of(workspace / "kb.db")
+    if tokenizer == "unicode61" and corpus_is_mostly_cjk(corpus):
+        print(
+            "  warning: this corpus is largely CJK, but kb.db's full-text "
+            "index was built with the unicode61 tokenizer, which cannot "
+            "segment it — search-fulltext will return zero rows for terms "
+            "that ARE in the text, without erroring."
+        )
+        print(
+            "           Vector and hybrid search are unaffected. To make "
+            "full-text work, rebuild the workspace:"
+        )
+        print(
+            "             python3 setup_context.py --workspace "
+            f"{workspace} --force --fts-tokenizer trigram   # plus your original flags"
+        )
 
     progress_path = workspace / "ingest_progress.json"
 

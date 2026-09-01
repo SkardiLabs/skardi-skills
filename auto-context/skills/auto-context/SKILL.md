@@ -294,9 +294,17 @@ Only `search-hybrid` takes both `query` and `text_query` (one feeds the embeddin
 
 **The relevance field is named differently per backend.** `search-vector` returns `distance` on sqlite and `_score` on postgres; `search-hybrid` returns `rrf_score`. Read the field that is actually present instead of assuming one — defaulting a missing key to `0` silently turns every result into a tie, which looks like broken ranking when the ranking is fine.
 
-**`search-fulltext` does not segment CJK — on a Chinese, Japanese or Korean corpus it returns nothing.** Both backends split on non-alphanumeric boundaries, and an unbroken run of Han characters has none, so the whole run becomes a single token: only an exact, full-run query matches. Measured 2026-08-13 on a real workspace — `预跑` and `上下文` each returned **0 rows while present in the corpus**, `Skardi` and `Agent` returned 1 each. Postgres behaves the same way (`to_tsvector` with the default `pg_catalog.english`; the `simple` configuration does not help — it changes stemming, not segmentation).
+**`search-fulltext` on CJK needs the right tokenizer, chosen when the index is built.** FTS5's default (`unicode61`) splits on whitespace and punctuation, and an unbroken run of Han characters has neither — so the run indexes as one giant token and only an exact, full-run query matches. Measured 2026-08-13: `预跑` and `上下文` each returned **0 rows while present in the corpus**, `Skardi` and `Agent` returned 1 each (skardi-skills#26).
 
-The failure is quiet in two ways: the endpoint answers `success: true` with an empty set rather than erroring, and `search-hybrid` keeps returning correct results because the vector half carries the query. **So on a CJK corpus, reach for `search-vector` or `search-hybrid` and treat `search-fulltext` as unavailable** — do not report "no matches" to the user from a bare full-text call.
+**On sqlite, pass `--fts-tokenizer trigram` to `setup_context.py` for a CJK corpus.** It indexes every 3-character window, so CJK terms of 3+ characters match through the index, and `search-fulltext` falls back to a `LIKE` scan for shorter queries instead of silently returning nothing.
+
+**It is a trade-off, not a free upgrade, which is why it is not the default.** trigram turns English word search into substring search — measured: a query for `cat` also matches `concatenate`. So `unicode61` stays the default and English corpora keep exact word search; a CJK corpus opts in.
+
+**The tokenizer is fixed at CREATE TABLE time.** Changing it means rebuilding the workspace (`--force`). `ingest_corpus.py` warns when it is about to feed a largely-CJK corpus into a `unicode61` index, and prints the rebuild command — that warning exists because the failure is otherwise invisible.
+
+**Postgres is unchanged and still returns nothing** for CJK terms (`to_tsvector` with the default `pg_catalog.english`; the `simple` configuration changes stemming, not segmentation). On that backend, reach for `search-vector` or `search-hybrid` and treat `search-fulltext` as unavailable.
+
+Why this survived so long: the endpoint answers `success: true` with an empty set rather than erroring, and `search-hybrid` keeps returning correct results because the vector half carries the query — so the documented default path looks healthy while the full-text half is dead. **On postgres that is still true**: do not report "no matches" to the user from a bare full-text call there.
 
 Fixing it is a real trade-off rather than a one-line default change (`trigram` on sqlite reaches 3-character terms but still misses 2-character ones, costs ~1.8× the index, and turns English word search into substring search; postgres needs an installed segmenter such as `zhparser`). Tracked in [skardi-skills#26](https://github.com/SkardiLabs/skardi-skills/issues/26).
 
