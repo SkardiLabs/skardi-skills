@@ -171,3 +171,58 @@ def test_corpus_language_is_detected(tmp_path):
     empty.mkdir()
     assert ingest_corpus.corpus_is_mostly_cjk(empty) is None
     assert ingest_corpus.corpus_is_mostly_cjk(tmp_path / "missing") is None
+
+
+# --- chunk size vs the embedding model's token cap (skardi-skills#14) -------
+
+def test_chunk_guard_constants_are_below_the_cap():
+    """The suggested ceiling must fit the tightest measured tokenizer.
+
+    bge turned 1200 characters of Chinese into 1202 tokens — 1:1 — so at
+    roughly one token per character the suggestion has to sit under 512, not
+    at it, to leave room for the special tokens the model adds.
+    """
+    assert ingest_corpus.EMBED_TOKEN_CAP == 512
+    assert ingest_corpus.CJK_SAFE_CHUNK_CHARS < ingest_corpus.EMBED_TOKEN_CAP
+    assert ingest_corpus.DEFAULT_OVERLAP < ingest_corpus.CJK_SAFE_CHUNK_CHARS, (
+        "the default overlap must still be usable at the CJK ceiling"
+    )
+
+
+def test_default_chunk_size_would_overflow_cjk():
+    """Pins the bug: the shipped default is unsafe for CJK, which is why the
+    guard exists rather than the default simply being lowered for everyone."""
+    assert ingest_corpus.DEFAULT_CHUNK_SIZE > ingest_corpus.CJK_SAFE_CHUNK_CHARS
+    # ~1 token per character in CJK, so the default is over twice the cap.
+    assert ingest_corpus.DEFAULT_CHUNK_SIZE > 2 * ingest_corpus.EMBED_TOKEN_CAP * 0.9
+
+
+def _guard_fires(chunk_size, corpus_dir):
+    """The guard's condition, kept in one place so the test pins the rule
+    rather than a copy of it."""
+    return (chunk_size > ingest_corpus.CJK_SAFE_CHUNK_CHARS
+            and bool(ingest_corpus.corpus_is_mostly_cjk(corpus_dir)))
+
+
+def test_guard_fires_only_for_oversized_cjk(tmp_path):
+    cjk = tmp_path / "cjk"
+    cjk.mkdir()
+    (cjk / "a.md").write_text("预跑一遍再定 schema，上下文这块用 Agent 来做检索。" * 10,
+                              encoding="utf-8")
+    en = tmp_path / "en"
+    en.mkdir()
+    (en / "a.md").write_text("the cat sat on the mat and nothing else happened. " * 20,
+                             encoding="utf-8")
+
+    assert _guard_fires(1200, cjk) is True, "CJK at the default must be refused"
+    assert _guard_fires(500, cjk) is False, "CJK within the ceiling must pass"
+    assert _guard_fires(1200, en) is False, "Latin script is unaffected"
+    assert _guard_fires(4000, en) is False, "still unaffected at any size"
+
+
+def test_guard_stays_silent_when_the_corpus_cannot_be_sampled(tmp_path):
+    """An empty or missing corpus is not evidence of anything."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _guard_fires(1200, empty) is False
+    assert _guard_fires(1200, tmp_path / "missing") is False

@@ -42,6 +42,25 @@ from _platform import require_supported_platform
 
 DEFAULT_INCLUDE = "*.md,*.markdown,*.txt,*.rst"
 DEFAULT_CHUNK_SIZE = 1200
+
+# --chunk-size counts CHARACTERS; embedding models cap on TOKENS. The ratio
+# between them is language- and model-dependent, which is why one default
+# cannot be safe for both: the BERT-family models this skill defaults to
+# (bge / e5 / DistilBERT) cap at 512 tokens, and candle does not truncate —
+# an over-cap chunk fails the INSERT outright rather than degrading.
+#
+# For Latin script ~4 characters make a token, so 1200 characters is roughly
+# 300 tokens: safe. In CJK the model vocabularies are per-character, so the
+# ratio is close to 1:1 and 1200 characters is ~1200 tokens — over twice the
+# cap, on every chunk. Measured 2026-08-25 from the tokenizers themselves
+# (skardi-skills#14): bge-small-en-v1.5 and bge-small-zh-v1.5 both turned
+# 1200 characters of Chinese prose into 1202 tokens (max 510 chars under the
+# cap); multilingual-e5-large managed 1.36 chars/token (max 699).
+EMBED_TOKEN_CAP = 512
+# The lowest of the measured limits, so the guard is safe for whichever of
+# those models is in use rather than only for the roomiest one.
+CJK_SAFE_CHUNK_CHARS = 500
+
 DEFAULT_OVERLAP = 200
 
 # Largest JSON request body skardi-server will accept. Measured against a
@@ -616,6 +635,29 @@ def main():
         die(f"--corpus {corpus} is not a directory")
     if args.overlap >= args.chunk_size:
         die(f"--overlap ({args.overlap}) must be strictly less than --chunk-size ({args.chunk_size})")
+
+    # --chunk-size is in characters, the model caps on tokens, and in CJK the
+    # two are nearly 1:1 — so the default that is comfortable for English is
+    # over twice the cap here, on every chunk. candle does not truncate, so
+    # this is not a quality question: the INSERT fails with `index-select
+    # invalid index 512 with dim size 512`, an error that says nothing about
+    # chunk size. Refuse before the first request rather than after the user
+    # has waited through a model download and a partial ingest.
+    if args.chunk_size > CJK_SAFE_CHUNK_CHARS and corpus_is_mostly_cjk(corpus):
+        die(
+            f"--chunk-size {args.chunk_size} is measured in characters, but "
+            f"the embedding model caps at {EMBED_TOKEN_CAP} tokens — and in "
+            f"Chinese, Japanese and Korean text roughly one character is one "
+            f"token, so every chunk would exceed the cap and fail at INSERT.\n"
+            f"  This corpus is largely CJK. Use --chunk-size "
+            f"{CJK_SAFE_CHUNK_CHARS} or less (measured 2026-08-25: 510 chars "
+            f"for the bge family, 699 for multilingual-e5-large; "
+            f"skardi-skills#14).\n"
+            f"  --overlap should stay well below that — the default "
+            f"{DEFAULT_OVERLAP} is fine at 500.\n"
+            f"  Latin-script corpora are unaffected and keep the "
+            f"{DEFAULT_CHUNK_SIZE} default."
+        )
 
     # A CJK corpus landing in a unicode61 index is the skardi-skills#26 shape:
     # full-text search will answer `success: true` with zero rows for terms
