@@ -242,10 +242,21 @@ def resolve_candle_model(cli_path, workspace, declared_dim):
     return str(p)
 
 
-# Where a HuggingFace config.json records the embedding width, in the order we
-# trust them. BERT-family models (bge, e5, MiniLM, Jina) use hidden_size; the
-# others appear on encoder architectures candle also loads.
-DIM_KEYS = ("hidden_size", "d_model", "hidden_dim", "n_embd")
+# Where a config.json records the embedding width, for the three architectures
+# the server's candle backend actually loads (bert, distilbert, jina_bert — see
+# crates/skardi/src/model/candle/embed.rs). BERT and Jina-BERT use hidden_size;
+# DistilBERT uses `dim`.
+#
+# `hidden_dim` is deliberately NOT here: DistilBERT has that key too, and it is
+# the feed-forward intermediate width (3072 on a 768-wide model), not the output
+# dimension. Reading it would refuse a correct setup and name a number nothing
+# should ever be set to.
+#
+# Nothing wider is listed on purpose. The candle path pools the last hidden
+# state and optionally L2-normalises it — there is no projection head — so
+# output width IS the hidden width, and that equivalence only holds for the
+# architectures above.
+DIM_KEYS = ("hidden_size", "dim")
 
 
 def check_candle_dim(model_dir, declared_dim):

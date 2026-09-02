@@ -64,18 +64,42 @@ def test_the_measured_trap_refuses():
     assert _refuses(en, 384) == 0, "the English model at its own dim must pass"
 
 
-def test_alternative_dim_keys_are_read():
-    for key in ("d_model", "hidden_dim", "n_embd"):
-        d = _model(json.dumps({key: 768}))
-        assert _refuses(d, 768) == 0, f"{key}=768 vs 768 must pass"
-        assert _refuses(d, 384) != 0, f"{key}=768 vs 384 must refuse"
+def test_distilbert_is_judged_on_dim_not_hidden_dim():
+    """The regression this list was rewritten for.
+
+    DistilBERT's config carries BOTH keys and they mean different things:
+    `dim` is the output width, `hidden_dim` is the feed-forward intermediate
+    (3072 on a 768-wide model). An earlier version of DIM_KEYS listed
+    hidden_dim and not dim, so a correct `--embedding-dim 768` was refused
+    with an instruction to use 3072 — a number nothing should ever be set to.
+
+    Field names read from candle-transformers 0.8.4,
+    models/distilbert.rs::Config.
+    """
+    d = _model(json.dumps({
+        "model_type": "distilbert", "vocab_size": 30522,
+        "dim": 768, "hidden_dim": 3072, "n_layers": 6, "n_heads": 12,
+    }))
+    assert _refuses(d, 768) == 0, "the real output width must pass"
+    assert _refuses(d, 3072) != 0, "the feed-forward width must not be accepted"
+    assert _refuses(d, 384) != 0, "a genuinely wrong width must still refuse"
 
 
-def test_hidden_size_wins_over_later_keys():
-    """A config carrying both must be judged on hidden_size."""
-    d = _model(json.dumps({"hidden_size": 512, "d_model": 384}))
+def test_hidden_size_wins_over_dim():
+    """A config carrying both is judged on hidden_size, which is the key the
+    bert and jina_bert loaders read."""
+    d = _model(json.dumps({"hidden_size": 512, "dim": 384}))
     assert _refuses(d, 512) == 0, "hidden_size is the first key we trust"
-    assert _refuses(d, 384) != 0, "d_model must not override hidden_size"
+    assert _refuses(d, 384) != 0, "dim must not override hidden_size"
+
+
+def test_keys_we_do_not_read_are_ignored():
+    """Only the two keys the supported architectures use are read. A config
+    whose width lives under some other name is left unverified rather than
+    judged on a key we cannot vouch for."""
+    for key in ("d_model", "n_embd", "hidden_dim"):
+        d = _model(json.dumps({key: 3072}))
+        assert _refuses(d, 768) == 0, f"{key} alone must not refuse"
 
 
 def test_unrecognised_config_does_not_refuse():
