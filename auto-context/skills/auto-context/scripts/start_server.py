@@ -11,7 +11,7 @@ environment for the agent the RAG service will sit behind:
 
   --runtime docker
       Run via `docker run` against the official RAG image
-      (ghcr.io/skardilabs/skardi/skardi-server-rag:0.5.0, --features rag —
+      (ghcr.io/skardilabs/skardi/skardi-server-full:X.Y.Z, --features rag —
       bundles chunk() + the embedding UDFs). Right for shipping RAG to
       teammates without asking them to compile Skardi, and for keeping the
       server isolated from the host's Python / OpenSSL / libsqlite versions.
@@ -49,11 +49,11 @@ from setup_context import sqlite_vec_extension_present
 
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
-# skardi-server-rag bundles chunk + embedding via --features rag. Pin the
-# released tag (:0.5.0), not :latest — :latest moves under you.
+# skardi-server-full bundles chunk + embedding via --features rag. Pin the
+# released tag (:X.Y.Z), not :latest — :latest moves under you.
 # Older skardi-server-embedding images do NOT register chunk() and break
 # ingest-chunked / search-{vector,hybrid} (which now embed inline server-side).
-DEFAULT_DOCKER_IMAGE = "ghcr.io/skardilabs/skardi/skardi-server-rag:0.5.0"
+DEFAULT_DOCKER_IMAGE = "ghcr.io/skardilabs/skardi/skardi-server-full:X.Y.Z"
 DEFAULT_K8S_NAMESPACE = "skardi-rag"
 
 
@@ -545,7 +545,7 @@ def docker_command(workspace, port, breadcrumb, image, container_name):
     #
     #   * ctx.yaml tells the server to load sqlite-vec from the path in
     #     SQLITE_VEC_PATH, so the extension has to exist inside the container.
-    #   * `ghcr.io/skardilabs/skardi/skardi-server-rag:0.5.0` does not ship
+    #   * `ghcr.io/skardilabs/skardi/skardi-server-full:X.Y.Z` does not ship
     #     it — `find / -name 'vec0*'` in the image returns nothing.
     #   * Mounting the host's copy does not help: sqlite-vec is a native
     #     library, and a macOS `vec0.dylib` cannot be loaded by the Linux
@@ -557,7 +557,7 @@ def docker_command(workspace, port, breadcrumb, image, container_name):
         die(
             "--backend sqlite is not supported with --runtime docker.\n"
             "  The container would need a Linux build of the sqlite-vec\n"
-            "  extension; the skardi-server-rag image does not ship one, and\n"
+            "  extension; the skardi-server-full image does not ship one, and\n"
             "  the host's copy is the wrong platform to mount in.\n"
             "  Options:\n"
             "    * use --runtime local-process (the default) for the local\n"
@@ -645,7 +645,7 @@ def container_gone(container_name):
 
 def start_docker(workspace, port, breadcrumb, image, container_name,
                  health_timeout, report):
-    """Run the official skardi-server-rag image (chunk + embedding bundled)
+    """Run the official skardi-server-full image (chunk + embedding bundled)
     with the workspace mounted at the same absolute path so the rendered
     candle/gguf model paths in the pipelines resolve unchanged. Postgres
     credentials and any embedding API keys are forwarded as env vars."""
@@ -673,7 +673,7 @@ def start_docker(workspace, port, breadcrumb, image, container_name,
             )
 
     # Note this row absorbs the image pull on a cold host: `docker run` returns
-    # once the container is created, but a first-time pull of skardi-server-rag
+    # once the container is created, but a first-time pull of skardi-server-full
     # happens inside that call, so a slow "container start" row usually means
     # the network, not the server.
     with report.step(f"Waiting for /health (up to {health_timeout}s)",

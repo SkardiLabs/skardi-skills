@@ -19,7 +19,7 @@ Flow:
      ../assets/<backend>/ templates. Embedding happens server-side inside
      the rendered pipelines (chunk → embed → write in one INSERT for
      ingest-chunked; embed inline for search-{vector,hybrid}), so this
-     needs the skardi-server-rag image or a server built --features rag.
+     needs the skardi-server-full image or a server built --features rag.
   3. On sqlite only: create the .db and its schema.
 
 This script never invokes the `skardi` CLI. Two reasons, both structural:
@@ -449,7 +449,7 @@ def main():
         help=(
             "Which Skardi UDF to use for embedding. The Skardi server must "
             "be built with the matching feature flag — most users want the "
-            "skardi-server-rag image (which bundles --features rag = "
+            "skardi-server-full image (which bundles --features rag = "
             "chunking + embedding) plus an additional --features for the "
             "specific UDF if it's not already in the rag bundle."
         ),
@@ -662,7 +662,7 @@ def main():
     print("=" * 72)
     print("Workspace ready. Next steps:")
     print()
-    print(f"  # 1. Start the server (use skardi-server-rag image — bundles chunk + embedding):")
+    print(f"  # 1. Start the server (use skardi-server-full image — bundles chunk + embedding):")
     print(f"  python {SKILL_DIR}/scripts/start_server.py --workspace {workspace} --port 8080")
     print()
     print(f"  # 2. Ingest the corpus end-to-end (server chunks + embeds inline):")

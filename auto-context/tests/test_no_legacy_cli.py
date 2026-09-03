@@ -40,8 +40,10 @@ BANNED = [
      "not a v0.5.0 subcommand (query/run/pipeline/job/schema/health)"),
     (r"--branch\s+main",
      "pin a released tag instead; main carries unreleased changes"),
-    (r"skardi-server-rag:latest",
-     "pin :0.5.0; :latest moves under the user"),
+    (r"skardi-server-full:latest",
+     "pin the released tag; :latest moves under the user"),
+    (r"skardi-server-rag",
+     "renamed to skardi-server-full when the image split landed"),
     (r"auto_knowledge_base skill",
      "the current skill is auto_context"),
 ]
