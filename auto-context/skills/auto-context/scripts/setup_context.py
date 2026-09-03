@@ -41,6 +41,7 @@ ingest_corpus.py / start_server.py know what the pipelines target without
 re-parsing the YAML.
 """
 import argparse
+import json
 import os
 import sqlite3
 import subprocess
@@ -257,7 +258,7 @@ END;
     print(f"  created {db_path} with documents/documents_fts/documents_vec (dim={dim})")
 
 
-def resolve_candle_model(cli_path, workspace):
+def resolve_candle_model(cli_path, workspace, declared_dim):
     if not cli_path:
         die(
             "--embedding-udf candle requires --model-path. The skill does "
@@ -276,8 +277,75 @@ def resolve_candle_model(cli_path, workspace):
             f"A candle-compatible HuggingFace model needs all three of "
             f"model.safetensors, config.json, tokenizer.json."
         )
+    check_candle_dim(p, declared_dim)
     print(f"  candle model: {p}")
     return str(p)
+
+
+# Where a config.json records the embedding width, for the three architectures
+# the server's candle backend actually loads (bert, distilbert, jina_bert — see
+# crates/skardi/src/model/candle/embed.rs). BERT and Jina-BERT use hidden_size;
+# DistilBERT uses `dim`.
+#
+# `hidden_dim` is deliberately NOT here: DistilBERT has that key too, and it is
+# the feed-forward intermediate width (3072 on a 768-wide model), not the output
+# dimension. Reading it would refuse a correct setup and name a number nothing
+# should ever be set to.
+#
+# Nothing wider is listed on purpose. The candle path pools the last hidden
+# state and optionally L2-normalises it — there is no projection head — so
+# output width IS the hidden width, and that equivalence only holds for the
+# architectures above.
+DIM_KEYS = ("hidden_size", "dim")
+
+
+def check_candle_dim(model_dir, declared_dim):
+    """Refuse a --embedding-dim the model itself contradicts.
+
+    The number is hand-typed, and getting it wrong is not caught anywhere
+    downstream: setup succeeds, the server starts, all five pipelines
+    register, and then EVERY document fails at INSERT with a dimension
+    mismatch from sqlite-vec. Measured 2026-09-02 on a 111-document corpus:
+    111/111 failed after 86s, and the error names the two numbers without
+    saying which one is the model's.
+
+    The trap is easy to walk into because same-named models differ:
+    bge-small-en-v1.5 is 384, bge-small-zh-v1.5 is 512. Anyone reading the
+    English row of SKILL.md's model table and reaching for the Chinese
+    sibling gets it wrong.
+
+    The real width sits in the model's own config.json, so this reads it and
+    compares. An unreadable or unrecognised config is NOT an error — the
+    check exists to catch a wrong number, not to reject models whose config
+    is shaped differently from the ones we know.
+    """
+    cfg_path = model_dir / "config.json"
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"  note: could not read {cfg_path} to verify the dimension ({e})")
+        return
+    if not isinstance(cfg, dict):
+        return
+    for key in DIM_KEYS:
+        actual = cfg.get(key)
+        if isinstance(actual, int) and actual > 0:
+            break
+    else:
+        print(f"  note: {cfg_path} records no {' / '.join(DIM_KEYS)}; "
+              f"--embedding-dim {declared_dim} left unverified")
+        return
+    if actual != declared_dim:
+        die(
+            f"--embedding-dim {declared_dim} does not match this model: "
+            f"{cfg_path.name} records {key}={actual}.\n"
+            f"  Re-run with --embedding-dim {actual}.\n"
+            f"  Left unchecked this passes setup and then fails EVERY "
+            f"document at ingest with a sqlite-vec dimension mismatch.\n"
+            f"  Same-named models differ: bge-small-en-v1.5 is 384, "
+            f"bge-small-zh-v1.5 is 512."
+        )
+    print(f"  dimension verified against {cfg_path.name}: {key}={actual}")
 
 
 def resolve_gguf_model(cli_path):
@@ -590,7 +658,7 @@ def main():
 
     with report.step("Resolving embedding UDF + model", "embedding model"):
         if args.embedding_udf == "candle":
-            model_path = resolve_candle_model(args.model_path, workspace)
+            model_path = resolve_candle_model(args.model_path, workspace, args.embedding_dim)
         elif args.embedding_udf == "gguf":
             model_path = resolve_gguf_model(args.model_path)
         else:
