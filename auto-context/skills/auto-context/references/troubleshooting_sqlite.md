@@ -166,9 +166,18 @@ db.execute("select count(*) from t where t match '预跑机制指的是重复查
 
 Postgres has the same shape via `to_tsvector` with the default `pg_catalog.english`; the `simple` configuration does not help, because it changes stemming and stop words rather than segmentation.
 
-**What to do now:** on a CJK corpus use `search-vector` or `search-hybrid` and treat `search-fulltext` as unavailable. Hybrid keeps working — the vector half carries the query — which is also why this is easy to miss: a bare full-text call answers `success: true` with an empty set instead of an error.
+**What to do:** rebuild the workspace with the trigram tokenizer.
 
-`tokenize='trigram'` is the closest sqlite-only workaround, but it is a trade-off rather than a fix: it reaches 3-character terms, still misses 2-character ones (`预跑`, `查询`), roughly doubles the index, and turns English word search into substring search (`cat` starts matching `concatenate`). Discussion and measurements in [skardi-skills#26](https://github.com/SkardiLabs/skardi-skills/issues/26).
+```bash
+python3 setup_context.py --workspace <ws> --force --fts-tokenizer trigram   # plus your original flags
+python3 ingest_corpus.py --workspace <ws> --corpus <dir>
+```
+
+trigram indexes every 3-character window, so a 3+ character CJK term matches through the index; `search-fulltext` falls back to a `LIKE` scan below that width, so `预跑` and `查询` are found too rather than returning nothing.
+
+**Why this is opt-in rather than the default:** trigram turns English word search into substring search — measured, a query for `cat` also matches `concatenate` — and it enlarges the index. An English corpus is better served by `unicode61`, so the tokenizer is chosen per corpus. `ingest_corpus.py` warns when a largely-CJK corpus is about to be fed into a `unicode61` index, since that failure is otherwise silent.
+
+**Postgres has the same shape and no equivalent fix here** (`to_tsvector` with `pg_catalog.english`; `simple` changes stemming, not segmentation). There, use `search-vector` or `search-hybrid`. Discussion and measurements in [skardi-skills#26](https://github.com/SkardiLabs/skardi-skills/issues/26).
 
 ## `chunk: 'overlap' (N) must be strictly less than 'size' (M)`
 

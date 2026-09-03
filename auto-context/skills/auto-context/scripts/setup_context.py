@@ -136,7 +136,33 @@ def resolve_sqlite_vec():
     return path
 
 
-def create_sqlite_db(db_path, dim, sqlite_vec_path, force=False):
+def fts_tokenizer_of(db_path):
+    """Which tokenizer an existing documents_fts was built with, or None.
+
+    None means the question does not apply — no file, no FTS table, or an
+    unreadable file. Callers stay silent then, rather than describing a
+    database they could not inspect.
+    """
+    if not db_path.exists():
+        return None
+    try:
+        db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = db.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='documents_fts'"
+            ).fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return None
+    if not row or not row[0]:
+        return None
+    return "trigram" if "trigram" in row[0].lower() else "unicode61"
+
+
+def create_sqlite_db(db_path, dim, sqlite_vec_path, force=False,
+                     fts_tokenizer="unicode61"):
     """Create the local knowledge-base schema this skill owns.
 
     Only ever runs on the sqlite backend, against a .db inside the workspace
@@ -149,9 +175,11 @@ def create_sqlite_db(db_path, dim, sqlite_vec_path, force=False):
     """
     if db_path.exists():
         if not force:
+            tok = fts_tokenizer_of(db_path)
+            hint = f" Its full-text index uses the {tok} tokenizer." if tok else ""
             die(
                 f"{db_path} already exists. Re-run with --force to recreate "
-                f"(this drops every row and re-applies the schema)."
+                f"(this drops every row and re-applies the schema).{hint}"
             )
         db_path.unlink()
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -165,9 +193,21 @@ CREATE TABLE documents (
     embedding  BLOB NOT NULL
 );
 
+-- The tokenizer is a corpus-language trade-off, fixed at CREATE TABLE time.
+--   unicode61 (FTS5's default): splits on whitespace and punctuation, so
+--     English word search is exact — but a run of Han characters contains
+--     neither, indexes as one giant token, and MATCH finds nothing while
+--     still reporting success.
+--   trigram: indexes every 3-character window, which makes CJK searchable —
+--     but English word search becomes substring search (measured: a query
+--     for 'cat' also matches 'concatenate'), and queries below the 3-char
+--     window can never match at all (search-fulltext falls back to LIKE
+--     for those).
+-- Neither is right for both, so --fts-tokenizer picks by corpus.
 CREATE VIRTUAL TABLE documents_fts USING fts5(
     id UNINDEXED, source UNINDEXED, chunk_idx UNINDEXED,
-    content
+    content,
+    tokenize='{fts_tokenizer}'
 );
 
 CREATE VIRTUAL TABLE documents_vec USING vec0(
@@ -451,6 +491,21 @@ def main():
         ),
     )
     ap.add_argument(
+        "--fts-tokenizer",
+        choices=["unicode61", "trigram"],
+        default="unicode61",
+        help=(
+            "sqlite only: how documents_fts splits text. unicode61 (default) "
+            "is word-accurate for English but finds NOTHING in Chinese, "
+            "Japanese or Korean text; trigram makes CJK searchable at the "
+            "cost of turning English word search into substring search (a "
+            "query for 'cat' starts matching 'concatenate'). Pass trigram for "
+            "a CJK corpus. Fixed at CREATE TABLE time, so changing it later "
+            "needs --force; ingest_corpus.py warns when the corpus and the "
+            "index disagree."
+        ),
+    )
+    ap.add_argument(
         "--force",
         action="store_true",
         help=(
@@ -504,10 +559,12 @@ def main():
             # match the schema already in the file. create_sqlite_db repeats
             # the check as a safety net.
             if db_path.exists() and not args.force:
+                tok = fts_tokenizer_of(db_path)
+                hint = f" Its full-text index uses the {tok} tokenizer." if tok else ""
                 die(
                     f"{db_path} already exists. Re-run with --force to recreate "
                     f"(this drops every ingested row and re-applies the schema). "
-                    f"Nothing was changed."
+                    f"Nothing was changed.{hint}"
                 )
             for flag, value in (("--connection-string", args.connection_string),
                                 ("--table", args.table)):
@@ -581,7 +638,8 @@ def main():
         with report.step("Creating the local knowledge-base schema",
                          "kb.db + ext-load"):
             create_sqlite_db(db_path, args.embedding_dim, sqlite_vec_path,
-                             force=args.force)
+                             force=args.force,
+                             fts_tokenizer=args.fts_tokenizer)
         print(f"  export SQLITE_VEC_PATH={sqlite_vec_path}")
         print("  (the server loads sqlite-vec from that path. The path is also "
               "recorded in")
