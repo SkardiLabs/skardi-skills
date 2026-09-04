@@ -80,6 +80,14 @@ Two causes, in this order:
 2. **The arrow points the wrong way.** Try the opposite direction before
    concluding there is no connection.
 
+### `could not find rte for <name>` (SQL state 42703)
+
+`ORDER BY` naming a `RETURN` alias. AGE resolves the sort key against the
+match, not against the projection, so an alias that is visibly present in the
+`RETURN` clause is still undefined to the sort. Order by the expression the
+alias came from (`ORDER BY s.name`), or by the aggregate itself
+(`ORDER BY count(*) DESC`).
+
 ### `cypher_query` errors on arity
 
 The number of `columns` entries does not equal the number of `RETURN`

@@ -30,7 +30,7 @@ skardi query --table -e "SELECT * FROM cypher_query('kg',
   'MATCH (a)-[r]->(b)
    RETURN labels(a)[0] AS from_label, type(r) AS rel, labels(b)[0] AS to_label,
           count(*) AS n
-   ORDER BY n DESC LIMIT 40',
+   ORDER BY count(*) DESC LIMIT 40',
   '{}',
   '{\"from_label\": \"string\", \"rel\": \"string\", \"to_label\": \"string\", \"n\": \"int\"}')"
 ```
@@ -48,7 +48,7 @@ documents reference these entities".
 skardi query --table -e "SELECT * FROM cypher_query('kg',
   'MATCH (s:Function)<-[:CALLS]-(caller) WHERE s.name IN \$seeds
    RETURN s.name AS seed, caller.name AS caller, labels(caller)[0] AS kind
-   ORDER BY seed, caller
+   ORDER BY s.name, caller.name
    LIMIT 200',
   '{\"seeds\": [\"authenticate\", \"verify_token\"]}',
   '{\"seed\": \"string\", \"caller\": \"string\", \"kind\": \"string\"}')"
@@ -61,6 +61,12 @@ Two things to get right:
   These answer opposite questions and both return confident, plausible rows.
 - **`ORDER BY` before `LIMIT`.** Without it the 200 rows are an arbitrary
   slice, which reads as an answer and is not one.
+- **`ORDER BY` takes the EXPRESSION, not the `RETURN` alias.** `ORDER BY
+  seed, caller` fails on AGE with `could not find rte for seed` (SQL state
+  42703) even though `seed` is right there in the `RETURN`. Sort by what the
+  alias was computed from — `ORDER BY s.name, caller.name` — and for an
+  aggregate by the aggregate itself, `ORDER BY count(*) DESC`. Measured; the
+  alias form looks correct and is rejected.
 
 When you need "the most connected" neighbours rather than an alphabetical
 slice, sort on degree computed inside the Cypher:
@@ -82,7 +88,7 @@ truncate a count.
 skardi query --table -e "SELECT * FROM cypher_query('kg',
   'MATCH (s:Function)-[r:CALLS]->(n) WHERE s.name IN \$seeds
    RETURN type(r) AS rel, labels(n)[0] AS kind, count(*) AS n
-   ORDER BY n DESC LIMIT 50',
+   ORDER BY count(*) DESC LIMIT 50',
   '{\"seeds\": [\"authenticate\"]}',
   '{\"rel\": \"string\", \"kind\": \"string\", \"n\": \"int\"}')"
 ```
@@ -127,7 +133,7 @@ skardi query --table -e "SELECT * FROM cypher_query('kg',
   'MATCH (s:Function)<-[:CALLS*1..3]-(dep) WHERE s.name IN \$seeds
    WITH DISTINCT dep
    RETURN labels(dep)[0] AS kind, count(*) AS n
-   ORDER BY n DESC LIMIT 20',
+   ORDER BY count(*) DESC LIMIT 20',
   '{\"seeds\": [\"verify_token\"]}',
   '{\"kind\": \"string\", \"n\": \"int\"}')"
 ```
@@ -177,3 +183,16 @@ Two same-typed columns declared out of order swap silently — no error,
 no type mismatch, and nothing downstream can detect it. The count must match
 too: AGE requires declared arity, so a mismatch is a targeted error rather
 than a silent one (the one failure here that does announce itself).
+
+**A map- or list-valued projection needs type `json`.** `properties(n)`,
+`keys(r)`, `labels(n)` and `collect(...)` all return a JSON container, and
+declaring them `string` / `map` / `object` / `any` fails with an opaque
+`query_execution_error` (HTTP 500) rather than a type error. Two separate
+test runs hit this independently while trying to inspect a node's properties,
+which is the first thing you do on an unfamiliar graph — so it is worth
+knowing before you need it:
+
+```
+RETURN keys(r) AS k        →  '{"k": "json"}'
+RETURN properties(n) AS p  →  '{"p": "json"}'
+```

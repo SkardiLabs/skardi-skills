@@ -65,7 +65,7 @@ connect which labels, and how many), ask the graph:
 
 ```bash
 skardi query --table -e "SELECT * FROM cypher_query('kg',
-  'MATCH ()-[r]->() RETURN type(r) AS t, count(*) AS n ORDER BY n DESC',
+  'MATCH ()-[r]->() RETURN type(r) AS t, count(*) AS n ORDER BY count(*) DESC',
   '{}', '{\"t\": \"string\", \"n\": \"int\"}')"
 ```
 
@@ -125,10 +125,21 @@ Whichever surface exists:
 # A search pipeline, when one is declared read-only (see the note below)
 skardi run search-hybrid -p 'query=auth middleware' -p limit=8
 
-# Or a retrieval table function, inline
-skardi query --table -e "SELECT id, title, _score FROM pg_fts('docs', 'body',
-  'auth middleware', 10)"
+# Or a retrieval table function, inline. The arity is
+# (table, COLUMN, query, k) — the text column is the argument most easily
+# dropped, and dropping it fails as an opaque HTTP 500 rather than an arity
+# error, which reads as "this surface is broken". It is not; count the
+# arguments before concluding anything.
+skardi query --table -e "SELECT id, title FROM sqlite_fts('docs.main.docs_fts',
+  'body', 'auth middleware', 10)"
 ```
+
+The `*_fts` / `*_knn` families all take the column: `pg_fts(table, column,
+query, k)`, `sqlite_fts(table, column, query, k)`, `pg_knn(table, column,
+vector, metric, k)`. If a call 500s, re-read the signature before deciding
+the deployment has no search surface — a missing search surface and a
+mis-called one look identical from the error, and only one of them is worth
+telling the user about.
 
 Take a **small** seed set — 5 to 20. Seeds multiply through the expansion, so
 this number is a cost knob, not a quality knob; a 200-seed expansion mostly
@@ -166,7 +177,7 @@ connection questions:
 skardi query --table -e "SELECT * FROM cypher_query('kg',
   'MATCH (s:Function)<-[:CALLS]-(caller) WHERE s.name IN \$seeds
    RETURN s.name AS seed, caller.name AS caller, labels(caller)[0] AS kind
-   ORDER BY seed, caller LIMIT 200',
+   ORDER BY s.name, caller.name LIMIT 200',
   '{\"seeds\": [\"authenticate\", \"verify_token\"]}',
   '{\"seed\": \"string\", \"caller\": \"string\", \"kind\": \"string\"}')"
 ```
@@ -201,6 +212,43 @@ coercion. A column of NULLs after a successful query is almost always this.
 view from SQL still materializes the view's whole result first, so an
 unbounded view fails `RowCapExceeded` even for a query that wants one row.
 The bound belongs **inside** the Cypher.
+
+**Look at what the EDGES carry before you trust an expansion.** This is the
+trap that produced the worst answer in this skill's own testing, and it is
+invisible from the vocabulary: a relationship type tells you nothing about
+how confidently each of its edges was derived. Ask:
+
+```bash
+skardi query --table -e "SELECT * FROM cypher_query('kg',
+  'MATCH ()-[r:CALLS]->() RETURN keys(r) AS k LIMIT 1', '{}', '{\"k\": \"json\"}')"
+```
+
+On a code graph built by static analysis this returned `["line",
+"resolution"]`, and grouping by that property gave:
+
+```
+ambiguous    467467      <- matched on a bare name only
+unique_name  103669
+same_scope    62145
+import         25565
+```
+
+**71% of the edges were guesses.** An unfiltered `<-[:CALLS]-` expansion over
+them reports a blast radius that is mostly noise — and reports it
+confidently, with real-looking function names. Filtering to the
+confidently-resolved edges collapsed one measured example from 81 functions
+across 45 files to a handful in a single file.
+
+So: check the edge properties once per session, and if the graph records a
+confidence, provenance or resolution field, **filter on it and say which
+subset you used**. `WHERE r.resolution <> 'ambiguous'` turns a plausible
+answer into a defensible one. If you deliberately include the low-confidence
+edges — a blast radius is a place where a false positive is cheaper than a
+miss — then report the split rather than the total: "14 provable, 46 more via
+name-only matches" is honest, "46 callers" is not.
+
+Every relationship type in that graph carried the same field, so do not
+assume it is one edge type's quirk.
 
 **Label the seed match, and keep the traversal in ONE `MATCH`.** This is not
 a style preference — it is the difference between an answer and a query that
