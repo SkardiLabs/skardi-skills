@@ -1,0 +1,10 @@
+{
+  "name": "graph-rag",
+  "version": "0.1.0",
+  "description": "Answer a natural-language question that needs BOTH semantic retrieval and graph traversal through a running skardi-server: find the entities the question is about, expand from those seeds with cypher_query to collect the relationships that answer it, then synthesize with both halves cited. Encodes why this is two hops and not one query (cypher/columns are plan-time literals), the seeds-go-in-params rule, and the bounds a dense graph demands.",
+  "author": { "name": "Skardi Labs" },
+  "homepage": "https://github.com/SkardiLabs/skardi-skills",
+  "repository": "https://github.com/SkardiLabs/skardi-skills",
+  "license": "Apache-2.0",
+  "keywords": ["skardi", "graph-rag", "graphrag", "knowledge-graph", "cypher", "age", "multi-hop", "retrieval", "read-only"]
+}

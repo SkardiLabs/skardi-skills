@@ -11,6 +11,7 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 | `auto-context/` | `auto-context` | Turn a folder of documents, a table you already have, or documents still inside a service into governed, searchable context an agent can query. Hybrid search (vector + full-text + RRF) served over HTTP by `skardi-server`. Three raw-material entries, one flow: a folder; an existing table (SQLite read directly and read-only, any other datastore piped in as NDJSON); or fetch-and-land — list, fetch each body, reconcile, ingest — where your agent writes the per-source fetch code and the skill fixes the process and its acceptance criteria. Storage is a separate choice: defaults to a local SQLite file the skill creates and owns (FTS5 + sqlite-vec `vec0` mirrors kept in sync by triggers); point it at Postgres+pgvector, MongoDB, or Lance when the index should live in a database you already own. Handles prereq checks, model resolution, chunking and embedding inline in SQL, ingest, and retrieval end-to-end across `candle` / `gguf` / `remote_embed`. Never creates schema in a datastore you own — prints the SQL and waits — and never writes to a table given as raw material. |
 | `retrieval/` | `retrieval` | Answer questions from live data through a running `skardi-server` with the `skardi` CLI. Discovers sources, named pipelines, and the table schemas the deployment exposes, runs the question through any semantic search surface first (`search-hybrid` and friends), then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached. Consumes whatever the server already has — it builds no index, writes no data, and starts no servers. |
 | `graph-source/` | `graph-source` | Connect a property graph (a knowledge graph, a GraphRAG corpus — Apache AGE / openCypher) to Skardi and query it through SQL, end to end: provision AGE with a least-privilege reader role, declare the `type: graph` source and its views in context YAML, triage registration health (healthy / degraded / refused, and what recovery does and does not answer), write correct queries (`cypher_query`, `graph_schema`, the JSON getters), and wire Cypher parameters into pipelines. Encodes the traps that bite in production: positional `columns` binding (same-typed columns declared out of RETURN order swap silently), no predicate pushdown into view Cypher (the bound lives in the view, `RowCapExceeded` otherwise), wrong-getter silently-NULL columns, the deliberately-absent `->`/`->>` operators, lowercase-only view names, and the one working `{params}` pipeline spelling. Read-only by backend enforcement; AGE is the shipped backend (Neo4j/Kuzu are later Skardi milestones). |
+| `graph-rag/` | `graph-rag` | Answer a natural-language question whose answer lives in **relationships**, over a server that has both a graph source and a retrieval surface. Seeds the question (semantic search when it is vague, a property lookup when it names the entity), verifies the seeds resolve in the graph, expands from them with `cypher_query`, and reports with both hops and their bounds attached. Encodes the mechanical reason this is **two hops and not one query** — `connection`/`cypher`/`columns` are plan-time literals, so no single statement can join a retrieval result into a traversal, and the agent is what bridges them — plus the rules that follow: seeds travel in `params` (never concatenated into the Cypher, which is untrusted-input injection), and a dense graph demands three bounds at once (small seed set, `LIMIT` inside the Cypher, a named relationship type). Complements `graph-source`, which connects the graph, and `retrieval`, which answers row questions. |
 
 > **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
 
@@ -25,6 +26,7 @@ From inside any Claude Code session:
 /plugin install auto-context@skardi-skills
 /plugin install retrieval@skardi-skills
 /plugin install graph-source@skardi-skills
+/plugin install graph-rag@skardi-skills
 ```
 
 That's it — the skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
@@ -135,6 +137,16 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 | `references/pipeline_patterns.md` | The exact SQL the skill generates, with commentary on RRF, the DataFusion INSERT-VALUES quirk, and how to extend the pipelines (metadata filters, updates, deletes) |
 | `references/troubleshooting.md` | Symptom → fix for server and own-datastore failures (missing role, missing extension, dim mismatch, tsquery syntax, Docker host-networking, localhost HTTP-proxy interception) |
 | `references/troubleshooting_sqlite.md` | Symptom → fix for the local path (sqlite-vec loading and extension paths, FTS5 syntax, trigger mismatches, model download) |
+
+### `graph-rag/`
+
+No scripts — the skill is the procedure, and the two hops are deliberately the agent's to bridge. What ships alongside it:
+
+| Path | Purpose |
+|---|---|
+| `references/patterns.md` | The four recipes, each with its Cypher, its `columns` declaration and its bound written out: seed-and-expand, entity neighbourhood, path-between, and impact / blast radius — plus the mechanical procedure for writing a positional `columns` declaration against your own `RETURN` clause, and how to join the two hops without splicing retrieved text into the Cypher |
+| `references/troubleshooting.md` | Symptom → cause, split into the failures that **announce themselves** and the ones that **return plausible wrong answers** — an all-NULL column (wrong getter), two columns holding each other's values (positional swap), a backwards answer (arrow direction), and an unrepresentative sample (`LIMIT` with no `ORDER BY`) |
+| `evals/evals.json` | Three behavioural cases: an impact question that must discover the graph's shape before expanding, a vague question that must seed semantically and report unresolved seeds, and a rows-not-edges question the skill must hand off rather than invent a graph angle for |
 
 ### `retrieval/`
 

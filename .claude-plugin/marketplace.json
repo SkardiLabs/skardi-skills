@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Agent Skills for working with Skardi — SQL pipelines as HTTP endpoints. Distributes plugins that teach AI coding agents Skardi's patterns for building searchable context, hybrid search, and connectors.",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "plugins": [
     {
@@ -57,6 +57,23 @@
         "knowledge-graph",
         "graphrag",
         "postgres",
+        "read-only"
+      ]
+    },
+    {
+      "name": "graph-rag",
+      "source": "./graph-rag",
+      "description": "Answer natural-language questions whose answer lives in relationships, over a skardi-server that has both a graph source and a retrieval surface: seed semantically (or by property lookup), expand across the graph with cypher_query, synthesize with both hops cited. Complements graph-source (which connects the graph) and retrieval (which answers row questions) — reach for this when the answer needs edges, not rows.",
+      "category": "query",
+      "keywords": [
+        "skardi",
+        "graph-rag",
+        "graphrag",
+        "knowledge-graph",
+        "cypher",
+        "age",
+        "multi-hop",
+        "retrieval",
         "read-only"
       ]
     }

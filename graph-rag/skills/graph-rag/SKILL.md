@@ -1,0 +1,291 @@
+---
+name: graph-rag
+description: 'Answer a natural-language question that needs BOTH semantic retrieval and graph traversal, through a running skardi-server: find the entities the question is about (vector/full-text search, or a property lookup), then expand from those seeds across the graph with cypher_query to collect the relationships that actually answer it, then synthesize with both halves cited. Use whenever a question is about how things CONNECT rather than what a row says — what depends on X, what breaks if we change Y, how are A and B related, who owns the services that call Z, what is the blast radius, trace the path from A to B, which entities are near this concept — and whenever the user says graph RAG, GraphRAG, knowledge-graph question, multi-hop question, or asks to explain impact/lineage/dependencies over a knowledge graph. Reach for this even when the user never says "graph": a question naming two things and asking how one reaches or affects the other is a traversal question. Requires a reachable skardi-server with a type: graph source AND some retrieval surface; this skill does not connect graphs or declare views (graph-source does), does not build search indexes (auto-context does), and is the one to use instead of retrieval when the answer needs edges, not just rows.'
+---
+
+# graph-rag — answer connection questions over a graph plus a retrieval surface
+
+Your job: take a question whose answer lives in **relationships**, find the
+right entities to start from, walk the graph from them, and answer with both
+halves shown. Retrieval alone returns documents that mention things; the graph
+alone cannot tell you which node the user meant from a sentence. Graph RAG is
+the two used in order.
+
+The whole flow is: **understand what to seed → find the seeds → expand from
+them → synthesize and cite**.
+
+## What this skill is not
+
+Three sibling skills own the neighbouring work. Sending a user to the right
+one is faster than half-doing its job here.
+
+- **Not graph setup.** No graph source registered, a `degraded` source, a
+  view whose contract is broken → that is `graph-source`. It provisions the
+  AGE backend, declares `type: graph` in ctx YAML, and reads registration
+  health.
+- **Not index building.** No search surface, or the corpus was never
+  embedded → that is `auto-context`. This skill consumes whatever surface
+  already exists.
+- **Not ordinary querying.** If the question is answered by rows in a table —
+  counts, sums, filters, "how many orders are paid" — use `retrieval`. Come
+  here when the answer needs **edges**.
+
+## Prerequisites
+
+1. **The `skardi` CLI on PATH** (`skardi --version`). Connection resolves
+   `--server` → `$SKARDI_SERVER_URL` → `~/.skardi/config.yaml` → default
+   `http://127.0.0.1:8080`; `--token` / `$SKARDI_API_TOKEN` if auth is on.
+   Exit code `2` means the server was unreachable — an environment problem,
+   not a query problem.
+2. **A `type: graph` source**, registered and healthy.
+3. **Something to seed from.** Usually a search surface (`auto-context`'s
+   `search-vector` / `search-fulltext` / `search-hybrid`, or a `*_knn` /
+   `*_fts` table function). Sometimes the graph itself is enough — see
+   "Seeding without a search surface".
+
+Both halves have to exist. If one is missing, say which and hand off; do not
+substitute a keyword `WHERE` for semantic retrieval and present it as the
+same thing.
+
+## Rule zero: ask the server, not your memory
+
+Which graph is registered, what labels and relationship types it holds, which
+search pipelines exist — these are **deployment facts** that differ per server
+and change under you. Re-discover them at the start of every session.
+
+```bash
+skardi schema                                    # sources, types, descriptions
+skardi pipeline list                             # search surfaces, maybe
+skardi query -e "SELECT * FROM graph_schema('kg')" --table   # labels + kinds
+```
+
+`graph_schema` gives you one `(label, kind)` row per label — it tells you the
+vocabulary, not the shape. To learn the shape (which relationship types
+connect which labels, and how many), ask the graph:
+
+```bash
+skardi query --table -e "SELECT * FROM cypher_query('kg',
+  'MATCH ()-[r]->() RETURN type(r) AS t, count(*) AS n ORDER BY n DESC',
+  '{}', '{\"t\": \"string\", \"n\": \"int\"}')"
+```
+
+That one call is worth more than any amount of guessing, and its row counts
+are what tell you whether an expansion is safe to run unbounded (it usually
+is not — see "Bound the expansion").
+
+## Why this is two hops, and cannot be one query
+
+This is the mechanical fact the whole skill is built on, and it is not
+obvious:
+
+```
+cypher_query(connection, cypher, params, columns)
+```
+
+`connection`, `cypher`, and `columns` are **strict string literals**,
+evaluated at **plan time** — the connection decides the source lookup, the
+columns decide the schema, and the cypher is what the plan-time guard
+screens. Only `params` carries a runtime value.
+
+So you **cannot** join a retrieval result into the traversal. There is no
+single SQL statement that does `knn → cypher`, because the Cypher and its
+declared columns must be fixed before any row exists.
+
+**You are what bridges the two hops.** Read hop 1's rows, then write hop 2's
+`params` literal containing those seeds. That is a thing an agent can do and
+a SQL statement cannot, and it is the reason this skill exists rather than a
+view.
+
+**Seeds go in `params`, never concatenated into the Cypher.** Two reasons,
+both real: the Cypher is a plan-time literal screened by a keyword guard, and
+values spliced into it are an injection surface — retrieved text is exactly
+the untrusted input you must not splice. A JSON array inside the params
+object works (verified against AGE): `'{"seeds": ["a", "b"]}'` with
+`WHERE n.name IN $seeds`.
+
+## The flow
+
+### 1. Decide what the seeds are
+
+Read the question and name the **entity type** the answer starts from before
+running anything. "What breaks if we change the auth middleware" seeds on a
+code entity; "which teams own the services that call billing" seeds on a
+service. Getting this wrong wastes both hops.
+
+Also decide the **direction and depth** the question implies. "What depends
+on X" and "what does X depend on" are opposite arrow directions and answer
+different questions — a wrong arrow returns plausible, confidently wrong
+results. Say the direction out loud in your plan.
+
+### 2. Hop 1 — find the seeds
+
+Whichever surface exists:
+
+```bash
+# A search pipeline, when one is declared read-only (see the note below)
+skardi run search-hybrid -p 'query=auth middleware' -p limit=8
+
+# Or a retrieval table function, inline
+skardi query --table -e "SELECT id, title, _score FROM pg_fts('docs', 'body',
+  'auth middleware', 10)"
+```
+
+Take a **small** seed set — 5 to 20. Seeds multiply through the expansion, so
+this number is a cost knob, not a quality knob; a 200-seed expansion mostly
+returns noise you then have to filter.
+
+**Before calling any pipeline**, the same rule `retrieval` documents applies
+here: `pipeline show` does not reveal a pipeline's SQL, so nothing you can
+inspect at runtime proves it only reads. A pipeline is callable when someone
+accountable has declared *that* pipeline read-only and said what bounds its
+result. Matching `auto-context`'s standard signature is a good reason to
+propose one; it is not authorization. Otherwise use an ad-hoc `SELECT`, which
+the server validates read-only on every request.
+
+**Verify the seeds resolve in the graph before expanding.** Retrieval returns
+what a corpus says; the graph holds what exists, and the two drift. One
+cheap check saves a confusing empty expansion:
+
+```bash
+skardi query --table -e "SELECT * FROM cypher_query('kg',
+  'MATCH (n:Function) WHERE n.name IN \$seeds RETURN n.name AS name',
+  '{\"seeds\": [\"authenticate\", \"verify_token\"]}',
+  '{\"name\": \"string\"}')"
+```
+
+If a seed does not resolve, the join key is probably wrong — the corpus's
+`title` is not the graph's `name`. Fix the key rather than widening the
+search.
+
+### 3. Hop 2 — expand from the seeds
+
+Now the traversal, with the seeds as params. The shape that answers most
+connection questions:
+
+```bash
+skardi query --table -e "SELECT * FROM cypher_query('kg',
+  'MATCH (s:Function)<-[:CALLS]-(caller) WHERE s.name IN \$seeds
+   RETURN s.name AS seed, caller.name AS caller, labels(caller)[0] AS kind
+   ORDER BY seed, caller LIMIT 200',
+  '{\"seeds\": [\"authenticate\", \"verify_token\"]}',
+  '{\"seed\": \"string\", \"caller\": \"string\", \"kind\": \"string\"}')"
+```
+
+Read `references/patterns.md` for the four recipes this generalizes — seed
+and expand, entity neighbourhood, path between two things, and impact /
+blast radius — each with the Cypher and the `columns` declaration written
+out.
+
+### 4. Synthesize, and show both halves
+
+The answer is not the row dump. Say what the relationships mean for the
+question, then attach the evidence — see "Reporting" below.
+
+## The traps
+
+These are the ones that produce **confidently wrong answers** rather than
+errors, which is why they are worth naming rather than leaving to discovery.
+
+**`columns` binds positionally against `RETURN`.** The names are labels for
+SQL, not a lookup key. Two same-typed columns declared out of RETURN order
+swap **silently** — same JSON kind, no type mismatch, nothing downstream can
+tell. Write the `columns` declaration by reading your own `RETURN` clause
+left to right, every time.
+
+**Properties are JSON text; the getter must match the stored type.**
+`json_get_str` on a numeric property returns NULL — not an error, not a
+coercion. A column of NULLs after a successful query is almost always this.
+`->` / `->>` / `?` are deliberately not installed; use the getter UDFs.
+
+**A view's SQL `WHERE` does not push into its Cypher.** Filtering a graph
+view from SQL still materializes the view's whole result first, so an
+unbounded view fails `RowCapExceeded` even for a query that wants one row.
+The bound belongs **inside** the Cypher.
+
+**Label the seed match, and keep the traversal in ONE `MATCH`.** This is not
+a style preference — it is the difference between an answer and a query that
+does not return. Measured on a 109k-vertex / 800k-edge AGE graph:
+
+```
+MATCH (s) WHERE s.name IN $seeds MATCH (s)<-[:CALLS]-(c) ...   -- did not return
+MATCH (s:Function)<-[:CALLS]-(c) WHERE s.name IN $seeds ...    -- answered
+```
+
+An unlabeled `MATCH (s)` is a scan of every vertex in the graph, and splitting
+the pattern across two `MATCH` clauses makes that scan the left side of a
+join. Both have to be right: labeling a two-clause form did not rescue it, and
+inlining an unlabeled one did not either. Write the seed label and the
+traversal as one pattern with the `WHERE` after it.
+
+**Bound the expansion, and measure rather than trust.** Ask the edge counts
+first (the `graph_schema` section above) — a relationship with hundreds of
+thousands of edges will not survive an open-ended walk. Bound it three ways
+together: a small seed set, a `LIMIT` inside the Cypher, and a specific
+relationship type and direction instead of `-[r]-`. An undirected untyped
+`-[r]-` did not return on the graph above even with a label and a `LIMIT`, so
+prefer one type and one direction per call.
+
+Timings on a dense graph are also **not stable** — the same call can answer
+in a second and later time out as caches and load shift. So treat every
+recipe here as a starting point you time on the graph in front of you, raise
+depth one hop at a time, and when a call times out do not simply retry it:
+narrow the pattern. Repeatedly re-running an expensive traversal degrades the
+graph backend for everyone using it, which turns your query problem into
+someone else's outage.
+
+If you need "the most important" neighbours rather than "some", sort inside
+the Cypher (`ORDER BY` on a degree or a score) — a `LIMIT` without an
+`ORDER BY` returns an arbitrary slice, and an arbitrary slice presented as an
+answer is the failure mode this whole skill is trying to avoid.
+
+**A truncated result is not a result.** Ad-hoc queries cap at 1000 rows by
+default and the note goes to **stderr** — read it. Any "all of X" or count
+built on a capped set is wrong; push aggregation into the Cypher
+(`count(*)`, `collect()`) instead of counting rows yourself.
+
+## Seeding without a search surface
+
+Sometimes the question names the entity precisely enough that retrieval adds
+nothing — "what calls `verify_token`". Then hop 1 is a property lookup in the
+graph and you skip the search surface entirely. Say that you did: an answer
+that skipped semantic retrieval has different coverage from one that used it
+(an exact-name lookup finds nothing for a synonym), and the user should know
+which they got.
+
+## Reporting
+
+Lead with the answer in the question's own terms, then attach both hops so
+the result can be re-run and audited:
+
+```
+Changing `verify_token` reaches 14 call sites across 3 modules — the auth
+middleware, the session refresh path, and two admin handlers.
+
+— seeds: search-hybrid 'auth middleware token validation', top 8
+  → resolved 2 of 8 in the graph (authenticate, verify_token)
+— expansion: cypher_query('kg', MATCH (s)<-[:CALLS]-(caller), LIMIT 200)
+  → 14 rows, not truncated
+— the 6 unresolved seeds were doc titles with no graph node; the corpus
+  describes them but the graph does not contain them
+```
+
+State the seed set and where it came from, the traversal and its bound, and
+the truncation status. When retrieval and the graph disagree — a document
+describes a dependency the graph does not have — **report both**, do not
+reconcile them silently. That disagreement is usually the most useful thing
+you found: it means the corpus or the graph is stale, and which one is a
+question the user can answer and you cannot.
+
+## When stuck
+
+| Symptom | Meaning | Do |
+|---|---|---|
+| exit code 2 | server unreachable | Report the URL you tried. Do not retry in a loop; do not start a server. |
+| `RowCapExceeded` | the Cypher itself is unbounded | Put the bound inside the Cypher, not in SQL. Narrow the relationship type. |
+| a column is all NULL | wrong getter for the stored JSON type | Check the property's actual type, pick the matching getter. |
+| the expansion returns 0 rows | seeds do not resolve in the graph, or the arrow points the wrong way | Re-run the seed-resolution check; then try the opposite direction. |
+| `cypher_query` errors on arity | `columns` count ≠ `RETURN` count | AGE requires declared arity; count them against each other. |
+| the same question failed 3 times | you are guessing | Stop. Show what you tried, what came back, and your best hypothesis of what is missing. |
+
+An honest "here is where it stopped" beats a fourth guess. Read
+`references/troubleshooting.md` for the fuller symptom table.
