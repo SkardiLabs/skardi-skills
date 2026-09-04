@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Agent Skills for working with Skardi — SQL pipelines as HTTP endpoints. Distributes plugins that teach AI coding agents Skardi's patterns for building searchable context, hybrid search, and connectors.",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "plugins": [
     {
@@ -57,6 +57,23 @@
         "knowledge-graph",
         "graphrag",
         "postgres",
+        "read-only"
+      ]
+    },
+    {
+      "name": "graph-rag",
+      "source": "./graph-rag",
+      "description": "Answer a question about a knowledge graph or property graph served by a skardi-server — including graphs stored in Postgres via Apache AGE. Two shapes, one skill: when the question already names the entity (what implements UpgradeStep, who calls verify_token, what does this class extend) go straight to the traversal; when it does not (how does our git integration work and who depends on it, what handles auth) find the entity by semantic or full-text search first, then traverse from it. Either way the answer comes from EDGES, and it is reported with the traversal, its bound, and the confidence field the edges carry shown. Reach for this whenever a question is about how code or entities CONNECT — what implements or extends X, who calls or imports it, what depends on it, what breaks if we change it, what is the blast radius, how are A and B related, trace the path between them, what is near this concept — and whenever the user says graph, graph RAG, GraphRAG, knowledge graph, Cypher, AGE, multi-hop, impact, lineage or dependencies. IMPORTANT: reach for it even when the user names no server and no graph, and even when the question looks like something a codebase grep could answer. A graph on a server holds a DIFFERENT codebase from the working directory, so grepping the local repo answers a different question and can truthfully report a not-found for an entity the graph has hundreds of. Run `skardi schema` first: the CLI resolves its server from ~/.skardi/config.yaml with no arguments, so one command tells you whether a graph source exists — cheaper than assuming either way. Only hand off if that comes back with no graph source: graph setup is graph-source, index building is auto-context, and row-shaped questions (counts, sums, filters over tables) are retrieval.",
+      "category": "query",
+      "keywords": [
+        "skardi",
+        "graph-rag",
+        "graphrag",
+        "knowledge-graph",
+        "cypher",
+        "age",
+        "multi-hop",
+        "retrieval",
         "read-only"
       ]
     }

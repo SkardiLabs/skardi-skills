@@ -1,0 +1,26 @@
+{
+  "skill_name": "graph-rag",
+  "evals": [
+    {
+      "id": 1,
+      "name": "impact-question-needs-two-hops",
+      "prompt": "We're about to change how `verify_token` works. What would break? Our skardi-server is on http://127.0.0.1:8080 and it has our code knowledge graph registered.",
+      "expected_output": "Discovers the graph vocabulary first (graph_schema + edge counts), seeds on the named entity, expands INCOMING call edges with a bounded Cypher, and reports the dependents with the traversal and its bound attached. Must not present an unordered LIMIT slice as the complete answer.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "vague-question-needs-semantic-seeding",
+      "prompt": "Which parts of our codebase deal with authentication, and what calls into them? skardi-server at http://127.0.0.1:8080.",
+      "expected_output": "Recognizes the question is too vague for a property lookup, so hop 1 uses a search surface to find seeds, verifies the seeds resolve in the graph before expanding, then expands. Reports unresolved seeds rather than hiding them.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "row-question-should-hand-off",
+      "prompt": "How many orders did we get last month, broken down by status? skardi-server at http://127.0.0.1:8080.",
+      "expected_output": "Recognizes this is a rows-not-edges question and does NOT run a graph traversal — either hands off to the retrieval skill or answers with plain read-only SQL. Should not invent a graph angle.",
+      "files": []
+    }
+  ]
+}
