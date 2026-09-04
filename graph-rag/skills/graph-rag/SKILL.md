@@ -1,6 +1,6 @@
 ---
 name: graph-rag
-description: 'Answer a natural-language question that needs BOTH semantic retrieval and graph traversal, through a running skardi-server: find the entities the question is about (vector/full-text search, or a property lookup), then expand from those seeds across the graph with cypher_query to collect the relationships that actually answer it, then synthesize with both halves cited. Use whenever a question is about how things CONNECT rather than what a row says — what depends on X, what breaks if we change Y, how are A and B related, who owns the services that call Z, what is the blast radius, trace the path from A to B, which entities are near this concept — and whenever the user says graph RAG, GraphRAG, knowledge-graph question, multi-hop question, or asks to explain impact/lineage/dependencies over a knowledge graph. Reach for this even when the user never says "graph": a question naming two things and asking how one reaches or affects the other is a traversal question. Requires a reachable skardi-server with a type: graph source AND some retrieval surface; this skill does not connect graphs or declare views (graph-source does), does not build search indexes (auto-context does), and is the one to use instead of retrieval when the answer needs edges, not just rows.'
+description: 'Answer a question about a knowledge graph or property graph served by a skardi-server — including graphs stored in Postgres via Apache AGE. Two shapes, one skill: when the question already names the entity (what implements UpgradeStep, who calls verify_token, what does this class extend) go straight to the traversal; when it does not (how does our git integration work and who depends on it, what handles auth) find the entity by semantic or full-text search first, then traverse from it. Either way the answer comes from EDGES, and it is reported with the traversal, its bound, and the confidence field the edges carry shown. Reach for this whenever a question is about how code or entities CONNECT — what implements or extends X, who calls or imports it, what depends on it, what breaks if we change it, what is the blast radius, how are A and B related, trace the path between them, what is near this concept — and whenever the user says graph, graph RAG, GraphRAG, knowledge graph, Cypher, AGE, multi-hop, impact, lineage or dependencies. IMPORTANT: reach for it even when the user names no server and no graph, and even when the question looks like something a codebase grep could answer. A graph on a server holds a DIFFERENT codebase from the working directory, so grepping the local repo answers a different question and can truthfully report a not-found for an entity the graph has hundreds of. Run `skardi schema` first: the CLI resolves its server from ~/.skardi/config.yaml with no arguments, so one command tells you whether a graph source exists — cheaper than assuming either way. Only hand off if that comes back with no graph source: graph setup is graph-source, index building is auto-context, and row-shaped questions (counts, sums, filters over tables) are retrieval.'
 ---
 
 # graph-rag — answer connection questions over a graph plus a retrieval surface
@@ -43,9 +43,13 @@ one is faster than half-doing its job here.
    `*_fts` table function). Sometimes the graph itself is enough — see
    "Seeding without a search surface".
 
-Both halves have to exist. If one is missing, say which and hand off; do not
-substitute a keyword `WHERE` for semantic retrieval and present it as the
-same thing.
+The graph half has to exist; the retrieval half is needed only when the
+question does not already name its entity. If a question names one
+(`UpgradeStep`, `verify_token`), skip hop 1 and say you did — an exact-name
+lookup finds nothing for a synonym, and the user should know which coverage
+they got. If the question is vague and there is no search surface, say so and
+offer `auto-context` rather than substituting a keyword `WHERE` for semantic
+retrieval and presenting it as the same thing.
 
 ## Rule zero: ask the server, not your memory
 
