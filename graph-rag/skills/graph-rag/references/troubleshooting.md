@@ -13,17 +13,28 @@ The getter does not match the property's stored JSON type. `json_get_str` on
 a numeric property returns NULL — not an error, not a coercion. Check what
 the property actually holds, then pick the getter for that type.
 
+**Ask for the whole property bag as `json`** — not the one property declared
+as `string`. `columns` is validated against the returned JSON kind, so
+declaring a numeric property `"string"` fails with an opaque
+`query_execution_error` (HTTP 500) rather than showing you `42` vs `"42"`.
+Measured, and worth knowing precisely because that is the same error this
+file attributes below to a wrong connection name or a missing label: the
+shortcut does not merely fail, it points at the wrong cause.
+
 ```bash
 skardi query --table -e "SELECT * FROM cypher_query('kg',
-  'MATCH (n) WHERE n.name IN \$seeds RETURN n.name AS name, n.line_count AS raw LIMIT 3',
+  'MATCH (n:Function) WHERE n.name IN \$seeds RETURN properties(n) AS p LIMIT 3',
   '{\"seeds\": [\"authenticate\"]}',
-  '{\"name\": \"string\", \"raw\": \"string\"}')"
+  '{\"p\": \"json\"}')"
 ```
 
-Returning the property as a string first shows you its JSON shape (`42` vs
-`"42"`), which tells you the getter. `->` / `->>` / `?` are deliberately not
-installed — the rewrite would break federated pushdown session-wide — so the
-getter UDFs are the route.
+Every property comes back with its JSON type visible — `"line_start":51`
+unquoted is a number, `"name":"authenticate"` quoted is a string — and that
+is what tells you the getter. Read the single property back afterwards with
+the type it actually has (`'{"raw": "int"}'`) to confirm.
+
+`->` / `->>` / `?` are deliberately not installed — the rewrite would break
+federated pushdown session-wide — so the getter UDFs are the route.
 
 ### Two columns hold each other's values
 
@@ -31,6 +42,26 @@ getter UDFs are the route.
 declared out of order swap with no error. Read the `RETURN` clause left to
 right and rewrite the declaration against it. See the mechanical procedure at
 the end of `patterns.md`.
+
+### The answer merges two unrelated things
+
+The seed was a NAME, and the name is not unique. `WHERE s.name IN $seeds`
+expands from every node that matches, and the result carries nothing to say
+it did: `main` matches 81 distinct functions on a 109k-vertex code graph,
+`wrapper` 36. A caller list or blast radius built that way is a union of
+unrelated entities presented as one.
+
+Re-run the seed check returning `n.fqn` and `n.file_path` alongside the name.
+More than one row for a seed means pick one and traverse from `s.fqn`, or
+report the union explicitly and group by it.
+
+### The blast radius is enormous and mostly unfamiliar
+
+The traversal bound no edge variable, so the answer includes every
+low-confidence guess. On this graph 71% of `CALLS` edges carry
+`resolution: "ambiguous"` — matched on a bare name. Bind the edge
+(`[r:CALLS]`), then either filter (`WHERE r.resolution <> 'ambiguous'`) or
+return `r.resolution` and split the answer by it. Say which you did.
 
 ### The rows look right but the answer is backwards
 
@@ -88,6 +119,14 @@ match, not against the projection, so an alias that is visibly present in the
 alias came from (`ORDER BY s.name`), or by the aggregate itself
 (`ORDER BY count(*) DESC`).
 
+**The reverse holds after a `WITH`, and gets a different error.** A variable
+`WITH` introduced must be sorted BY NAME: after
+`WITH caller, count(*) AS weight`, `ORDER BY weight DESC` is correct, and
+restating `ORDER BY count(*) DESC` there fails with an opaque HTTP 500
+instead of 42703 — the aggregate no longer exists in that scope. So "never
+use the alias" is the rule for a `RETURN` projection only; `WITH` creates a
+real binding and the alias is then the only handle you have.
+
 ### `cypher_query` errors on arity
 
 The number of `columns` entries does not equal the number of `RETURN`
@@ -101,9 +140,42 @@ The params argument has to be an object at the top level. Arrays go
 
 ### `sql_validation_error` (HTTP 400)
 
-The statement hit policy: DDL, COPY, a write, or multiple statements. Graph
-work is read-only; rewrite as a single `SELECT`. If the task genuinely needs
-a write, it belongs to the job path, not here.
+Two quite different causes.
+
+**Policy.** The statement was DDL, COPY, a write, or multiple statements.
+Graph work is read-only; rewrite as a single `SELECT`. If the task genuinely
+needs a write, it belongs to the job path, not here.
+
+**Or an unescaped quote in a seed** — `Expected close delimiter` names this
+one. The params object is a single-quoted SQL string literal, so a value
+containing `'` ends it early. Cypher parameters do not help: they protect the
+Cypher, and this is the SQL one layer out. Double every `'` in the serialized
+params before it goes into the statement (`patterns.md`, "Joining the two
+hops back together" has the procedure).
+
+Treat it as a signal, not just a parse error. A real entity name in a code
+graph has no apostrophe, so a seed carrying one is a wrong join key or a
+corpus supplying hostile text — and the same hole, crafted rather than
+accidental, parses cleanly and returns rows from a different source instead
+of failing.
+
+### `query_execution_error` (HTTP 500) from a supported-looking Cypher feature
+
+Three measured cases where the natural way to write it is simply not
+available on the AGE build, and the error says nothing:
+
+- **`shortestPath(...)`** — fails with any projection, `length(p)` alone
+  included. Use a bounded variable-length match sorted by `length(p)`.
+- **A list comprehension**, e.g. `RETURN [x IN nodes(p) | x.name]` — the
+  obvious way to keep a path projection small. Return `nodes(p)` /
+  `relationships(p)` whole as `json` and pick fields client-side.
+- **`ORDER BY count(*)` after a `WITH`** — see the 42703 entry above; past
+  a `WITH` the aggregate is out of scope and only the alias works.
+
+The lesson generalizes: on this backend an opaque 500 is at least as likely
+to be an unsupported construct as a wrong name. Before re-checking your
+labels, strip the query to its simplest form and add pieces back — that
+localizes it in two or three calls.
 
 ### `query_execution_error` (HTTP 500) with no detail
 

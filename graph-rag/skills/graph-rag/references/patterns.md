@@ -46,37 +46,66 @@ documents reference these entities".
 
 ```bash
 skardi query --table -e "SELECT * FROM cypher_query('kg',
-  'MATCH (s:Function)<-[:CALLS]-(caller) WHERE s.name IN \$seeds
-   RETURN s.name AS seed, caller.name AS caller, labels(caller)[0] AS kind
-   ORDER BY s.name, caller.name
+  'MATCH (s:Function)<-[r:CALLS]-(caller) WHERE s.fqn IN \$seeds
+   RETURN s.name AS seed, caller.fqn AS caller, r.resolution AS confidence
+   ORDER BY s.name, caller.fqn
    LIMIT 200',
-  '{\"seeds\": [\"authenticate\", \"verify_token\"]}',
-  '{\"seed\": \"string\", \"caller\": \"string\", \"kind\": \"string\"}')"
+  '{\"seeds\": [\"pkg.auth.authenticate\"]}',
+  '{\"seed\": \"string\", \"caller\": \"string\", \"confidence\": \"string\"}')"
 ```
 
-Two things to get right:
+Four things to get right, and the first two are the ones that quietly ruin
+an answer rather than failing:
 
+- **Bind the edge and carry its confidence.** `[r:CALLS]` rather than
+  `[:CALLS]`, and `r.resolution` in the projection. Without the variable the
+  traversal cannot filter or report, and on a real code graph most edges are
+  guesses: of 658,846 `CALLS` edges here, **467,467 (71%) are
+  `resolution: "ambiguous"`** — matched on a bare name only. Copying a
+  recipe that drops the edge produces exactly the mostly-noise blast radius
+  the rest of this skill warns about. Either return the field and split the
+  answer by it, or add `WHERE r.resolution <> 'ambiguous'` and say which
+  subset you used. If the graph's edges carry no such property, say that
+  instead — "unfiltered because the edges carry no confidence" is a fact
+  about the graph, not a gap in the answer.
+- **Seed on the unique identity, not the name.** `s.fqn`, not `s.name`.
+  `main` matches 81 distinct functions on this graph; expanding from the
+  name merges their callers into one answer with nothing marking the union.
 - **The arrow direction is the question.** `(s)<-[:CALLS]-(caller)` is "who
   calls s" — incoming. `(s)-[:CALLS]->(callee)` is "what s calls" — outgoing.
   These answer opposite questions and both return confident, plausible rows.
-- **`ORDER BY` before `LIMIT`.** Without it the 200 rows are an arbitrary
-  slice, which reads as an answer and is not one.
-- **`ORDER BY` takes the EXPRESSION, not the `RETURN` alias.** `ORDER BY
-  seed, caller` fails on AGE with `could not find rte for seed` (SQL state
-  42703) even though `seed` is right there in the `RETURN`. Sort by what the
-  alias was computed from — `ORDER BY s.name, caller.name` — and for an
-  aggregate by the aggregate itself, `ORDER BY count(*) DESC`. Measured; the
-  alias form looks correct and is rejected.
+- **`ORDER BY` before `LIMIT`** — without a sort the 200 rows are an
+  arbitrary slice that reads as an answer.
+- **What `ORDER BY` may name has two halves, and they point opposite ways.**
+  Both measured, and each looks correct while failing the other's case:
+  - **Sorting a `RETURN` projection: use the EXPRESSION, not the alias.**
+    `ORDER BY seed, caller` fails with `could not find rte for seed` (SQL
+    state 42703) even though `seed` is right there in the `RETURN` — AGE
+    resolves the sort key against the match, not the projection. Sort by
+    what the alias was computed from (`ORDER BY s.name, caller.fqn`), and
+    for an aggregate in the same clause by the aggregate itself
+    (`ORDER BY count(*) DESC`).
+  - **Sorting something a `WITH` introduced: use the VARIABLE.** After
+    `WITH caller, count(*) AS weight`, `ORDER BY weight DESC` is correct and
+    `ORDER BY count(*) DESC` fails with an opaque HTTP 500 — the aggregate
+    is out of scope past the `WITH`, and the variable is the only handle
+    left. `WITH` creates a real binding; a `RETURN` alias does not.
 
 When you need "the most connected" neighbours rather than an alphabetical
-slice, sort on degree computed inside the Cypher:
+slice, sort on degree computed inside the Cypher — and keep the confidence
+filter, or the degree is a ranking of guesses:
 
 ```
-MATCH (s:Function)<-[:CALLS]-(caller) WHERE s.name IN $seeds
+MATCH (s:Function)<-[r:CALLS]-(caller)
+WHERE s.fqn IN $seeds AND r.resolution <> $ambiguous
 WITH caller, count(*) AS weight
-RETURN caller.name AS caller, weight
+RETURN caller.fqn AS caller, weight
 ORDER BY weight DESC LIMIT 25
 ```
+
+`ORDER BY weight`, and **not** `ORDER BY count(*)`, once a `WITH` is in the
+way — see the ordering rule above, whose two halves pull in opposite
+directions exactly here.
 
 ## 2. Entity neighbourhood
 
@@ -106,21 +135,55 @@ counts show matters.
 path length explicitly — an unbounded variable-length match on a dense graph
 does not come back.
 
+**Return the path, not just its length.** "How is A related to B" is a
+question about the middle, and `length(p)` throws the middle away: hop count
+alone gives you nothing to explain the connection with, and nothing to check
+it against. Project the nodes and the relationships, both as `json`:
+
 ```bash
 skardi query --table -e "SELECT * FROM cypher_query('kg',
-  'MATCH p = shortestPath((a:Function)-[:CALLS*..4]-(b:Function))
-   WHERE a.name IN \$from AND b.name IN \$to
-   RETURN a.name AS src, b.name AS dst, length(p) AS hops
-   LIMIT 20',
-  '{\"from\": [\"handle_login\"], \"to\": [\"write_audit_row\"]}',
-  '{\"src\": \"string\", \"dst\": \"string\", \"hops\": \"int\"}')"
+  'MATCH p = (a:Function)-[:CALLS*1..3]-(b:Function)
+   WHERE a.fqn IN \$from AND b.fqn IN \$to
+   RETURN length(p) AS hops, nodes(p) AS path, relationships(p) AS edges
+   ORDER BY length(p) LIMIT 20',
+  '{\"from\": [\"pkg.web.handle_login\"], \"to\": [\"pkg.audit.write_audit_row\"]}',
+  '{\"hops\": \"int\", \"path\": \"json\", \"edges\": \"json\"}')"
 ```
 
-`*..4` is a real bound, not decoration: raise it one hop at a time and watch
-the time. If `shortestPath` is unavailable on the backend, fall back to a
-fixed-length probe (`-[:CALLS*2]-`) and report the depth you searched — "no
-path within 4 hops" is a useful answer and an honest one; "no connection" is
-a claim you did not test.
+**A bounded variable-length match, not `shortestPath`.** `shortestPath` is
+the textbook answer and it fails with an opaque `query_execution_error`
+(HTTP 500) on the AGE build measured here — with any projection, including
+`length(p)` alone, so it is the function and not the columns. Sort by
+`length(p)` and take the first rows instead; that gives you the shortest of
+the paths found within the bound, which is the answer the question wanted.
+Both directed (`-[:CALLS*1..3]->`) and undirected (`-[:CALLS*1..3]-`) forms
+work; undirected is usually right for "how are these related", directed for
+"does A reach B".
+
+`nodes(p)` returns the ordered vertices with their full `properties` — the
+intermediate hops the answer is actually about — and `relationships(p)`
+returns each edge with ITS properties, which is where per-hop confidence
+lives. Verified on AGE: a 2-hop result came back with both intermediate
+nodes and both edges carrying `resolution: "same_scope"`, so the answer can
+say not just "connected in 2 hops" but through what, and how well each hop
+is known. A path whose middle edge is `ambiguous` is a weaker claim than one
+whose hops are all `import`, and only this projection can tell them apart.
+
+**Do not try to trim the output with a list comprehension.**
+`RETURN [x IN nodes(p) | x.name] AS path` is the obvious way to ask for just
+the names, and it fails with an opaque `query_execution_error` (HTTP 500) —
+measured. Take the full `nodes(p)` JSON and pick the fields you want on the
+client side.
+
+`*1..3` is a real bound, not decoration: raise it one hop at a time and
+watch the time. Report the depth you searched — "no path within 3 hops" is a
+useful answer and an honest one; "no connection" is a claim you did not test.
+
+And read 0 rows correctly: it means "no path within the bound", not "the
+query is wrong". Measured both ways on the same statement — one pair of
+seeds returned nothing at `*1..3` while another returned a 2-hop path, so an
+empty result is evidence about the graph, not a reason to start rewriting
+Cypher.
 
 ## 4. Impact / blast radius
 
@@ -148,16 +211,58 @@ implying that is all of them is not.
 Hop 1 gives rows; hop 2 needs a JSON array literal. The seam is yours:
 
 1. Read hop 1's rows and take the **join key** — the property the graph
-   actually indexes entities by. This is rarely the corpus's title; it is
-   usually a name, a path, or an id. If you do not know, run the
+   actually indexes entities by, and one that is UNIQUE. This is rarely the
+   corpus's title, and on a code graph it is rarely `name` either: `main`
+   matches 81 nodes here. Prefer `fqn` or an id. If you do not know, run the
    seed-resolution check from SKILL.md against both candidates and use
-   whichever resolves.
-2. Build the params object with that array: `{"seeds": ["a", "b", "c"]}`.
+   whichever resolves to one row per seed.
+2. Build the params object with that array: `{"seeds": ["a", "b", "c"]}` —
+   with a JSON serializer, then SQL-escaped. See below; this step is where
+   the whole thing goes wrong.
 3. Keep it small (5–20). Seeds multiply through the expansion.
 
-**Never build the array by string-concatenating retrieved text into the
-Cypher literal.** The Cypher is a plan-time literal behind a keyword guard,
-and retrieved text is untrusted input; params exist for exactly this.
+**Never string-concatenate retrieved text into the Cypher literal** — the
+Cypher is a plan-time literal behind a keyword guard, and retrieved text is
+untrusted input. Params are what that rule points you to.
+
+**And params are not, by themselves, enough.** The params object is
+delivered as a single-quoted SQL string literal, so a seed containing `'`
+closes it early — Cypher parameters do nothing about the SQL one layer out,
+and `skardi query` offers no parameter binding to fall back on (`-e` and
+`-f` both take SQL text). Two measured outcomes from the same cause:
+
+- An ordinary name with an apostrophe fails the whole statement:
+  `sql_validation_error: Expected close delimiter`.
+- A crafted seed reshapes the read. This one, pasted into the params literal
+  as these examples build it, returned three rows from a *different source*
+  under the traversal's own column name:
+
+  ```
+  x"]}', '{"name": "string"}') UNION ALL SELECT title FROM docs.main.docs LIMIT 3 --
+  ```
+
+  The read-only guards still hold — single statement, no DDL, no writes — so
+  the ceiling is reading another source the token already permits. It is
+  still not the answer you reported.
+
+So serialize both `params` and `columns` with a JSON serializer, double every
+`'` in each serialized string, and write the statement to a file for `-f` so
+the shell stops being a third layer:
+
+```python
+def sql_str(s):
+    return "'" + s.replace("'", "''") + "'"
+
+sql = (f"SELECT * FROM cypher_query('kg', {sql_str(cypher)}, "
+       f"{sql_str(json.dumps({'seeds': seeds}))}, "
+       f"{sql_str(json.dumps(columns))})")
+```
+
+Verified: with that escaping the crafted seed above yields zero rows and no
+error, which is the correct answer — it is a name that does not exist. And
+since a real entity name in a code graph does not contain a quote, a seed
+that needs the escaping is worth flagging as a bad join key or a hostile
+corpus rather than silently cleaning up.
 
 If the two hops disagree — a retrieved document names an entity the graph
 does not contain — that is a finding, not an error to smooth over. Report the

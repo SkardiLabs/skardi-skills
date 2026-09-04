@@ -1,6 +1,6 @@
 ---
 name: graph-rag
-description: 'Answer a question about a knowledge graph or property graph served by a skardi-server — including graphs stored in Postgres via Apache AGE. Two shapes, one skill: when the question already names the entity (what implements UpgradeStep, who calls verify_token, what does this class extend) go straight to the traversal; when it does not (how does our git integration work and who depends on it, what handles auth) find the entity by semantic or full-text search first, then traverse from it. Either way the answer comes from EDGES, and it is reported with the traversal, its bound, and the confidence field the edges carry shown. Reach for this whenever a question is about how code or entities CONNECT — what implements or extends X, who calls or imports it, what depends on it, what breaks if we change it, what is the blast radius, how are A and B related, trace the path between them, what is near this concept — and whenever the user says graph, graph RAG, GraphRAG, knowledge graph, Cypher, AGE, multi-hop, impact, lineage or dependencies. IMPORTANT: reach for it even when the user names no server and no graph, and even when the question looks like something a codebase grep could answer. A graph on a server holds a DIFFERENT codebase from the working directory, so grepping the local repo answers a different question and can truthfully report a not-found for an entity the graph has hundreds of. Run `skardi schema` first: the CLI resolves its server from ~/.skardi/config.yaml with no arguments, so one command tells you whether a graph source exists — cheaper than assuming either way. Only hand off if that comes back with no graph source: graph setup is graph-source, index building is auto-context, and row-shaped questions (counts, sums, filters over tables) are retrieval.'
+description: 'Answer a question about a knowledge graph or property graph served by a skardi-server — including graphs stored in Postgres via Apache AGE. Two shapes, one skill: when the question already names the entity (what implements UpgradeStep, who calls verify_token, what does this class extend) go straight to the traversal; when it does not (how does our git integration work and who depends on it, what handles auth) find the entity by semantic or full-text search first, then traverse from it. Either way the answer comes from EDGES, and it is reported with the traversal, its bound, and the confidence field the edges carry shown. Reach for this whenever a question is about how code or entities CONNECT — what implements or extends X, who calls or imports it, what depends on it, what breaks if we change it, what is the blast radius, how are A and B related, trace the path between them, what is near this concept — and whenever the user says graph, graph RAG, GraphRAG, knowledge graph, Cypher, AGE, multi-hop, impact, lineage or dependencies. IMPORTANT: reach for it even when the user names no server and no graph, and even when the question looks like something a codebase grep could answer — a configured graph may hold a codebase the working directory does not, so grepping locally can truthfully report a not-found for an entity the graph has hundreds of. Run `skardi schema` first: the CLI resolves its server from ~/.skardi/config.yaml with no arguments, so one command tells you whether a graph source exists — cheaper than assuming either way. Then, before answering a question the user asked about local code, CHECK WHICH CODEBASE the graph holds (sample `file_path` from its File nodes) and name it in the answer: a graph of a different project answers confidently about the wrong one, which is worse than a local not-found. If the graph is not the codebase they meant, say so and use the ordinary local-code tools. Only hand off if `skardi schema` comes back with no graph source: graph setup is graph-source, index building is auto-context, and row-shaped questions (counts, sums, filters over tables) are retrieval.'
 ---
 
 # graph-rag — answer connection questions over a graph plus a retrieval surface
@@ -13,6 +13,45 @@ the two used in order.
 
 The whole flow is: **understand what to seed → find the seeds → expand from
 them → synthesize and cite**.
+
+## First, whose graph is this?
+
+`skardi schema` tells you a graph EXISTS. It does not tell you what is in it,
+and for a question about code that distinction decides whether your answer is
+about the user's project or somebody else's. A configured server is not
+scoped to the directory you are standing in, and nothing about the question
+reveals the mismatch — the traversal succeeds, the rows look right, and the
+entities are real. They are just real somewhere else.
+
+One sample answers it:
+
+```bash
+skardi query --table -e "SELECT * FROM cypher_query('kg',
+  'MATCH (f:File) RETURN f.file_path AS path LIMIT 400',
+  '{}', '{\"path\": \"string\"}')" | awk -F/ 'NF>1{print $1}' | sort | uniq -c | sort -rn | head
+```
+
+Top-level directories identify a codebase immediately. Measured on the rig
+this skill was written against: `datahub-actions 146`, `datahub-frontend 80`
+— a graph of DataHub, reachable from a shell sitting in an unrelated repo. A
+question like "who calls `main`?" asked there would have been answered with
+81 DataHub functions, confidently, with no sign anything was wrong.
+
+Do this once per session, before the first answer about local code, then:
+
+- **The graph is the user's project.** Proceed, and name the project in the
+  answer so the scope is visible.
+- **The graph is a different project.** Say which, and answer the local
+  question with the ordinary local-code tools instead. A graph is not
+  authority over a repo it does not contain.
+- **The user's question was explicitly about the graph** ("what does the
+  graph say about…", a named server) — then the graph is the subject and the
+  working directory is irrelevant. Skip ahead.
+
+(Client-side `awk` rather than Cypher's `split()`: `split` needs a quoted
+delimiter, and a nested quote inside the single-quoted SQL literal runs into
+the escaping problem described below. Sampling `file_path` avoids the whole
+question.)
 
 ## What this skill is not
 
@@ -100,12 +139,58 @@ declared columns must be fixed before any row exists.
 a SQL statement cannot, and it is the reason this skill exists rather than a
 view.
 
-**Seeds go in `params`, never concatenated into the Cypher.** Two reasons,
-both real: the Cypher is a plan-time literal screened by a keyword guard, and
-values spliced into it are an injection surface — retrieved text is exactly
-the untrusted input you must not splice. A JSON array inside the params
-object works (verified against AGE): `'{"seeds": ["a", "b"]}'` with
-`WHERE n.name IN $seeds`.
+**Seeds go in `params`, never concatenated into the Cypher — and the params
+literal itself must be SQL-escaped.** These are TWO layers, and getting the
+first right does not give you the second.
+
+Cypher params stop Cypher injection: the Cypher is a plan-time literal
+screened by a keyword guard, and values spliced into it are an injection
+surface. Retrieved text is exactly the untrusted input you must not splice.
+A JSON array inside the params object works (verified against AGE):
+`'{"seeds": ["a", "b"]}'` with `WHERE n.name IN $seeds`.
+
+But that params object is delivered as a **single-quoted SQL string
+literal**, and a seed containing `'` closes it early. `skardi query` has no
+parameter binding — only `-e` and `-f`, both of which take SQL text — so
+there is no mechanism that escapes this for you. Measured, on a real server:
+
+```
+seed: x"]}', '{"name": "string"}') UNION ALL SELECT title FROM docs.main.docs LIMIT 3 --
+```
+
+That seed, pasted into the params literal the way this skill's examples build
+it, returned three rows from the `docs` corpus under a column named `caller`,
+from a statement that was supposed to be a graph traversal. Retrieval output
+is untrusted input, so a corpus that can be written to can reshape your read.
+The read-only guards hold — one statement only, no DDL, no writes — so the
+ceiling is reading another source the token already permits. That is still a
+different answer than the one you reported.
+
+**So build the statement, never format it.** Serialize `params` and `columns`
+with a real JSON serializer, then double every `'` in each serialized string
+before it goes into the SQL, and write the result to a file for `-f` so the
+shell is not a third layer:
+
+```python
+import json, subprocess
+def sql_str(s):                       # SQL layer: '' escapes a quote
+    return "'" + s.replace("'", "''") + "'"
+params  = json.dumps({"seeds": seeds})            # JSON layer
+columns = json.dumps({"caller": "string"})
+sql = (f"SELECT * FROM cypher_query('kg', {sql_str(CYPHER)}, "
+       f"{sql_str(params)}, {sql_str(columns)})")
+open("q.sql", "w").write(sql)
+subprocess.run(["skardi", "query", "--table", "-f", "q.sql"])
+```
+
+Verified: with the escaping above, the seed that produced three foreign rows
+produces zero rows and no error — it is treated as a name that does not
+exist, which is what it is.
+
+One consequence worth acting on: a real entity name in a code graph does not
+contain a quote. A seed that needs this escaping is either a wrong join key
+or hostile, so it is worth *noticing* rather than only escaping — say so if
+one appears.
 
 ## The flow
 
@@ -126,8 +211,17 @@ results. Say the direction out loud in your plan.
 Whichever surface exists:
 
 ```bash
-# A search pipeline, when one is declared read-only (see the note below)
-skardi run search-hybrid -p 'query=auth middleware' -p limit=8
+# A search pipeline, when one is declared read-only (see the note below).
+# `search-hybrid` takes FIVE parameters and defaults none of them —
+# `query` feeds the embedding, `text_query` the FTS match, and the two
+# weights blend the halves. Omitting any is a `parameter_validation_error`
+# before the pipeline runs, so a short invocation fails on the vague-question
+# path where this is the only way to get seeds. `search-fulltext` is the
+# one that takes `query` alone; the signatures are in `auto-context`.
+skardi run search-hybrid \
+  -p 'query=how does the auth middleware work' \
+  -p 'text_query=auth middleware' \
+  -p vector_weight=0.5 -p text_weight=0.5 -p limit=8
 
 # Or a retrieval table function, inline. The arity is
 # (table, COLUMN, query, k) — the text column is the argument most easily
@@ -135,7 +229,7 @@ skardi run search-hybrid -p 'query=auth middleware' -p limit=8
 # error, which reads as "this surface is broken". It is not; count the
 # arguments before concluding anything.
 skardi query --table -e "SELECT id, title FROM sqlite_fts('docs.main.docs_fts',
-  'body', 'auth middleware', 10)"
+  'body', 'middleware', 10)"
 ```
 
 The `*_fts` / `*_knn` families all take the column: `pg_fts(table, column,
@@ -144,6 +238,28 @@ vector, metric, k)`. If a call 500s, re-read the signature before deciding
 the deployment has no search surface — a missing search surface and a
 mis-called one look identical from the error, and only one of them is worth
 telling the user about.
+
+Three measured properties of these functions, each of which produces a
+wrong conclusion rather than an error:
+
+- **The column argument is the ONLY column searched.** `sqlite_fts(...,
+  'body', 'git integration', 10)` returned 0 rows on a corpus that has a
+  document titled "Git integration" — because `integration` appears in the
+  `title`, and the call asked about `body`. Zero hits means "not in that
+  column", not "not in the corpus". Search the column the words are in, or
+  try more than one.
+- **Multi-word queries are AND, not a phrase or an OR.** Same corpus:
+  `'git wrapper'` and `'shelling git'` each returned the document (both
+  words are in its body), `'git integration'` returned nothing. So a longer
+  query is a NARROWER one — the opposite of how a semantic search behaves,
+  and the reason a vague question fed verbatim into FTS comes back empty.
+  Send few, high-signal terms; keep the full sentence for the vector side.
+- **You cannot aggregate over the call.** `SELECT count(*) FROM
+  sqlite_fts(...)` fails with an opaque HTTP 500, and wrapping it in a
+  subquery fails the same way; `SELECT id, title FROM sqlite_fts(...)`
+  works. Return the rows and count them yourself. Note this is the exact
+  reverse of the rule for graph work below, where aggregation MUST be pushed
+  into the Cypher — the instinct does not transfer.
 
 Take a **small** seed set — 5 to 20. Seeds multiply through the expansion, so
 this number is a cost knob, not a quality knob; a 200-seed expansion mostly
@@ -157,20 +273,42 @@ result. Matching `auto-context`'s standard signature is a good reason to
 propose one; it is not authorization. Otherwise use an ad-hoc `SELECT`, which
 the server validates read-only on every request.
 
-**Verify the seeds resolve in the graph before expanding.** Retrieval returns
-what a corpus says; the graph holds what exists, and the two drift. One
-cheap check saves a confusing empty expansion:
+**Verify the seeds resolve in the graph before expanding — and verify how
+MANY things each one resolves to.** Retrieval returns what a corpus says;
+the graph holds what exists, and the two drift. The check has to return an
+IDENTITY, not the name you already had: a name is not unique, and a name
+that matches many nodes is the failure this step exists to catch.
 
 ```bash
 skardi query --table -e "SELECT * FROM cypher_query('kg',
-  'MATCH (n:Function) WHERE n.name IN \$seeds RETURN n.name AS name',
+  'MATCH (n:Function) WHERE n.name IN \$seeds
+   RETURN n.name AS name, n.fqn AS fqn, n.file_path AS file
+   ORDER BY n.name, n.fqn LIMIT 40',
   '{\"seeds\": [\"authenticate\", \"verify_token\"]}',
-  '{\"name\": \"string\"}')"
+  '{\"name\": \"string\", \"fqn\": \"string\", \"file\": \"string\"}')"
 ```
 
-If a seed does not resolve, the join key is probably wrong — the corpus's
-`title` is not the graph's `name`. Fix the key rather than widening the
-search.
+Three outcomes, three different actions:
+
+- **One row per seed.** Expand.
+- **No row for a seed.** The join key is probably wrong — the corpus's
+  `title` is not the graph's `name`. Fix the key rather than widening the
+  search.
+- **Many rows for one seed** — the common case, and the dangerous one.
+  `WHERE s.name IN $seeds` then expands from ALL of them and merges
+  unrelated entities into one answer, with nothing in the output saying so.
+  Measured on a 109k-vertex code graph: `main` resolves to **81** distinct
+  functions, `wrapper` to 36, `test_resources_dir` to 33. A blast radius
+  "for `main`" built on the name is 81 unrelated functions' callers reported
+  as one number.
+
+  So do not expand on the name. Traverse from the unique identity instead —
+  `WHERE s.fqn IN $seeds`, since `fqn` carries the module path and `name`
+  does not. If the question really is about all of them, say that in the
+  answer and group by `fqn` so the reader can see it is a union. When the
+  question does not settle which one, show the candidate list with its
+  files and ask; picking the first row is choosing for the user without
+  telling them.
 
 ### 3. Hop 2 — expand from the seeds
 
@@ -179,12 +317,20 @@ connection questions:
 
 ```bash
 skardi query --table -e "SELECT * FROM cypher_query('kg',
-  'MATCH (s:Function)<-[:CALLS]-(caller) WHERE s.name IN \$seeds
-   RETURN s.name AS seed, caller.name AS caller, labels(caller)[0] AS kind
-   ORDER BY s.name, caller.name LIMIT 200',
-  '{\"seeds\": [\"authenticate\", \"verify_token\"]}',
-  '{\"seed\": \"string\", \"caller\": \"string\", \"kind\": \"string\"}')"
+  'MATCH (s:Function)<-[r:CALLS]-(caller) WHERE s.fqn IN \$seeds
+   RETURN s.name AS seed, caller.fqn AS caller, r.resolution AS confidence
+   ORDER BY s.name, caller.fqn LIMIT 200',
+  '{\"seeds\": [\"pkg.auth.authenticate\"]}',
+  '{\"seed\": \"string\", \"caller\": \"string\", \"confidence\": \"string\"}')"
 ```
+
+Note what the edge variable `r` is doing there. Binding it is not decoration:
+without it the traversal can neither filter nor report edge confidence, and
+on a real code graph most edges are guesses. Measured: of 658,846 `CALLS`
+edges, **467,467 (71%) carry `resolution: "ambiguous"`** — matched on a bare
+name alone. An unfiltered, unreported expansion is therefore mostly noise
+presented as fact. Return the field (as above) and split the answer by it, or
+filter to `WHERE r.resolution <> 'ambiguous'` and say you did.
 
 Read `references/patterns.md` for the four recipes this generalizes — seed
 and expand, entity neighbourhood, path between two things, and impact /

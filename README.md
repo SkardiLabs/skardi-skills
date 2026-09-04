@@ -43,6 +43,9 @@ cp -r auto-context/skills/auto-context ~/.claude/skills/auto-context
 
 # retrieval (answer questions from data a skardi-server already serves)
 cp -r retrieval/skills/retrieval ~/.claude/skills/retrieval
+
+# graph-rag (answer questions whose answer lives in relationships)
+cp -r graph-rag/skills/graph-rag ~/.claude/skills/graph-rag
 ```
 
 Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`, or "query our database" / "how many orders last month" / "what tables do we have" for `retrieval`. You can also invoke them directly:
@@ -70,6 +73,7 @@ every one of them:
 mkdir -p ~/.agents/skills
 cp -r auto-context/skills/auto-context ~/.agents/skills/auto-context
 cp -r retrieval/skills/retrieval ~/.agents/skills/retrieval
+cp -r graph-rag/skills/graph-rag ~/.agents/skills/graph-rag
 ```
 
 To scope the skill to a single project instead, copy it into that repo's
@@ -88,6 +92,7 @@ through its own CLI rather than by copying:
 ```bash
 openclaw skills install ./auto-context/skills/auto-context
 openclaw skills install ./retrieval/skills/retrieval
+openclaw skills install ./graph-rag/skills/graph-rag
 ```
 
 That installs into `~/.openclaw/workspace/skills/`, scoped to the active agent
@@ -103,6 +108,7 @@ treats `~/.hermes/skills/` as its source of truth:
 mkdir -p ~/.hermes/skills
 cp -r auto-context/skills/auto-context ~/.hermes/skills/auto-context
 cp -r retrieval/skills/retrieval ~/.hermes/skills/retrieval
+cp -r graph-rag/skills/graph-rag ~/.hermes/skills/graph-rag
 ```
 
 Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git
