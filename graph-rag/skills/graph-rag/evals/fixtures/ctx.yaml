@@ -1,0 +1,33 @@
+# The graph source the graph-rag evals traverse.
+#
+# `name: kg` is the SKARDI catalog name — what `cypher_query('kg', …)` takes,
+# and what every example in the skill uses. `graph_name: kgeval` is the AGE
+# graph, a different namespace: AGE's `create_graph` refuses names shorter than
+# three characters ("graph name is invalid"), so the AGE graph cannot itself be
+# called `kg`. Keeping them distinct here is deliberate — it is also the shape
+# a reader should not be surprised by.
+kind: context
+metadata:
+  name: graph-rag-evals
+spec:
+  data_sources:
+    - name: kg
+      type: graph
+      hierarchy_level: catalog
+      connection_string: postgres://127.0.0.1:${KG_PORT}/postgres
+      graph:
+        backend: age
+        graph_name: kgeval
+        username_env: KG_USER
+        password_env: KG_PASS
+        query_timeout_seconds: 30
+        max_rows: 10000
+        views:
+          # Bound INSIDE the Cypher, because a view's SQL WHERE does not push
+          # into it — an unbounded view still fails RowCapExceeded.
+          - name: files
+            cypher: |
+              MATCH (f:File) RETURN f.file_path AS path LIMIT 500
+            schema:
+              - name: path
+                type: string

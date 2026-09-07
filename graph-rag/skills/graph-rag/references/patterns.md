@@ -191,20 +191,81 @@ Cypher.
 explodes — so bound the depth AND deduplicate, and return a count alongside
 the sample so the reader knows whether they are seeing all of it.
 
+Two things decide whether the number you report means anything, and both
+were wrong in the first version of this recipe.
+
+**Seed by the unique key, not by `name`.** The next section says the join key
+must be UNIQUE and that on a code graph it is rarely `name`; this recipe used
+`s.name IN $seeds` anyway. Measured on the rig: `MATCH (f:Function) WHERE
+f.name = 'main'` returns **81** nodes. Seeding a blast radius that way unions
+81 unrelated functions' dependents into one count and reports it as the impact
+of changing one of them.
+
+**Say how many of the traversed edges are guesses.** `CALLS` edges carry a
+`resolution`, and on the rig the distribution is:
+
+| resolution | edges | |
+|---|---|---|
+| `ambiguous` | 467,467 | **71.0%** — matched on name alone |
+| `unique_name` | 103,669 | |
+| `same_scope` | 62,145 | |
+| `import` | 25,565 | |
+
+A blast radius that traverses all of them is mostly traversing guesses. How
+much that matters is not a rule of thumb — measure it for the seed in front of
+you. On `.github.scripts.bump_schema_versions.resolve_includes`, one hop:
+
+```
+unfiltered      : 4 dependents
+non-ambiguous   : 0
+```
+
+Four is not the answer. "0 confirmed, 4 name-only matches" is.
+
+So: get the confidence split at ONE hop, where AGE can filter, and treat the
+transitive number as the upper bound it is.
+
 ```bash
+# One hop, filterable. Run it twice — with and without the edge predicate —
+# and report both numbers.
 skardi query --table -e "SELECT * FROM cypher_query('kg',
-  'MATCH (s:Function)<-[:CALLS*1..3]-(dep) WHERE s.name IN \$seeds
+  'MATCH (s:Function)<-[c:CALLS]-(dep) WHERE s.fqn IN \$seeds
+     AND c.resolution <> \'ambiguous\'
+   RETURN count(DISTINCT dep) AS n',
+  '{\"seeds\": [\"auth.tokens.verify_token\"]}', '{\"n\": \"int\"}')"
+
+# Transitive. An UPPER BOUND: it cannot exclude ambiguous hops (see below).
+skardi query --table -e "SELECT * FROM cypher_query('kg',
+  'MATCH (s:Function)<-[:CALLS*1..3]-(dep) WHERE s.fqn IN \$seeds
    WITH DISTINCT dep
    RETURN labels(dep)[0] AS kind, count(*) AS n
    ORDER BY count(*) DESC LIMIT 20',
-  '{\"seeds\": [\"verify_token\"]}',
+  '{\"seeds\": [\"auth.tokens.verify_token\"]}',
   '{\"kind\": \"string\", \"n\": \"int\"}')"
 ```
 
+**Why the transitive one cannot be filtered, measured rather than assumed.**
+Every form that would express "no hop on this path is ambiguous" fails on AGE:
+
+| form | result |
+|---|---|
+| `all(r IN relationships(p) WHERE r.resolution <> '…')` | `syntax error at or near "("` |
+| `NOT '…' IN [x IN rels \| x.resolution]` | `could not find properties for x` |
+| `RETURN [r IN relationships(p) \| r.resolution]` | `could not find properties for r` |
+
+What DOES work is a property map on the variable-length edge —
+`[:CALLS*1..3 {resolution:'same_scope'}]` — but it pins every hop to ONE
+value, so the three trustworthy resolutions cannot be summed: a path whose
+first hop is `import` and second is `same_scope` matches none of them. Use it
+when you want "reachable purely through same-scope calls"; do not use it as a
+substitute for excluding `ambiguous`.
+
 Run the aggregate first to size the answer, then the enumerated version with
 a `LIMIT` if the totals are small enough to be worth listing. Reporting "142
-dependents across 3 kinds, here are the 20 nearest" is honest; listing 20 and
-implying that is all of them is not.
+dependents across 3 kinds, at most — 71% of this graph's call edges are
+name-only matches, and 12 of the 40 nearest are confirmed" is honest; listing
+20 and implying that is all of them is not, and neither is presenting a
+transitive count without saying what it is made of.
 
 ## Joining the two hops back together
 

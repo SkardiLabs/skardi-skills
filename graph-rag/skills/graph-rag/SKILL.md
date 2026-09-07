@@ -1,9 +1,9 @@
 ---
 name: graph-rag
-description: 'Answer a question about a knowledge graph or property graph served by a skardi-server — including graphs stored in Postgres via Apache AGE. Two shapes, one skill: when the question already names the entity (what implements UpgradeStep, who calls verify_token, what does this class extend) go straight to the traversal; when it does not (how does our git integration work and who depends on it, what handles auth) find the entity by semantic or full-text search first, then traverse from it. Either way the answer comes from EDGES, and it is reported with the traversal, its bound, and the confidence field the edges carry shown. Reach for this whenever a question is about how code or entities CONNECT — what implements or extends X, who calls or imports it, what depends on it, what breaks if we change it, what is the blast radius, how are A and B related, trace the path between them, what is near this concept — and whenever the user says graph, graph RAG, GraphRAG, knowledge graph, Cypher, AGE, multi-hop, impact, lineage or dependencies. IMPORTANT: reach for it even when the user names no server and no graph, and even when the question looks like something a codebase grep could answer — a configured graph may hold a codebase the working directory does not, so grepping locally can truthfully report a not-found for an entity the graph has hundreds of. Run `skardi schema` first: the CLI resolves its server from ~/.skardi/config.yaml with no arguments, so one command tells you whether a graph source exists — cheaper than assuming either way. Then, before answering a question the user asked about local code, CHECK WHICH CODEBASE the graph holds (sample `file_path` from its File nodes) and name it in the answer: a graph of a different project answers confidently about the wrong one, which is worse than a local not-found. If the graph is not the codebase they meant, say so and use the ordinary local-code tools. Only hand off if `skardi schema` comes back with no graph source: graph setup is graph-source, index building is auto-context, and row-shaped questions (counts, sums, filters over tables) are retrieval.'
+description: 'Answer a question about a knowledge graph or property graph served by a skardi-server — including graphs stored in Postgres via Apache AGE. Two shapes, one skill: when the question already names the entity (what implements UpgradeStep, who calls verify_token, what does this class extend) go straight to the traversal; when it does not (how does our git integration work and who depends on it, what handles auth) find the entity by semantic or full-text search first, then traverse from it. Either way the answer comes from EDGES, and it is reported with the traversal, its bound, and the confidence field the edges carry shown. Reach for this whenever a question is about how code or entities CONNECT — what implements or extends X, who calls or imports it, what depends on it, what breaks if we change it, what is the blast radius, how are A and B related, trace the path between them, what is near this concept — and whenever the user says graph, graph RAG, GraphRAG, knowledge graph, Cypher, AGE, multi-hop, impact, lineage or dependencies. IMPORTANT: reach for it even when the user names no server and no graph, and even when the question looks like something a codebase grep could answer — a configured graph may hold a codebase the working directory does not, so grepping locally can truthfully report a not-found for an entity the graph has hundreds of. Run `skardi schema` first: the CLI resolves its server from ~/.skardi/config.yaml with no arguments, so one command tells you whether a graph source exists — cheaper than assuming either way. Then, before answering a question the user asked about local code, CHECK WHICH CODEBASE the graph holds (sample `file_path` from its File nodes) and name it in the answer: a graph of a different project answers confidently about the wrong one, which is worse than a local not-found. If the graph is not the codebase they meant, say so and use the ordinary local-code tools. Retrieval is needed only for the vague shape; a server with a graph and no search surface still runs the main flow. Hand off if `skardi schema` comes back with no graph source: graph setup is graph-source, index building is auto-context, and row-shaped questions (counts, sums, filters over tables) are retrieval. And if the server cannot be reached at all, say which URL you tried and then answer the question with the ordinary local-code tools — an unreachable graph is a reason this skill cannot help, not a reason the question goes unanswered.'
 ---
 
-# graph-rag — answer connection questions over a graph plus a retrieval surface
+# graph-rag — answer connection questions from a graph's edges
 
 Your job: take a question whose answer lives in **relationships**, find the
 right entities to start from, walk the graph from them, and answer with both
@@ -23,19 +23,55 @@ scoped to the directory you are standing in, and nothing about the question
 reveals the mismatch — the traversal succeeds, the rows look right, and the
 entities are real. They are just real somewhere else.
 
-One sample answers it:
+One sample answers it — **ask the filesystem, not the path strings**:
 
 ```bash
-skardi query --table -e "SELECT * FROM cypher_query('kg',
-  'MATCH (f:File) RETURN f.file_path AS path LIMIT 400',
-  '{}', '{\"path\": \"string\"}')" | awk -F/ 'NF>1{print $1}' | sort | uniq -c | sort -rn | head
+# No --table here, deliberately: the default output is exactly the envelope's
+# `data` array, pretty-printed and nothing else, so it pipes into jq. Table
+# mode adds a header, box rules and a trailing "<n> row(s) returned" line,
+# none of which is a parsing contract.
+skardi query -e "SELECT * FROM cypher_query('kg',
+  'MATCH (f:File) RETURN f.file_path AS path LIMIT 40',
+  '{}', '{\"path\": \"string\"}')" \
+| jq -r '.[].path' \
+| while read -r f; do [ -e "$f" ] && echo hit || echo miss; done | sort | uniq -c
 ```
 
-Top-level directories identify a codebase immediately. Measured on the rig
-this skill was written against: `datahub-actions 146`, `datahub-frontend 80`
-— a graph of DataHub, reachable from a shell sitting in an unrelated repo. A
-question like "who calls `main`?" asked there would have been answered with
-81 DataHub functions, confidently, with no sign anything was wrong.
+Do the graph's own files exist where you are standing? Measured both
+directions, each against a real graph:
+
+| graph | run from | result |
+|---|---|---|
+| a DataHub code graph | an unrelated repo | **0 / 40** exist |
+| a graph of that repo | that repo | **40 / 40** exist |
+
+A near-total miss rate means the graph is not your project. There is no
+threshold to tune: the two answers are 0% and 100%, because a file path either
+resolves or it does not.
+
+**Why not read the project name off the paths.** An earlier version of this
+check did — `awk -F/ '{print $1}' | sort | uniq -c` — and it works only when
+the graph happens to be a monorepo whose top-level directories are module
+names. On the rig it printed `datahub-web-react 3958`, `metadata-ingestion
+2920`, which is exactly the signal wanted. On an ordinary single repository the
+same command prints `src 3958` and identifies nothing, and on a graph whose
+`file_path` values are absolute it prints an empty first field for every row.
+Nor is there anything better to read: a `File` node on this graph carries
+`id`, `fqn`, `kind`, `lang`, `name`, `file_path`, `line_start`,
+`is_generated` — measured — and **no repository or project property at all**.
+So the question has to be asked of the filesystem, which is the one authority
+that knows what repo you are in.
+
+(That earlier command also sampled `LIMIT 400` and quoted the result as the
+codebase's shape. It is not: AGE returns rows in storage order, so the first
+400 are alphabetically early. Over all 12,779 files the top entry is
+`datahub-web-react 3958`; over the first 400 it is `datahub-actions 146`.
+Harmless for a yes/no scope check, wrong if read as a profile of the
+codebase.)
+
+The stakes, measured on the same rig: a question like "who calls `main`?"
+asked from an unrelated shell would have been answered with **81** DataHub
+functions, confidently, with no sign anything was wrong.
 
 Do this once per session, before the first answer about local code, then:
 
@@ -172,15 +208,23 @@ before it goes into the SQL, and write the result to a file for `-f` so the
 shell is not a third layer:
 
 ```python
-import json, subprocess
+import json, os, subprocess, tempfile
 def sql_str(s):                       # SQL layer: '' escapes a quote
     return "'" + s.replace("'", "''") + "'"
 params  = json.dumps({"seeds": seeds})            # JSON layer
 columns = json.dumps({"caller": "string"})
 sql = (f"SELECT * FROM cypher_query('kg', {sql_str(CYPHER)}, "
        f"{sql_str(params)}, {sql_str(columns)})")
-open("q.sql", "w").write(sql)
-subprocess.run(["skardi", "query", "--table", "-f", "q.sql"])
+# A temporary file, NOT `q.sql` in the working directory. You are standing in
+# somebody's repository, and a fixed name truncates a `q.sql` that repo already
+# had — silently, and before the query being written has even run.
+fd, path = tempfile.mkstemp(suffix=".sql")
+try:
+    with os.fdopen(fd, "w") as fh:
+        fh.write(sql)
+    subprocess.run(["skardi", "query", "--table", "-f", path])
+finally:
+    os.unlink(path)
 ```
 
 Verified: with the escaping above, the seed that produced three foreign rows
@@ -478,7 +522,7 @@ question the user can answer and you cannot.
 
 | Symptom | Meaning | Do |
 |---|---|---|
-| exit code 2 | server unreachable | Report the URL you tried. Do not retry in a loop; do not start a server. |
+| exit code 2 | server unreachable | Report the URL you tried. Do not retry in a loop; do not start a server. Then **answer the question with the ordinary local-code tools** unless the user asked for graph data specifically — the same handling as a graph that turns out to be a different project. An unreachable graph is a reason this skill cannot help, not a reason the question goes unanswered. |
 | `RowCapExceeded` | the Cypher itself is unbounded | Put the bound inside the Cypher, not in SQL. Narrow the relationship type. |
 | a column is all NULL | wrong getter for the stored JSON type | Check the property's actual type, pick the matching getter. |
 | the expansion returns 0 rows | seeds do not resolve in the graph, or the arrow points the wrong way | Re-run the seed-resolution check; then try the opposite direction. |

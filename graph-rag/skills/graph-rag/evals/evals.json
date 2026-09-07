@@ -4,23 +4,35 @@
     {
       "id": 1,
       "name": "impact-question-needs-two-hops",
-      "prompt": "We're about to change how `verify_token` works. What would break? Our skardi-server is on http://127.0.0.1:8080 and it has our code knowledge graph registered.",
-      "expected_output": "Discovers the graph vocabulary first (graph_schema + edge counts), seeds on the named entity, expands INCOMING call edges with a bounded Cypher, and reports the dependents with the traversal and its bound attached. Must not present an unordered LIMIT slice as the complete answer.",
-      "files": []
+      "prompt": "We're about to change how `verify_token` works. What would break? Start the fixture with `SKARDI_SERVER_BIN=<path> fixtures/setup.sh` first; it prints the server URL.",
+      "expected_output": "Discovers the graph vocabulary first (graph_schema + edge counts), then seeds on the UNIQUE key. The fixture holds two functions named `verify_token`, so an answer seeded on `name` reaches 8 dependents and one of them belongs to the other function; seeded on `fqn` it reaches 7. Expands INCOMING call edges with a bounded Cypher and reports the traversal and its bound. Must say how many of the edges it traversed are trustworthy: of the six one-hop callers, three carry `resolution: ambiguous` and three do not, so \"6 dependents\" presented as fact is wrong and \"3 confirmed, 3 name-only matches\" is right. Must not present an unordered LIMIT slice as the complete answer.",
+      "files": [
+        "fixtures/setup.sh",
+        "fixtures/seed_graph.sql",
+        "fixtures/ctx.yaml"
+      ]
     },
     {
       "id": 2,
       "name": "vague-question-needs-semantic-seeding",
-      "prompt": "Which parts of our codebase deal with authentication, and what calls into them? skardi-server at http://127.0.0.1:8080.",
-      "expected_output": "Recognizes the question is too vague for a property lookup, so hop 1 uses a search surface to find seeds, verifies the seeds resolve in the graph before expanding, then expands. Reports unresolved seeds rather than hiding them.",
-      "files": []
+      "prompt": "Which parts of our codebase deal with authentication, and what calls into them? Start the fixture with `SKARDI_SERVER_BIN=<path> fixtures/setup.sh` first; it prints the server URL.",
+      "expected_output": "Recognizes the question is too vague for a property lookup and looks for a search surface. The fixture registers a graph source and NO search surface, which is the point: the agent must discover that from `skardi schema` rather than assume it, then say what it cannot do — semantic seeding — and fall back to what the graph alone supports (enumerate candidate entities by property, e.g. files and function names under `auth`, and expand from those), labelling the coverage difference. Must not fabricate a search pipeline, and must not silently answer as if it had seeded semantically.",
+      "files": [
+        "fixtures/setup.sh",
+        "fixtures/seed_graph.sql",
+        "fixtures/ctx.yaml"
+      ]
     },
     {
       "id": 3,
       "name": "row-question-should-hand-off",
-      "prompt": "How many orders did we get last month, broken down by status? skardi-server at http://127.0.0.1:8080.",
-      "expected_output": "Recognizes this is a rows-not-edges question and does NOT run a graph traversal — either hands off to the retrieval skill or answers with plain read-only SQL. Should not invent a graph angle.",
-      "files": []
+      "prompt": "How many orders did we get last month, broken down by status? Start the fixture with `SKARDI_SERVER_BIN=<path> fixtures/setup.sh` first; it prints the server URL.",
+      "expected_output": "Recognizes this is a rows-not-edges question and does NOT run a graph traversal. The fixture's only source is a code graph with no orders anywhere, so the correct answer names that and hands off to the retrieval skill rather than inventing a graph angle or an empty result.",
+      "files": [
+        "fixtures/setup.sh",
+        "fixtures/seed_graph.sql",
+        "fixtures/ctx.yaml"
+      ]
     }
   ]
 }
