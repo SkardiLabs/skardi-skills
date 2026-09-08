@@ -17,14 +17,42 @@ GRANT CONNECT ON DATABASE graphrag TO kg_reader;  -- explicit, in case PUBLIC's 
 GRANT USAGE ON SCHEMA ag_catalog TO kg_reader;
 GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO kg_reader;
 
--- Per graph (AGE stores each graph in a schema of the same name):
-GRANT USAGE ON SCHEMA your_graph TO kg_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA your_graph TO kg_reader;
+-- Per graph. AGE stores each graph in a schema of the same name, VERBATIM —
+-- so the identifier is double-quoted here. See below for why that is not
+-- optional.
+GRANT USAGE ON SCHEMA "your_graph" TO kg_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA "your_graph" TO kg_reader;
 ```
 
 `ag_catalog` access is what lets `graph_schema()` enumerate labels and
 what registration probes (`ag_catalog.ag_graph`) to distinguish "AGE is
 absent" from other failures.
+
+### Quote the graph schema, or the grant silently targets the wrong name
+
+`create_graph` preserves the name exactly as given — measured:
+`create_graph('AB1')` produces a schema named `AB1`, and `create_graph('a-b')`
+produces `a-b`. Postgres, meanwhile, folds an **unquoted** identifier to lower
+case and treats a hyphen as punctuation. So an unquoted grant fails for two of
+the four name shapes `create_graph` accepts, and it fails differently each
+time:
+
+| grant | result |
+|---|---|
+| `ON SCHEMA AB1` | `ERROR: schema "ab1" does not exist` — folded to a name that was never created |
+| `ON SCHEMA a-b` | `ERROR: syntax error at or near "-"` |
+| `ON SCHEMA k_g` | works — all-lowercase-with-underscore is the only shape that survives unquoted |
+| `ON SCHEMA "AB1"`, `"a-b"`, `"k_g"` | all work |
+
+The first row is the one worth pausing on: it is not a syntax error a reader
+would notice as their own typo. It names a schema they never asked for, so a
+reader who picked `AB1` sees a complaint about `ab1` and reasonably concludes
+the graph is missing rather than that their grant is misspelled.
+
+Quoting always is the rule, not "quote when the name is unusual": an
+all-lowercase name is unaffected by the quotes, so there is no case where
+adding them costs anything, and one where leaving them off is a wrong-name
+error dressed as a missing graph.
 
 ## Why `LOAD 'age'` is best-effort, and what to do instead
 
