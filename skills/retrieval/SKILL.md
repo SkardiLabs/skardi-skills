@@ -23,6 +23,20 @@ The `skardi` CLI is a thin HTTP client — every command below is one request to
 
 This skill is written and tested against **v0.5.0** of both CLI and server (the current release). Deployment behavior — which sources exist, what is read-only, row caps — is discovered live and is never assumed from this text.
 
+> **One exception: `--purpose` / `--session-id` need Skardi `main`, not v0.5.0.**
+> The pair used throughout step 3 landed after v0.5.0 shipped
+> ([skardi#232](https://github.com/SkardiLabs/skardi/pull/232)) and is in no
+> release yet. Verified against commit
+> [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48):
+> `cargo build --release -p skardi-cli` there produces a `skardi query --help`
+> that lists both flags, and `cargo test -p skardi-cli --bins -- purpose
+> ai_context session_id` passes (12 tests). Both halves are missing from
+> v0.5.0 — the CLI has no such flags (`git grep session-id v0.5.0 --
+> crates/cli/` is empty) and the server has no `ai_context` at all
+> (`git grep ai_context v0.5.0 -- crates/server/` is empty), so on a released
+> server there is no ledger for the pair to land in. On v0.5.0, run the queries
+> below without the two flags; everything else in this skill holds there.
+
 ## Rule zero: ask the server, not your memory
 
 Which tables exist, which pipelines are registered, what a column means, what is writable — these are **deployment facts**. They differ per server and change under you. Re-discover them at the start of every session; never carry them over from a previous conversation or from this file.
@@ -125,7 +139,7 @@ Invocation: `skardi run <name> -p key=value` — values parse as JSON first (num
 
 ### 3. Ad-hoc SQL: read-only, one statement at a time
 
-Mint one session id when the task starts and reuse it for every query in the task:
+Mint one session id when the task starts and reuse it for every query in the task (the two flags need a CLI built from `main` — see the exception under Prerequisites):
 
 ```bash
 SKARDI_SESSION=$(uuidgen)
@@ -133,7 +147,7 @@ skardi query --purpose "order counts by lifecycle state" --session-id "$SKARDI_S
   -e "SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
 ```
 
-- **Every `skardi query` carries `--purpose` and `--session-id`.** They are sent as the `ai_context: { purpose, session_id }` object on the request, which is what the server's audit ledger records, the daily brief's intent breakdown groups by, and session-level learning aggregates on — a query without them lands as "(no declared intent)" with no session. The pair is all-or-nothing (the server rejects one without the other; the CLI enforces it too, since skardi#232). `--purpose` is one plain-language line on why this query runs, ≤2000 characters; `--session-id` is any non-empty string ≤200 characters — one id per task, minted once (`uuidgen`) and reused across the task's queries so they group as one session. Purpose belongs in the flag, not in a SQL comment: a comment rides inside the SQL text where nothing aggregates it. (If SQL text does start with a comment, use the block form — a leading `-- comment` makes the CLI misparse `-e "--..."` as a flag.)
+- **Every `skardi query` carries `--purpose` and `--session-id`.** They are sent as the `ai_context: { purpose, session_id }` object on the request, which is what the server's audit ledger records, the daily brief's intent breakdown groups by, and session-level learning aggregates on — a query without them lands as "(no declared intent)" with no session. The pair is all-or-nothing (the server rejects one without the other; the CLI enforces it too, since [skardi#232](https://github.com/SkardiLabs/skardi/pull/232), which is on `main` and in no release). `--purpose` is one plain-language line on why this query runs, ≤2000 characters; `--session-id` is any non-empty string ≤200 characters — one id per task, minted once (`uuidgen`) and reused across the task's queries so they group as one session. Purpose belongs in the flag, not in a SQL comment: a comment rides inside the SQL text where nothing aggregates it. (If SQL text does start with a comment, use the block form — a leading `-- comment` makes the CLI misparse `-e "--..."` as a flag.)
 - **SELECT only.** The server already rejects DDL and COPY outright, and rejects writes to any source not explicitly configured `read_write` — but do not lean on that: retrieval work is read work, even on writable sources.
 - **One statement per request.** The server rejects multi-statement SQL (`Expected exactly one SQL statement`). Run follow-ups as separate calls.
 - **Peek before the real query.** `SELECT * FROM <table> LIMIT 5` shows you actual value shapes — date formats, status spellings, NULL patterns — that schema output cannot. One peek prevents most wrong-filter answers.
