@@ -15,7 +15,7 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 
 > **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
 
-> **`graph-source` requires Skardi `main`, not v0.5.0.** It was verified against [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48); build that checkout with `cargo build --release -p skardi-server`. The latest release, v0.5.0, has neither `type: graph` nor `cypher_query`.
+> **`graph-source` and `graph-rag` require Skardi `main`, not v0.5.0.** Both use the same graph engine, verified against [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48); build that checkout with `cargo build --release -p skardi-server`. The latest release, v0.5.0, has neither `type: graph` nor `cypher_query`.
 
 ## Installation
 
@@ -28,7 +28,7 @@ From inside any Claude Code session:
 /plugin install skardi@skardi-skills
 ```
 
-That's it — all four skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
+That's it — every skill in this repository is now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
 
 > **Upgrading from an earlier version:** the individual plugins are now one, named `skardi`, so that every host can install this repository with its own one-line plugin command instead of a manual directory copy. Installed copies of the old per-skill plugins are not removed automatically — run `/plugin uninstall auto-context`, `/plugin uninstall retrieval`, `/plugin uninstall graph-source` and `/plugin uninstall graph-rag`, then install `skardi`. Further back: `auto-knowledge-base` and `auto-rag` were merged into `auto-context`; `skardi-deploy-and-patterns` and `feishu-connector` were retired, and Feishu cloud docs are now raw material for `auto-context`.
 
@@ -60,8 +60,8 @@ Claude Code will automatically load the relevant skill when your request matches
 ### Other hosts, in one command
 
 These hosts install this repository directly through their own plugin or
-extension mechanism. Each reads its own manifest in this repo and picks all
-three skills up from `skills/`.
+extension mechanism. Each reads its own manifest in this repo and picks up
+whatever is in `skills/`.
 
 **[Gemini CLI](https://github.com/google-gemini/gemini-cli/blob/main/docs/extensions/reference.md)** —
 reads `gemini-extension.json`; a skill is discovered by its location, so
@@ -97,7 +97,7 @@ Codex, Cursor and Grok are not in this list because they distribute through
 their own reviewed marketplaces rather than from a repository manifest, and
 Hermes is not because a Hermes *plugin* has to register each skill from Python
 in `__init__.py` (`skills/` is not auto-registered there) and would namespace
-them as `skardi:auto-context`. For all three, and for any host below, use the
+them as `skardi:auto-context`. For those, and for any host below, use the
 checkout path.
 
 ### Other Agent Skills hosts, from a checkout

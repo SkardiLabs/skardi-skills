@@ -148,7 +148,11 @@ one is faster than half-doing its job here.
    `http://127.0.0.1:8080`; `--token` / `$SKARDI_API_TOKEN` if auth is on.
    Exit code `2` means the server was unreachable — an environment problem,
    not a query problem.
-2. **A `type: graph` source**, registered and healthy.
+2. **A `type: graph` source**, registered and healthy. This needs Skardi
+   `main`, not a release: v0.5.0 has neither `type: graph` nor `cypher_query`,
+   so on a released server the source cannot be declared at all and the failure
+   arrives as a generic HTTP 500. `graph-source` owns the provisioning and
+   carries the verified commit.
 3. **Something to seed from.** Usually a search surface (`auto-context`'s
    `search-vector` / `search-fulltext` / `search-hybrid`, or a `*_knn` /
    `*_fts` table function). Sometimes the graph itself is enough — see
