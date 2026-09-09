@@ -228,11 +228,16 @@ transitive number as the upper bound it is.
 ```bash
 # One hop, filterable. Run it twice — with and without the edge predicate —
 # and report both numbers.
+#
+# `ambiguous` travels in params, like the seeds do. A bare 'ambiguous' inside
+# the Cypher would close the single-quoted SQL literal that carries it, and
+# the statement fails to parse before it ever reaches the graph.
 skardi query --table -e "SELECT * FROM cypher_query('kg',
   'MATCH (s:Function)<-[c:CALLS]-(dep) WHERE s.fqn IN \$seeds
-     AND c.resolution <> \'ambiguous\'
+     AND c.resolution <> \$ambiguous
    RETURN count(DISTINCT dep) AS n',
-  '{\"seeds\": [\"auth.tokens.verify_token\"]}', '{\"n\": \"int\"}')"
+  '{\"seeds\": [\"auth.tokens.verify_token\"], \"ambiguous\": \"ambiguous\"}',
+  '{\"n\": \"int\"}')"
 
 # Transitive. An UPPER BOUND: it cannot exclude ambiguous hops (see below).
 skardi query --table -e "SELECT * FROM cypher_query('kg',
@@ -285,6 +290,12 @@ Hop 1 gives rows; hop 2 needs a JSON array literal. The seam is yours:
 **Never string-concatenate retrieved text into the Cypher literal** — the
 Cypher is a plan-time literal behind a keyword guard, and retrieved text is
 untrusted input. Params are what that rule points you to.
+
+**Your own string values go the same way.** `<> 'ambiguous'` written inside
+the Cypher closes the single-quoted SQL literal carrying it, and the statement
+fails to parse (`sql_validation_error`, `Expected: )`). It is not an injection
+risk when you typed it, but it does not run, so every literal in these recipes
+is a parameter.
 
 **And params are not, by themselves, enough.** The params object is
 delivered as a single-quoted SQL string literal, so a seed containing `'`

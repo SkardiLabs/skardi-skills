@@ -179,6 +179,13 @@ view.
 literal itself must be SQL-escaped.** These are TWO layers, and getting the
 first right does not give you the second.
 
+**This covers every string value, not just the seeds.** A filter you typed
+yourself is subject to the same rule: writing `<> 'ambiguous'` inside the
+Cypher closes the single-quoted SQL literal that carries it, and the statement
+fails to parse before the graph ever sees it. Send it as a parameter
+(`<> $ambiguous`, with `"ambiguous": "ambiguous"` in the params object) the
+way the recipes in `references/patterns.md` do.
+
 Cypher params stop Cypher injection: the Cypher is a plan-time literal
 screened by a keyword guard, and values spliced into it are an injection
 surface. Retrieved text is exactly the untrusted input you must not splice.
