@@ -1,0 +1,31 @@
+# The large graph-rag fixture. Deliberately tighter than a production source
+# would be: `query_timeout_seconds: 20` so an unbounded traversal fails in a
+# reasonable test run rather than hanging, and `max_rows: 10000` so a view
+# without its own bound is reachable at this graph's size.
+#
+# `unbounded_functions` has NO LIMIT in its Cypher, on purpose. It is the
+# subject of two checks: a SQL WHERE over it fails, and a SQL LIMIT over it
+# does not. A production source should not declare a view this way.
+kind: context
+metadata:
+  name: graph-rag-evals-large
+spec:
+  data_sources:
+    - name: kg
+      type: graph
+      hierarchy_level: catalog
+      connection_string: postgres://127.0.0.1:${KG_PORT}/postgres
+      graph:
+        backend: age
+        graph_name: big
+        username_env: KG_USER
+        password_env: KG_PASS
+        query_timeout_seconds: 20
+        max_rows: 10000
+        views:
+          - name: unbounded_functions
+            cypher: |
+              MATCH (f:Function) RETURN f.fqn AS fqn
+            schema:
+              - name: fqn
+                type: string

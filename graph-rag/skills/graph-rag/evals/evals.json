@@ -2,7 +2,8 @@
   "skill_name": "graph-rag",
   "_modes": {
     "execution": "The skill is loaded before the run. What is scored is what the agent DOES with it: discovery, seeding, bounds, and whether the answer separates what the edges support from what they only suggest.",
-    "trigger": "The run starts with NO skill preloaded and the agent is given only the user's question. What is scored is the SELECTION: whether this skill is reached for at all. An execution case cannot measure this, because loading the skill is the thing under test. Run these in a directory the skill is installed for but has not been invoked in."
+    "trigger": "The run starts with NO skill preloaded and the agent is given only the user's question. What is scored is the SELECTION: whether this skill is reached for at all. An execution case cannot measure this, because loading the skill is the thing under test. Run these in a directory the skill is installed for but has not been invoked in.",
+    "regression": "A fixture that asserts its own invariants and needs no agent. Run it after editing the skill's performance or bounds advice; a check that flips is the signal that the advice needs re-measuring."
   },
   "_trigger_baseline": {
     "measured": "2026-09-09, against this fixture on AGE 1.6.0/PG16 and a skardi-server built from main",
@@ -101,6 +102,17 @@
       "prompt": "(Needs a fixture this PR does not ship: a graph whose vertices are documents, services or people rather than code, registered on a running server. The question is then asked in that domain's own words and mentions no graph, e.g. \"this document is out of date — which other documents still point at it?\")",
       "expected_output": "MUST reach for graph-rag, and currently does not. Measured 2026-09-09 against a real document-reference graph (307 vertices, 393 edges) registered and healthy on a running server: asked in the domain's own words, the skill was not selected and a sibling skill matching the surface words won instead; the agent answered by full-text search plus per-document fetch, at roughly three times the wall clock and twice the cost, and silently answered from a different copy of the corpus. Prefixing the same question with \"there is a graph of our documents on the server\" selected it immediately. So the miss is not that the question is ambiguous — it is that the description is written almost entirely in code and Cypher vocabulary, and a non-code graph does not match it. Building this fixture is the prerequisite for fixing that, and until it exists the skill's coverage of non-code graphs is untested rather than working.",
       "files": []
+    },
+    {
+      "id": 9,
+      "name": "large-graph-bounds-still-bite",
+      "mode": "regression",
+      "prompt": "Run `SKARDI_SERVER_BIN=<path> SKARDI_CLI_BIN=<path> fixtures/setup_large.sh`. It builds a synthetic 50k-vertex, 250k-edge graph and asserts the bounds the small fixture cannot reach. Report which checks failed and what that means for the rules in SKILL.md.",
+      "expected_output": "All seven checks pass, and a failure is a finding about the skill rather than about the fixture. Each check pairs a rule with its recommended form, so a green-to-red flip means the rule stopped being load-bearing: the labeled single MATCH answers while the unlabeled split form times out; an undirected untyped `-[r]-` times out even labeled and with a LIMIT; a SQL WHERE over an unbounded view fails on max_rows while a SQL LIMIT over the same view succeeds; the truncation notice is on stderr only; and LIMIT without ORDER BY returns a visibly different slice than ORDER BY. If check 2 or 3 starts passing, the performance advice in SKILL.md needs re-timing rather than a fixture fix. Takes about ninety seconds to build and needs Docker, which is why it is not part of the default run.",
+      "files": [
+        "fixtures/setup_large.sh",
+        "fixtures/ctx.large.yaml"
+      ]
     }
   ]
 }

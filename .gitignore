@@ -27,3 +27,6 @@ retrieval/skills/retrieval/evals/fixtures/ctx.rendered/
 graph-rag/skills/graph-rag/evals/fixtures/server.log
 graph-rag/skills/graph-rag/evals/fixtures/server.pid
 graph-rag/skills/graph-rag/evals/fixtures/ctx.rendered.yaml
+graph-rag/skills/graph-rag/evals/fixtures/server_large.log
+graph-rag/skills/graph-rag/evals/fixtures/server_large.pid
+graph-rag/skills/graph-rag/evals/fixtures/ctx.large.rendered.yaml

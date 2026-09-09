@@ -38,6 +38,18 @@ the type it actually has (`'{"raw": "int"}'`) to confirm.
 `->` / `->>` / `?` are deliberately not installed — the rewrite would break
 federated pushdown session-wide — so the getter UDFs are the route.
 
+### A column holds `["a","b"]` where you wanted `"ab"`
+
+`||` is not string concatenation in this Cypher. It builds a LIST, so
+`'m' || toString(i)` yields `["m","1"]`. String concatenation is `+`:
+`'m' + toString(i)`. Measured.
+
+Nothing complains at the point of the mistake. What you get instead is a
+column of arrays, and then either a declared-type failure three steps later
+(the opaque 500, if you declared it `string`) or, if you declared it `json`,
+an answer full of one-element lists that reads as data. Check a single row's
+type before you build anything on a concatenated property.
+
 ### Two columns hold each other's values
 
 `columns` binds positionally against `RETURN`, and two same-typed columns
@@ -135,12 +147,23 @@ error: [query_execution_error] SQL query execution failed; see server logs for d
 That is deliberate on the server's side, not a bug: a raw engine error can
 quote row values and internal schema, so the response stays generic. The
 consequence for you is that the error text is not a symptom you can look up.
-Nine distinct causes were measured behind that one string, including a wrong
+Ten distinct causes were measured behind that one string, including a wrong
 connection name, a `columns` count that does not match `RETURN`, a params
 argument that is not a JSON object, `RowCapExceeded`, a Cypher construct the
 AGE build does not support, and a column whose declared type does not match
 what the backend returned. The server log distinguishes them; you may not have
 it.
+
+**A timeout is one of the ten, and it is the one that punishes the natural
+reaction.** The server logs `graph query timed out after Ns (the source's
+query_timeout_seconds); narrow the traversal or raise the timeout`, and you
+receive the same generic 500 as a typo in a label. So the instinct is to
+re-check the label and run it again, which is exactly what you must not do:
+re-running an expensive traversal degrades the graph backend for everyone else
+using it. If a call takes several seconds and then fails, treat it as a
+timeout until proven otherwise, and NARROW it — one relationship type, one
+direction, a smaller seed set, one hop less. On a dense graph an unlabeled
+scan or an undirected untyped `-[r]-` will always land here.
 
 ### So bisect, do not guess
 

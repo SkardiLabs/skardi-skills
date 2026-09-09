@@ -450,6 +450,15 @@ view from SQL still materializes the view's whole result first, so an
 unbounded view fails `RowCapExceeded` even for a query that wants one row.
 The bound belongs **inside** the Cypher.
 
+A SQL `LIMIT` behaves differently, and the difference is worth knowing before
+you conclude a view is unusable: `LIMIT` *does* push, so `SELECT * FROM
+kg.main.some_view LIMIT 5` returns five rows from the same view whose `WHERE`
+read fails. Measured on a 50k-vertex graph, all three ways: no clause returns
+the ad-hoc cap with a truncation notice, `LIMIT 5` returns five rows, and a
+`WHERE` fails on `max_rows`. Declare the bound in the Cypher anyway; relying on
+the caller to always pass a `LIMIT` is the same unbounded view with a longer
+fuse.
+
 **Look at what the EDGES carry before you trust an expansion.** This is the
 trap that produced the worst answer in this skill's own testing, and it is
 invisible from the vocabulary: a relationship type tells you nothing about
@@ -501,6 +510,12 @@ the pattern across two `MATCH` clauses makes that scan the left side of a
 join. Both have to be right: labeling a two-clause form did not rescue it, and
 inlining an unlabeled one did not either. Write the seed label and the
 traversal as one pattern with the `WHERE` after it.
+
+This rule and the undirected-untyped one below are the two the small eval
+fixture cannot test, so they have a regression test of their own:
+`evals/fixtures/setup_large.sh` builds a synthetic 50k-vertex graph where the
+recommended form answers and both of these time out. If you weaken either
+rule, run that and check it still flips.
 
 **Bound the expansion, and measure rather than trust.** Ask the edge counts
 first (the `graph_schema` section above) — a relationship with hundreds of
