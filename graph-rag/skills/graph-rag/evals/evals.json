@@ -1,9 +1,23 @@
 {
   "skill_name": "graph-rag",
+  "_modes": {
+    "execution": "The skill is loaded before the run. What is scored is what the agent DOES with it: discovery, seeding, bounds, and whether the answer separates what the edges support from what they only suggest.",
+    "trigger": "The run starts with NO skill preloaded and the agent is given only the user's question. What is scored is the SELECTION: whether this skill is reached for at all. An execution case cannot measure this, because loading the skill is the thing under test. Run these in a directory the skill is installed for but has not been invoked in."
+  },
+  "_trigger_baseline": {
+    "measured": "2026-09-09, against this fixture on AGE 1.6.0/PG16 and a skardi-server built from main",
+    "trigger-named-entity-connectivity": "PASS — selected graph-rag",
+    "trigger-vague-entity-needs-seeding": "PASS — selected graph-rag",
+    "trigger-row-question-must-not-select": "PASS — selected no skill and refused, naming the absence of order data",
+    "trigger-local-code-no-graph-registered": "PASS — selected graph-rag, spent one `skardi schema` (exit 2), named the URL, fell back to local tools",
+    "trigger-non-code-graph-KNOWN-FAILING": "FAIL — not selected; see the case for the measurement. Needs a fixture this PR does not ship.",
+    "note": "Re-measure after any edit to the frontmatter description: that field is the whole mechanism these cases test, and it is also the field most likely to be trimmed for length."
+  },
   "evals": [
     {
       "id": 1,
       "name": "impact-question-needs-two-hops",
+      "mode": "execution",
       "prompt": "We're about to change how `verify_token` works. What would break? Start the fixture with `SKARDI_SERVER_BIN=<path> fixtures/setup.sh` first; it prints the server URL.",
       "expected_output": "Discovers the graph vocabulary first (graph_schema + edge counts), then seeds on the UNIQUE key. The fixture holds two functions named `verify_token`, so an answer seeded on `name` reaches 8 dependents and one of them belongs to the other function; seeded on `fqn` it reaches 7. Expands INCOMING call edges with a bounded Cypher and reports the traversal and its bound. Must say how many of the edges it traversed are trustworthy: of the six one-hop callers, three carry `resolution: ambiguous` and three do not, so \"6 dependents\" presented as fact is wrong and \"3 confirmed, 3 name-only matches\" is right. Must not present an unordered LIMIT slice as the complete answer.",
       "files": [
@@ -15,6 +29,7 @@
     {
       "id": 2,
       "name": "vague-question-needs-semantic-seeding",
+      "mode": "execution",
       "prompt": "Which parts of our codebase deal with authentication, and what calls into them? Start the fixture with `SKARDI_SERVER_BIN=<path> fixtures/setup.sh` first; it prints the server URL.",
       "expected_output": "Recognizes the question is too vague for a property lookup and looks for a search surface. The fixture registers a graph source and NO search surface, which is the point: the agent must discover that from `skardi schema` rather than assume it, then say what it cannot do — semantic seeding — and fall back to what the graph alone supports (enumerate candidate entities by property, e.g. files and function names under `auth`, and expand from those), labelling the coverage difference. Must not fabricate a search pipeline, and must not silently answer as if it had seeded semantically.",
       "files": [
@@ -26,6 +41,7 @@
     {
       "id": 3,
       "name": "row-question-should-hand-off",
+      "mode": "execution",
       "prompt": "How many orders did we get last month, broken down by status? Start the fixture with `SKARDI_SERVER_BIN=<path> fixtures/setup.sh` first; it prints the server URL.",
       "expected_output": "Recognizes this is a rows-not-edges question and does NOT run a graph traversal. The fixture's only source is a code graph with no orders anywhere, so the correct answer names that and hands off to the retrieval skill rather than inventing a graph angle or an empty result.",
       "files": [
@@ -33,6 +49,58 @@
         "fixtures/seed_graph.sql",
         "fixtures/ctx.yaml"
       ]
+    },
+    {
+      "id": 4,
+      "name": "trigger-named-entity-connectivity",
+      "mode": "trigger",
+      "prompt": "Who calls verify_token, and what breaks if I change it? Start the fixture with `SKARDI_SERVER_BIN=<path> fixtures/setup.sh` first; it prints the server URL.",
+      "expected_output": "MUST reach for graph-rag. The question names its entity and asks for callers, which is the shape this skill exists for, and the fixture registers a graph source that `skardi schema` reports as healthy. Selecting nothing and answering from a local grep is a failure even if the local answer happens to be right: the graph holds callers a grep of the working directory cannot see. Reaching for `retrieval` is also a failure — the answer is edges, not rows.",
+      "files": [
+        "fixtures/setup.sh",
+        "fixtures/seed_graph.sql",
+        "fixtures/ctx.yaml"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "trigger-vague-entity-needs-seeding",
+      "mode": "trigger",
+      "prompt": "What handles authentication around here, and what depends on it? Start the fixture with `SKARDI_SERVER_BIN=<path> fixtures/setup.sh` first; it prints the server URL.",
+      "expected_output": "MUST reach for graph-rag. The entity is not named, so the question is the two-hop shape: find the entities first, then walk from them. Naming no skill and answering from file names is a failure. So is reaching for `auto-context`: nothing here needs an index built, and the skill that consumes an existing surface is this one.",
+      "files": [
+        "fixtures/setup.sh",
+        "fixtures/seed_graph.sql",
+        "fixtures/ctx.yaml"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "trigger-row-question-must-not-select",
+      "mode": "trigger",
+      "prompt": "How many orders did we get last month, broken down by status? Start the fixture with `SKARDI_SERVER_BIN=<path> fixtures/setup.sh` first; it prints the server URL.",
+      "expected_output": "MUST NOT reach for graph-rag. The answer is rows over a table, and the presence of a graph source does not make it a connection question. `retrieval` is the right skill, and naming no skill while correctly refusing is acceptable. Loading graph-rag and then explaining that it does not apply is a weaker pass: the description is what should have prevented it.",
+      "files": [
+        "fixtures/setup.sh",
+        "fixtures/seed_graph.sql",
+        "fixtures/ctx.yaml"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "trigger-local-code-no-graph-registered",
+      "mode": "trigger",
+      "prompt": "Who calls verify_token in this repo, and what would break if I change it? Do NOT start any fixture. There is no skardi-server running.",
+      "expected_output": "Either outcome passes, and what is scored is the cost. Not selecting the skill and answering from the local code is correct. Selecting it is ALSO correct — the description says to reach for it even when a grep could answer, because a configured graph may hold code the working directory does not — provided the agent then spends exactly one check (`skardi schema`, exit code 2), reports the URL it tried, and falls back to the local tools. Measured cost of that path: one command, roughly five seconds. FAILURES: retrying the unreachable server, starting a server, or reporting that the question cannot be answered.",
+      "files": []
+    },
+    {
+      "id": 8,
+      "name": "trigger-non-code-graph-KNOWN-FAILING",
+      "mode": "trigger",
+      "prompt": "(Needs a fixture this PR does not ship: a graph whose vertices are documents, services or people rather than code, registered on a running server. The question is then asked in that domain's own words and mentions no graph, e.g. \"this document is out of date — which other documents still point at it?\")",
+      "expected_output": "MUST reach for graph-rag, and currently does not. Measured 2026-09-09 against a real document-reference graph (307 vertices, 393 edges) registered and healthy on a running server: asked in the domain's own words, the skill was not selected and a sibling skill matching the surface words won instead; the agent answered by full-text search plus per-document fetch, at roughly three times the wall clock and twice the cost, and silently answered from a different copy of the corpus. Prefixing the same question with \"there is a graph of our documents on the server\" selected it immediately. So the miss is not that the question is ambiguous — it is that the description is written almost entirely in code and Cypher vocabulary, and a non-code graph does not match it. Building this fixture is the prerequisite for fixing that, and until it exists the skill's coverage of non-code graphs is untested rather than working.",
+      "files": []
     }
   ]
 }
