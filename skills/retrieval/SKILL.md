@@ -78,8 +78,12 @@ category in this file.**
   so do not build a verification step on either. Peek instead:
 
   ```bash
-  skardi query -e "/* purpose: peek */ SELECT * FROM shop.main.orders LIMIT 5" --table
+  skardi query --purpose "peek at orders to learn its columns" --session-id "$SKARDI_SESSION" \
+    -e "SELECT * FROM shop.main.orders LIMIT 5" --table
   ```
+
+  (`$SKARDI_SESSION` is the task's session id — step 3 explains the pair;
+  mint it before the first query, peeks included.)
 
   A successful peek both proves the name and shows the columns. If the peek
   fails, stop and ask for the table list rather than iterating guesses.
@@ -121,11 +125,15 @@ Invocation: `skardi run <name> -p key=value` — values parse as JSON first (num
 
 ### 3. Ad-hoc SQL: read-only, one statement at a time
 
+Mint one session id when the task starts and reuse it for every query in the task:
+
 ```bash
-skardi query -e "/* purpose: order counts by lifecycle state */ SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
+SKARDI_SESSION=$(uuidgen)
+skardi query --purpose "order counts by lifecycle state" --session-id "$SKARDI_SESSION" \
+  -e "SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
 ```
 
-- **Open every query with a one-line purpose comment**: `/* purpose: ... */`. On v0.5.0 this is a readability habit and nothing more — it helps whoever re-runs or audits the SQL. Skardi's structured audit contract (an `ai_context: { purpose, session_id }` object in the request body, which is what session-level learning aggregates on) exists server-side only after v0.5.0, and this CLI cannot send it: `skardi query` carries just the SQL and `--max-rows` (CLI flags are tracked in skardi#218). **Do not claim query purposes are being captured for Skardi's self-improving loop** until the CLI grows those flags. Mechanics: use the block-comment form — a leading `-- comment` makes the CLI misparse `-e "--..."` as a flag (only the `--sql="..."` form tolerates it).
+- **Every `skardi query` carries `--purpose` and `--session-id`.** They are sent as the `ai_context: { purpose, session_id }` object on the request, which is what the server's audit ledger records, the daily brief's intent breakdown groups by, and session-level learning aggregates on — a query without them lands as "(no declared intent)" with no session. The pair is all-or-nothing (the server rejects one without the other; the CLI enforces it too, since skardi#232). `--purpose` is one plain-language line on why this query runs, ≤2000 characters; `--session-id` is any non-empty string ≤200 characters — one id per task, minted once (`uuidgen`) and reused across the task's queries so they group as one session. Purpose belongs in the flag, not in a SQL comment: a comment rides inside the SQL text where nothing aggregates it. (If SQL text does start with a comment, use the block form — a leading `-- comment` makes the CLI misparse `-e "--..."` as a flag.)
 - **SELECT only.** The server already rejects DDL and COPY outright, and rejects writes to any source not explicitly configured `read_write` — but do not lean on that: retrieval work is read work, even on writable sources.
 - **One statement per request.** The server rejects multi-statement SQL (`Expected exactly one SQL statement`). Run follow-ups as separate calls.
 - **Peek before the real query.** `SELECT * FROM <table> LIMIT 5` shows you actual value shapes — date formats, status spellings, NULL patterns — that schema output cannot. One peek prevents most wrong-filter answers.
@@ -167,7 +175,7 @@ Lead with the answer, then attach the evidence so the result can be re-run and a
 410 orders are paid, totalling ¥507,467.60.
 
 — from shop.main.orders via skardi query
-  /* purpose: paid order count and revenue */
+  --purpose "paid order count and revenue" --session-id 3fa4…
   SELECT COUNT(*) AS n, SUM(amount_cents)/100.0 AS total_yuan
   FROM shop.main.orders WHERE status = 'paid'
   1 row, not truncated; cross-checked against GROUP BY status over all 1500 orders
