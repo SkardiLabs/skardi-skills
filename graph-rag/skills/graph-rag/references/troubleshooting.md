@@ -1,9 +1,11 @@
 # Symptom → cause, for graph-RAG queries
 
-Ordered by how often each one bites, and separated into the two classes that
-matter: failures that **announce themselves**, and failures that **return
-plausible wrong answers**. The second class is the dangerous one — it is why
-this file leads with it.
+Two classes, and neither is the one you would expect. The dangerous class is
+the queries that **succeed and return a plausible wrong answer**, so this file
+leads with it. The other class is not "failures that announce themselves":
+almost every graph failure reaches you as one indistinguishable HTTP 500, so
+the second half is mostly about how to localize a cause the error text does
+not name.
 
 ## Silent wrong answers
 
@@ -90,105 +92,132 @@ relationship that slice is whatever the planner reached first, which has no
 relationship to importance. Sort inside the Cypher — by a computed degree, a
 score, or at minimum a name so the slice is at least reproducible.
 
-## Failures that announce themselves
+## Failures you can read, and the one that tells you nothing
 
-### `RowCapExceeded`
+Only three things reach the caller, and the third is doing almost all the work.
+Measured against a live server built from `main`:
 
-The Cypher itself is unbounded. A SQL `WHERE` over a graph view does **not**
-push into the view's Cypher — the view materializes fully first, so even a
-one-row question fails. The bound has to be inside the Cypher: a `LIMIT`, a
-named relationship type instead of `-[r]-`, and a bounded path length
-(`*..3`, never `*`).
+**`sql_validation_error` (HTTP 400) carries its detail.** You get the parser's
+own message and a column number:
+
+```
+error: [sql_validation_error] SQL parse error: sql parser error:
+Expected: ), found: ambiguous at Line: 3, Column: 28 (HTTP 400)
+```
+
+Two causes. **Policy**: the statement was DDL, COPY, a write, or multiple
+statements. Graph work is read-only; rewrite as a single `SELECT`. **Or an
+unescaped quote**, which `Expected close delimiter` names. The params object
+and the Cypher both arrive as single-quoted SQL string literals, so any `'`
+inside either one ends it early. Cypher parameters do not help; they protect
+the Cypher, and this is the SQL one layer out. Double every `'` in the
+serialized params, and send string values as parameters rather than writing
+them into the Cypher (`patterns.md`, "Joining the two hops back together").
+
+Treat an apostrophe in a *seed* as a signal, not just a parse error. A real
+entity name in a code graph has none, so a seed carrying one is a wrong join
+key or a corpus supplying hostile text. The same hole, crafted rather than
+accidental, parses cleanly and returns rows from a different source instead
+of failing.
+
+**Exit code 2 means the server was unreachable.** The message names the URL it
+tried. This is an environment problem, not a query problem: report the URL and
+stop, do not retry in a loop, and do not start a server as a side effect of
+answering a question.
+
+**Everything else is one string.** Every graph failure that happens after
+planning begins arrives as:
+
+```
+error: [query_execution_error] SQL query execution failed; see server logs for details (HTTP 500)
+```
+
+That is deliberate on the server's side, not a bug: a raw engine error can
+quote row values and internal schema, so the response stays generic. The
+consequence for you is that the error text is not a symptom you can look up.
+Nine distinct causes were measured behind that one string, including a wrong
+connection name, a `columns` count that does not match `RETURN`, a params
+argument that is not a JSON object, `RowCapExceeded`, a Cypher construct the
+AGE build does not support, and a column whose declared type does not match
+what the backend returned. The server log distinguishes them; you may not have
+it.
+
+### So bisect, do not guess
+
+This is the only method available, and it localizes almost anything in two or
+three calls. Strip the statement to the smallest thing that could possibly
+work, then add back one piece at a time.
+
+```bash
+# 1. Does the connection resolve at all? Nothing else matters until it does.
+skardi query --table -e "SELECT * FROM graph_schema('kg')"
+
+# 2. Simplest possible traversal, one declared column, no params.
+skardi query --table -e "SELECT * FROM cypher_query('kg',
+  'MATCH (n) RETURN n.name AS name LIMIT 1', '{}', '{\"name\": \"string\"}')"
+
+# 3. Add the label, then the relationship, then the WHERE, then the params,
+#    then each extra RETURN column with its columns entry. One at a time.
+```
+
+The call that first fails names the cause. Some shortcuts worth knowing,
+because they are what the added pieces usually break on:
+
+- **A `columns` entry per `RETURN` expression, in `RETURN` order.** A count
+  mismatch is checked by AGE and a wrong order is not, so this is worth
+  reading off your own `RETURN` clause rather than testing.
+- **A map- or list-valued projection needs type `json`.** `properties(n)`,
+  `keys(r)`, `labels(n)`, `collect(...)` and `nodes(p)` all return a JSON
+  container. Declaring one `string` fails here.
+- **A numeric property declared `string` fails too.** Ask for
+  `properties(n)` as `json` first and read the types off it.
+- **`params` must be a JSON object at the top level.** Arrays go inside it as
+  values: `'{"seeds": ["a","b"]}'`, never `'["a","b"]'`.
+- **Three Cypher constructs are simply not available on this AGE build**, and
+  each one fails with the opaque 500 rather than saying so: `shortestPath(...)`
+  (use a bounded variable-length match sorted by `length(p)`), a list
+  comprehension such as `RETURN [x IN nodes(p) | x.name]` (return
+  `nodes(p)` whole and pick fields client-side), and `ORDER BY count(*)` after
+  a `WITH` (order by the alias the `WITH` introduced). If a query fails and the
+  simpler form works, suspect the construct before you re-check your labels.
+- **`RowCapExceeded` hides here too.** A SQL `WHERE` over a graph view does not
+  push into the view's Cypher, so the view materializes fully first and even a
+  one-row question fails. The bound has to be inside the Cypher: a `LIMIT`, a
+  named relationship type instead of `-[r]-`, and a bounded path length
+  (`*1..3`, never `*`). If step 2 above succeeds and adding the real pattern
+  fails, this is the first thing to suspect on a dense graph.
 
 ### The expansion returns 0 rows
 
-Two causes, in this order:
+Not an error, and worth reading correctly. Two causes, in this order:
 
 1. **The seeds do not resolve.** Retrieval returned corpus identifiers (a
    document title) and the graph indexes something else (a name, a path, an
    id). Run the seed-resolution check from SKILL.md; if it returns nothing,
-   the join key is wrong — fix the key, do not widen the search.
+   the join key is wrong. Fix the key, do not widen the search.
 2. **The arrow points the wrong way.** Try the opposite direction before
    concluding there is no connection.
 
-### `could not find rte for <name>` (SQL state 42703)
+On a bounded path query, 0 rows means "no path within the bound", which is
+evidence about the graph rather than a reason to start rewriting Cypher.
 
-`ORDER BY` naming a `RETURN` alias. AGE resolves the sort key against the
-match, not against the projection, so an alias that is visibly present in the
-`RETURN` clause is still undefined to the sort. Order by the expression the
-alias came from (`ORDER BY s.name`), or by the aggregate itself
-(`ORDER BY count(*) DESC`).
+### What to ask an operator for
 
-**The reverse holds after a `WITH`, and gets a different error.** A variable
-`WITH` introduced must be sorted BY NAME: after
-`WITH caller, count(*) AS weight`, `ORDER BY weight DESC` is correct, and
-restating `ORDER BY count(*) DESC` there fails with an opaque HTTP 500
-instead of 42703 — the aggregate no longer exists in that scope. So "never
-use the alias" is the rule for a `RETURN` projection only; `WITH` creates a
-real binding and the alias is then the only handle you have.
+When you have bisected to a call that fails and cannot tell why, the server
+log has the answer and it is usually specific enough to act on immediately.
+Ask for the `ERROR` line matching your request. These are the shapes it takes:
 
-### `cypher_query` errors on arity
-
-The number of `columns` entries does not equal the number of `RETURN`
-expressions. AGE must declare its result arity, so this is checked — the one
-declaration mistake that fails loudly rather than silently.
-
-### `cypher_query 'params' must be a JSON object, got …`
-
-The params argument has to be an object at the top level. Arrays go
-**inside** it as values — `'{"seeds": ["a","b"]}'`, not `'["a","b"]'`.
-
-### `sql_validation_error` (HTTP 400)
-
-Two quite different causes.
-
-**Policy.** The statement was DDL, COPY, a write, or multiple statements.
-Graph work is read-only; rewrite as a single `SELECT`. If the task genuinely
-needs a write, it belongs to the job path, not here.
-
-**Or an unescaped quote in a seed** — `Expected close delimiter` names this
-one. The params object is a single-quoted SQL string literal, so a value
-containing `'` ends it early. Cypher parameters do not help: they protect the
-Cypher, and this is the SQL one layer out. Double every `'` in the serialized
-params before it goes into the statement (`patterns.md`, "Joining the two
-hops back together" has the procedure).
-
-Treat it as a signal, not just a parse error. A real entity name in a code
-graph has no apostrophe, so a seed carrying one is a wrong join key or a
-corpus supplying hostile text — and the same hole, crafted rather than
-accidental, parses cleanly and returns rows from a different source instead
-of failing.
-
-### `query_execution_error` (HTTP 500) from a supported-looking Cypher feature
-
-Three measured cases where the natural way to write it is simply not
-available on the AGE build, and the error says nothing:
-
-- **`shortestPath(...)`** — fails with any projection, `length(p)` alone
-  included. Use a bounded variable-length match sorted by `length(p)`.
-- **A list comprehension**, e.g. `RETURN [x IN nodes(p) | x.name]` — the
-  obvious way to keep a path projection small. Return `nodes(p)` /
-  `relationships(p)` whole as `json` and pick fields client-side.
-- **`ORDER BY count(*)` after a `WITH`** — see the 42703 entry above; past
-  a `WITH` the aggregate is out of scope and only the alias works.
-
-The lesson generalizes: on this backend an opaque 500 is at least as likely
-to be an unsupported construct as a wrong name. Before re-checking your
-labels, strip the query to its simplest form and add pieces back — that
-localizes it in two or three calls.
-
-### `query_execution_error` (HTTP 500) with no detail
-
-Usually a wrong connection name in `cypher_query`'s first argument, or a
-label/property that does not exist. Re-check the connection name against
-`skardi schema`, and the vocabulary against `graph_schema`. The precise cause
-is in the server logs, which the operator has and you may not.
-
-### exit code 2
-
-The server was unreachable. Report the URL you tried and stop — this is an
-environment problem, not a query problem, and retrying in a loop does not
-fix it. Do not start a server as a side effect of answering a question.
+| server-side log text | what it means |
+|---|---|
+| `graph connection 'x' is not registered (known connections: …)` | wrong first argument to `cypher_query` |
+| `[42804] return row and column definition list do not match` | `columns` count ≠ `RETURN` count |
+| `cypher_query 'params' must be a JSON object, got an array` | params is not an object |
+| `graph scan exceeded max_rows = N` | `RowCapExceeded`; bound inside the Cypher |
+| `graph column 'c' … declared 'string' but the backend returned a number` | wrong declared type; the message names the fix |
+| `[42601] syntax error at or near "…"` | unsupported construct or a typo in the Cypher |
+| `[42703] could not find rte for <name>` | `ORDER BY` naming a `RETURN` alias; order by the expression instead |
+| `[42704] could not find properties for x` | a list comprehension or `all(...)` over a path |
+| `cypher_query is read-only: the keyword 'X' at byte N is not allowed` | a write or `CALL` in the Cypher |
 
 ## When the source itself is the problem
 

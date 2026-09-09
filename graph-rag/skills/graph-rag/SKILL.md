@@ -527,14 +527,25 @@ question the user can answer and you cannot.
 
 ## When stuck
 
-| Symptom | Meaning | Do |
+Two of these are things you can read. The rest arrive as the same
+`query_execution_error` (HTTP 500), so the symptom column is what you
+*observe*, not what the error says.
+
+| What you see | Meaning | Do |
 |---|---|---|
 | exit code 2 | server unreachable | Report the URL you tried. Do not retry in a loop; do not start a server. Then **answer the question with the ordinary local-code tools** unless the user asked for graph data specifically — the same handling as a graph that turns out to be a different project. An unreachable graph is a reason this skill cannot help, not a reason the question goes unanswered. |
-| `RowCapExceeded` | the Cypher itself is unbounded | Put the bound inside the Cypher, not in SQL. Narrow the relationship type. |
-| a column is all NULL | wrong getter for the stored JSON type | Check the property's actual type, pick the matching getter. |
-| the expansion returns 0 rows | seeds do not resolve in the graph, or the arrow points the wrong way | Re-run the seed-resolution check; then try the opposite direction. |
-| `cypher_query` errors on arity | `columns` count ≠ `RETURN` count | AGE requires declared arity; count them against each other. |
+| `sql_validation_error` (HTTP 400) | a write, multiple statements, or an unescaped `'` in the params or Cypher literal | This one names its own cause. Send string values as parameters; double every `'` in the serialized params. |
+| `query_execution_error` (HTTP 500) | could be nine different things, and the text says none of them | **Bisect.** Strip to `graph_schema('kg')`, then the simplest one-column traversal, then add back the label, the relationship, the `WHERE`, the params, and each `RETURN` column one at a time. The first call that fails names the cause. Procedure and the shortlist of usual culprits: `references/troubleshooting.md`. |
+| a column is all NULL, query succeeded | wrong getter for the stored JSON type | Ask for `properties(n)` as `json`, read the real types off it, then pick the matching getter. |
+| the expansion returns 0 rows | seeds do not resolve, or the arrow points the wrong way | Re-run the seed-resolution check; then try the opposite direction. Not an error. |
 | the same question failed 3 times | you are guessing | Stop. Show what you tried, what came back, and your best hypothesis of what is missing. |
 
+Do not read the 500's text as a diagnosis, and do not conclude from it that a
+label or connection name is wrong. `RowCapExceeded`, an arity mismatch, a
+params argument that is not an object, a declared type that does not match the
+data, and three Cypher constructs this AGE build does not support all produce
+exactly that string. Bisecting separates them; re-reading the message does not.
+
 An honest "here is where it stopped" beats a fourth guess. Read
-`references/troubleshooting.md` for the fuller symptom table.
+`references/troubleshooting.md` for the full procedure and the log lines to ask
+an operator for.
