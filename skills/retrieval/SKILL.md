@@ -21,7 +21,7 @@ The `skardi` CLI is a thin HTTP client — every command below is one request to
 2. **A reachable skardi-server.** Connection resolves in this order: `--server <URL>` flag → `$SKARDI_SERVER_URL` → `~/.skardi/config.yaml` → default `http://127.0.0.1:8080`. If auth is enabled on the server, pass `--token` or set `$SKARDI_API_TOKEN`.
 3. **Exit code contract:** `2` means the server was unreachable. That is an environment problem, not a query problem — see the stuck protocol.
 
-This skill is written and tested against **v0.5.0** of both CLI and server (the current release). Deployment behavior — which sources exist, what is read-only, row caps — is discovered live and is never assumed from this text.
+This skill is written and tested against **v0.5.0** of both CLI and server (the current release), **except the `--purpose`/`--session-id` audit pair, which needs a `main` build** — the exception below. Deployment behavior — which sources exist, what is read-only, row caps — is discovered live and is never assumed from this text.
 
 > **One exception: `--purpose` / `--session-id` need Skardi `main`, not v0.5.0.**
 > The pair used throughout step 3 landed after v0.5.0 shipped
@@ -36,6 +36,12 @@ This skill is written and tested against **v0.5.0** of both CLI and server (the 
 > (`git grep ai_context v0.5.0 -- crates/server/` is empty), so on a released
 > server there is no ledger for the pair to land in. On v0.5.0, run the queries
 > below without the two flags; everything else in this skill holds there.
+>
+> **`skardi --version` cannot tell you which you have** — the workspace version
+> has not been bumped since the release, so a `main` build also prints
+> `skardi 0.5.0`. Probe the capability instead of the version:
+> `skardi query --help` lists `--purpose` exactly when the build carries the
+> pair. Each command template below shows its v0.5.0 form on a commented line.
 
 ## Rule zero: ask the server, not your memory
 
@@ -94,6 +100,8 @@ category in this file.**
   ```bash
   skardi query --purpose "peek at orders to learn its columns" --session-id "$SKARDI_SESSION" \
     -e "SELECT * FROM shop.main.orders LIMIT 5" --table
+  # v0.5.0 build (no --purpose/--session-id — probe: skardi query --help): drop the pair:
+  # skardi query -e "SELECT * FROM shop.main.orders LIMIT 5" --table
   ```
 
   (`$SKARDI_SESSION` is the task's session id — step 3 explains the pair;
@@ -142,9 +150,11 @@ Invocation: `skardi run <name> -p key=value` — values parse as JSON first (num
 Mint one session id when the task starts and reuse it for every query in the task (the two flags need a CLI built from `main` — see the exception under Prerequisites):
 
 ```bash
-SKARDI_SESSION=$(uuidgen)
+SKARDI_SESSION=$(uuidgen 2>/dev/null || echo "sess-$(date +%s)-$$")
 skardi query --purpose "order counts by lifecycle state" --session-id "$SKARDI_SESSION" \
   -e "SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
+# v0.5.0 build (no --purpose/--session-id — probe: skardi query --help): drop the pair:
+# skardi query -e "SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
 ```
 
 - **Every `skardi query` carries `--purpose` and `--session-id`.** They are sent as the `ai_context: { purpose, session_id }` object on the request, which is what the server's audit ledger records, the daily brief's intent breakdown groups by, and session-level learning aggregates on — a query without them lands as "(no declared intent)" with no session. The pair is all-or-nothing (the server rejects one without the other; the CLI enforces it too, since [skardi#232](https://github.com/SkardiLabs/skardi/pull/232), which is on `main` and in no release). `--purpose` is one plain-language line on why this query runs, ≤2000 characters; `--session-id` is any non-empty string ≤200 characters — one id per task, minted once (`uuidgen`) and reused across the task's queries so they group as one session. Purpose belongs in the flag, not in a SQL comment: a comment rides inside the SQL text where nothing aggregates it. (If SQL text does start with a comment, use the block form — a leading `-- comment` makes the CLI misparse `-e "--..."` as a flag.)
