@@ -12,7 +12,7 @@
     {
       "name": "skardi",
       "source": "./",
-      "description": "Build searchable context over documents or your own datastore, answer questions from live data, and query a property graph through SQL. Bundles the auto-context, retrieval, graph-source, and graph-rag skills.",
+      "description": "Build searchable context over documents or your own datastore, answer questions from live data, query a property graph through SQL, and grow pipelines out of the queries that keep repeating. Bundles the auto-context, retrieval, graph-source, graph-rag, and skardi-query-log skills.",
       "category": "rag",
       "keywords": ["skardi", "context", "rag", "retrieval", "graph", "hybrid-search", "skardi-server"]
     }

@@ -12,10 +12,13 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 | `skills/retrieval/` | `retrieval` | Answer questions from live data through a running `skardi-server` with the `skardi` CLI. Discovers sources, named pipelines, and the table schemas the deployment exposes, runs the question through any semantic search surface first (`search-hybrid` and friends), then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached. Consumes whatever the server already has — it builds no index, writes no data, and starts no servers. |
 | `skills/graph-source/` | `graph-source` | Connect a property graph (a knowledge graph, a GraphRAG corpus — Apache AGE / openCypher) to Skardi and query it through SQL, end to end: provision AGE with a least-privilege reader role, declare the `type: graph` source and its views in context YAML, triage registration health (healthy / degraded / refused, and what recovery does and does not answer), write correct queries (`cypher_query`, `graph_schema`, the JSON getters), and wire Cypher parameters into pipelines. Encodes the traps that bite in production: positional `columns` binding (same-typed columns declared out of RETURN order swap silently), no predicate pushdown into view Cypher (the bound lives in the view, `RowCapExceeded` otherwise), wrong-getter silently-NULL columns, the deliberately-absent `->`/`->>` operators, lowercase-only view names, and the one working `{params}` pipeline spelling. Read-only by backend enforcement; AGE is a preview backend on Skardi `main` (Neo4j/Kuzu are later milestones). |
 | `skills/graph-rag/` | `graph-rag` | Answer questions whose evidence is in graph relationships: find or verify the named entities, traverse from them through read-only Cypher, and report the bounds and confidence of the edges used. |
+| `skills/skardi-query-log/` | `skardi-query-log` | Let pipelines grow out of the questions a user keeps asking. Reads the query audit ledger `skardi-server --query-audit-db` writes (read-only), separates ad-hoc SQL from pipeline and job runs, and — when a question really does repeat — installs the pipeline itself: writes the YAML, restarts, probes `/health`, and rolls the file back out if the server does not come up. The agent triggers this on its own; a user never asks for a log analysis. |
 
 > **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
 
 > **`graph-source` requires Skardi `main`, not v0.5.0.** It was verified against [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48); build that checkout with `cargo build --release -p skardi-server`. The latest release, v0.5.0, has neither `type: graph` nor `cypher_query`.
+
+> **`skardi-query-log` requires Skardi `main` too.** The audit ledger it reads is written by `skardi-server --query-audit-db`, which landed after v0.5.0 (`git grep query_audit_db v0.5.0` is empty). Verified against the same commit, [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48). `auto-context` and `retrieval` are the released pair — they run on v0.5.0, and only `retrieval`'s `--purpose` / `--session-id` flags need `main`.
 
 ## Installation
 
@@ -28,7 +31,7 @@ From inside any Claude Code session:
 /plugin install skardi@skardi-skills
 ```
 
-That's it — all four skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
+That's it — all five skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
 
 > **Upgrading from an earlier version:** the individual plugins are now one, named `skardi`, so that every host can install this repository with its own one-line plugin command instead of a manual directory copy. Installed copies of the old per-skill plugins are not removed automatically — run `/plugin uninstall auto-context`, `/plugin uninstall retrieval`, `/plugin uninstall graph-source` and `/plugin uninstall graph-rag`, then install `skardi`. Further back: `auto-knowledge-base` and `auto-rag` were merged into `auto-context`; `skardi-deploy-and-patterns` and `feishu-connector` were retired, and Feishu cloud docs are now raw material for `auto-context`.
 
@@ -48,6 +51,9 @@ cp -r skills/graph-source ~/.claude/skills/graph-source
 
 # graph-rag (answer questions whose evidence is in graph relationships)
 cp -r skills/graph-rag ~/.claude/skills/graph-rag
+
+# skardi-query-log (grow pipelines out of the queries that keep repeating)
+cp -r skills/skardi-query-log ~/.claude/skills/skardi-query-log
 ```
 
 Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`, or "query our database" / "how many orders last month" / "what tables do we have" for `retrieval`. You can also invoke them directly:
@@ -61,7 +67,7 @@ Claude Code will automatically load the relevant skill when your request matches
 
 These hosts install this repository directly through their own plugin or
 extension mechanism. Each reads its own manifest in this repo and picks all
-three skills up from `skills/`.
+five skills up from `skills/`.
 
 **[Gemini CLI](https://github.com/google-gemini/gemini-cli/blob/main/docs/extensions/reference.md)** —
 reads `gemini-extension.json`; a skill is discovered by its location, so
@@ -128,6 +134,7 @@ cp -r skills/auto-context ~/.agents/skills/auto-context
 cp -r skills/retrieval ~/.agents/skills/retrieval
 cp -r skills/graph-source ~/.agents/skills/graph-source
 cp -r skills/graph-rag ~/.agents/skills/graph-rag
+cp -r skills/skardi-query-log ~/.agents/skills/skardi-query-log
 ```
 
 To scope the skill to a single project instead, copy it into that repo's
@@ -148,6 +155,7 @@ openclaw skills install ./skills/auto-context
 openclaw skills install ./skills/retrieval
 openclaw skills install ./skills/graph-source
 openclaw skills install ./skills/graph-rag
+openclaw skills install ./skills/skardi-query-log
 ```
 
 That installs into `~/.openclaw/workspace/skills/`, scoped to the active agent
@@ -165,6 +173,7 @@ cp -r skills/auto-context ~/.hermes/skills/auto-context
 cp -r skills/retrieval ~/.hermes/skills/retrieval
 cp -r skills/graph-source ~/.hermes/skills/graph-source
 cp -r skills/graph-rag ~/.hermes/skills/graph-rag
+cp -r skills/skardi-query-log ~/.hermes/skills/skardi-query-log
 ```
 
 Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git
@@ -203,3 +212,10 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 ### `skills/retrieval/`
 
 No scripts — the skill is the procedure: `SKILL.md` is the whole skill.
+
+### `skills/skardi-query-log/`
+
+| Path | Purpose |
+|---|---|
+| `scripts/read_log.py` | Opens the audit ledger read-only and formats rows — an overview (totals, pass/fail, sessions), the last N statements, one session, failures only. Filters to `statement_kind = 'query'` by default so a pipeline run cannot be counted as another instance of the question it already answers; `--kind pipeline` asks the opposite question, whether a pipeline you built is being called. Makes no judgements: which repeats deserve hardening is the agent's call |
+| `scripts/add_pipeline.py` | Installs one pipeline and verifies its own work — writes the YAML, runs the restart command you supply, polls `/health`, and on failure deletes the file and restarts again so the server is left as it was found. `--dir`, `--port` and `--restart-cmd` are required and never guessed: one pipeline that fails to plan takes the whole server down at startup |

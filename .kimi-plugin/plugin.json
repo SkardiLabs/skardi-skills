@@ -1,7 +1,7 @@
 {
   "name": "skardi",
   "version": "0.4.0",
-  "description": "Agent Skills for Skardi: build searchable context over your documents or your own datastore, answer questions from live data through a running server, and connect a property graph and query it through SQL.",
+  "description": "Agent Skills for Skardi: build searchable context over your documents or your own datastore, answer questions from live data through a running server, connect a property graph and query it through SQL, and turn the queries that keep repeating into pipelines.",
   "skills": "./skills/",
   "interface": {
     "displayName": "Skardi",

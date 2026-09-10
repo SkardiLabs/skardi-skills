@@ -1,10 +1,10 @@
 {
   "name": "skardi",
   "version": "0.4.0",
-  "description": "Agent Skills for Skardi: build searchable context over your documents or your own datastore, answer questions from live data through a running server, and connect a property graph and query it through SQL. Hybrid search (vector + full-text) served over HTTP by skardi-server; every path is read-only unless you ask for a write.",
+  "description": "Agent Skills for Skardi: build searchable context over your documents or your own datastore, answer questions from live data through a running server, connect a property graph and query it through SQL, and turn the queries that keep repeating into pipelines. Hybrid search (vector + full-text) served over HTTP by skardi-server; every path is read-only unless you ask for a write.",
   "author": { "name": "Skardi Labs" },
   "homepage": "https://github.com/SkardiLabs/skardi-skills",
   "repository": "https://github.com/SkardiLabs/skardi-skills",
   "license": "Apache-2.0",
-  "keywords": ["skardi", "context", "rag", "retrieval", "graph", "cypher", "hybrid-search", "sqlite", "pgvector", "mongodb", "lance", "skardi-server"]
+  "keywords": ["skardi", "context", "rag", "retrieval", "graph", "cypher", "hybrid-search", "sqlite", "pgvector", "mongodb", "lance", "skardi-server", "query-audit", "pipelines"]
 }
