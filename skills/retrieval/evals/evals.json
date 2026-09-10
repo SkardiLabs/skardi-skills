@@ -1,0 +1,62 @@
+{
+  "skill_name": "retrieval",
+  "_modes": {
+    "trigger": "The run starts with NO skill preloaded and the agent is given only the user's question. What is scored is the SELECTION: whether this skill is reached for at all. An execution case cannot measure this, because loading the skill is the thing under test. Run these in a directory the skill is installed for but has not been invoked in."
+  },
+  "_environment": {
+    "no_fixture_ships": "These cases assume a skardi-server whose ctx registers the GitHub pack. No fixture ships for it: the pack reaches GitHub through an Open Connector gateway and needs a token, and neither belongs in this repo. Stand one up yourself, or run the cases for SELECTION only — the choice of skill is made before the first server call, so selection can be scored with the server absent. Case 5 is the exception and says so.",
+    "sibling_skills": "auto-context, graph-rag and graph-source are installed alongside. A case that names one of them as a wrong answer means the run must not pick it."
+  },
+  "_trigger_baseline": {
+    "measured": "2026-09-10, selection only. Method: each case run as a separate isolated agent (Claude Sonnet) given all four installed skills' name and description verbatim plus a shell with the gh CLI, asked to name the skill it would load and its first command, with project rules and memory explicitly excluded. This measures the frontmatter description, which is the field these cases test. It is NOT a run of the installed plugin against a live server: the post-selection cost claims in case 5 are unmeasured, and every case is n=1 on one model.",
+    "trigger-saas-history-and-aggregate": "PASS — selected retrieval",
+    "trigger-single-record-lookup-must-not-select": "PASS — selected no skill, went to gh pr view",
+    "trigger-cross-source-join": "PASS — selected retrieval",
+    "trigger-cross-repo-review-aggregate": "PASS — selected retrieval",
+    "trigger-saas-question-no-source-registered": "UNMEASURED — scoring it needs real runs against a reachable and an unreachable server; selection alone does not score it",
+    "what_this_change_actually_moved": "Measured against the description as it stood before 2026-09-10, cases 1 and 4 FAILED: both went to the gh CLI, and the agent's stated reason was that no skill description covered GitHub, since retrieval read as databases and warehouses only. Those two are the reason these cases exist. Cases 2 and 3 passed BEFORE the change as well and do not discriminate — case 2 because a single-record lookup was never going to select it, case 3 because naming a Postgres table triggers the skill on the Postgres half no matter what the SaaS half says. Do not read 4/4 as evidence the change worked; only cases 1 and 4 carry that.",
+    "note": "Re-measure after any edit to the frontmatter description: that field is the whole mechanism these cases test, and it is also the field most likely to be trimmed for length."
+  },
+  "evals": [
+    {
+      "id": 1,
+      "name": "trigger-saas-history-and-aggregate",
+      "mode": "trigger",
+      "prompt": "How many issues did we close in the SkardiLabs/skardi repo last month, and which open PRs have been sitting without a review the longest?",
+      "expected_output": "MUST reach for retrieval. Both halves are aggregates over many records with a time window, which is what the server's GitHub tables are for. Going straight to `gh issue list` / `gh pr list` and reducing the output by hand is the failure this case exists to catch: it is the path an agent takes when the description gives it no reason to think the data is already served. Reaching for auto-context is also a failure — nothing here needs an index built.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "trigger-single-record-lookup-must-not-select",
+      "mode": "trigger",
+      "prompt": "What's the current status of PR #245 in SkardiLabs/skardi?",
+      "expected_output": "MUST NOT reach for retrieval. One known record, one field: `gh pr view 245 --repo SkardiLabs/skardi` is the cheaper and more direct answer, and the description says so. Naming no skill and running that command is the pass. Loading retrieval and then explaining that it does not apply is a weaker pass; loading it and issuing SQL for one row is a failure. This case is the counterweight to cases 1 and 4 — a description broad enough to catch aggregate GitHub questions must still leave single lookups alone.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "trigger-cross-source-join",
+      "mode": "trigger",
+      "prompt": "Which of the accounts in our Postgres customers table have filed a GitHub issue against us this quarter?",
+      "expected_output": "MUST reach for retrieval. No vendor CLI can answer this at all: the join spans a database and a SaaS source, and the server is the only place both are queryable together. Selecting nothing and proposing to export both sides and join them by hand is a failure even if it would eventually produce the right list. NOTE: this case does not discriminate between description versions — naming a Postgres table selects the skill on that half alone. Keep it as a regression guard, not as evidence about SaaS coverage.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "name": "trigger-cross-repo-review-aggregate",
+      "mode": "trigger",
+      "prompt": "Across all our repos, who reviewed the most pull requests this quarter?",
+      "expected_output": "MUST reach for retrieval. Nothing in the question names a database, a warehouse or Skardi, and every noun in it is GitHub's — which is exactly the shape that used to be missed. Answering it with `gh` means fanning out per repo and tallying by hand, pulling whole PR records through the context window to produce one ranked list. Selecting no skill is the failure.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "name": "trigger-saas-question-no-source-registered",
+      "mode": "trigger",
+      "prompt": "How many issues did we close in the SkardiLabs/skardi repo last month? (Run this twice: against a server with no GitHub source registered, and again with no server reachable at all.)",
+      "expected_output": "Either outcome passes, and what is scored is the cost. Not selecting the skill and answering with gh is correct. Selecting it is ALSO correct, provided the agent spends exactly one check (`skardi schema`, or exit code 2 when nothing is listening), says what it found or which URL it tried, and then falls back to gh. FAILURES: retrying an unreachable server, starting or configuring one, querying a lookalike table, or reporting that the question cannot be answered when gh is sitting right there.",
+      "files": []
+    }
+  ]
+}
