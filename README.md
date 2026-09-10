@@ -90,17 +90,17 @@ pi install git:github.com/SkardiLabs/skardi-skills
 > clone of this repo. If a host rejects or silently ignores the plugin, please
 > open an issue saying which host and version.
 
-**Kimi Code has no working one-command path from this repository**, despite the
-`.kimi-plugin/plugin.json` this repo carries. Measured on Kimi Code CLI 1.50.0:
+**Kimi Code has no one-command path from this repository, and ships no manifest
+for one.** Measured on Kimi Code CLI 1.50.0:
 `kimi plugin install https://github.com/SkardiLabs/skardi-skills.git` fails with
-`No plugin.json at repository root`. Aiming it at the subdirectory instead,
-`kimi plugin install https://github.com/SkardiLabs/skardi-skills.git/.kimi-plugin`,
-reports success and lists `skardi v0.4.0 (installed)` while installing **no
-skills at all**: a Kimi plugin declares executable `tools`, a `skills` key is not
-part of that manifest and is ignored, and the installed directory ends up holding
-nothing but `plugin.json`. Kimi Code discovers skills from directories only, so
-use the checkout path below; it reads `~/.agents/skills/`, which the next
-section already fills.
+`No plugin.json at repository root`, and a manifest put in a subdirectory for it
+to find is worse than none. It installs: `kimi plugin list` shows
+`skardi v0.4.0 (installed)` while **no skill at all** reaches the agent and the
+installed directory holds nothing but `plugin.json`. A Kimi plugin declares
+executable `tools`; a `skills` key is not part of that manifest and is ignored.
+Kimi Code discovers skills from directories only, and it reads
+`~/.agents/skills/`, so use the checkout path below, which the next section
+already fills.
 
 Codex, Cursor and Grok are also not in this list, because they distribute
 through their own reviewed marketplaces rather than from a repository manifest,
