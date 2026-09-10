@@ -43,6 +43,15 @@ This skill is written and tested against **v0.5.0** of both CLI and server (the 
 > `skardi query --help` lists `--purpose` exactly when the build carries the
 > pair. Each command template below shows its v0.5.0 form on a commented line.
 
+Before the first query, run that capability check and, only when the audit pair
+is available, mint the one session id that every query in this task will reuse:
+
+```bash
+if skardi query --help | grep -q -- '--purpose'; then
+  SKARDI_SESSION=$(uuidgen 2>/dev/null || echo "sess-$(date +%s)-$$")
+fi
+```
+
 ## Rule zero: ask the server, not your memory
 
 Which tables exist, which pipelines are registered, what a column means, what is writable — these are **deployment facts**. They differ per server and change under you. Re-discover them at the start of every session; never carry them over from a previous conversation or from this file.
@@ -147,10 +156,10 @@ Invocation: `skardi run <name> -p key=value` — values parse as JSON first (num
 
 ### 3. Ad-hoc SQL: read-only, one statement at a time
 
-Mint one session id when the task starts and reuse it for every query in the task (the two flags need a CLI built from `main` — see the exception under Prerequisites):
+On a build with the audit pair, the Prerequisites check has already minted one
+session id for this task. Reuse it for every query, including the peek:
 
 ```bash
-SKARDI_SESSION=$(uuidgen 2>/dev/null || echo "sess-$(date +%s)-$$")
 skardi query --purpose "order counts by lifecycle state" --session-id "$SKARDI_SESSION" \
   -e "SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
 # v0.5.0 build (no --purpose/--session-id — probe: skardi query --help): drop the pair:
@@ -199,7 +208,8 @@ Lead with the answer, then attach the evidence so the result can be re-run and a
 410 orders are paid, totalling ¥507,467.60.
 
 — from shop.main.orders via skardi query
-  --purpose "paid order count and revenue" --session-id 3fa4…
+  main build: --purpose "paid order count and revenue" --session-id 3fa4…
+  v0.5.0 build: /* purpose: paid order count and revenue */ (readability only; no ledger intent)
   SELECT COUNT(*) AS n, SUM(amount_cents)/100.0 AS total_yuan
   FROM shop.main.orders WHERE status = 'paid'
   1 row, not truncated; cross-checked against GROUP BY status over all 1500 orders
