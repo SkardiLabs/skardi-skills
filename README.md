@@ -60,8 +60,8 @@ Claude Code will automatically load the relevant skill when your request matches
 ### Other hosts, in one command
 
 Two hosts install this repository directly through their own extension
-mechanism. Each reads its own manifest in this repo and picks all four skills
-up from `skills/`.
+mechanism. Each reads its own manifest in this repo and picks up whatever is in
+`skills/`.
 
 **[Gemini CLI](https://github.com/google-gemini/gemini-cli/blob/main/docs/extensions/reference.md)** —
 reads `gemini-extension.json` and discovers each skill by its location under

@@ -42,8 +42,11 @@ jobs:
               status=1
               continue
             fi
-            # Hosts other than Claude Code reject or silently drop any name that
-            # is not kebab-case, and derive install slugs from the same field.
+            # dsh drops a name that is not kebab-case and OpenClaw derives its
+            # install slug from the same field. Gemini CLI, Kimi Code and Pi
+            # enforce neither this nor the name/directory match below (measured
+            # 2026-09-10), so a bad name installs cleanly there. This job is
+            # where the guarantee comes from; do not expect a host to complain.
             if ! printf '%s' "$name" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$'; then
               echo "::error::skill directory '${name}' is not kebab-case"
               status=1
