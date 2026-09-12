@@ -59,25 +59,20 @@ Claude Code will automatically load the relevant skill when your request matches
 
 ### Other hosts, in one command
 
-These hosts install this repository directly through their own plugin or
-extension mechanism. Each reads its own manifest in this repo and picks all
-three skills up from `skills/`.
+Two hosts install this repository directly through their own extension
+mechanism. Each reads its own manifest in this repo and picks up whatever is in
+`skills/`.
 
 **[Gemini CLI](https://github.com/google-gemini/gemini-cli/blob/main/docs/extensions/reference.md)** —
-reads `gemini-extension.json`; a skill is discovered by its location, so
-`skills/retrieval/SKILL.md` becomes the `retrieval` skill:
+reads `gemini-extension.json` and discovers each skill by its location under
+`skills/`:
 
 ```bash
 gemini extensions install https://github.com/SkardiLabs/skardi-skills
 ```
 
-**[Kimi Code](https://moonshotai.github.io/kimi-cli/en/customization/plugins.html)** —
-reads `.kimi-plugin/plugin.json`, which points at `./skills/`. From inside a
-session:
-
-```text
-/plugins install https://github.com/SkardiLabs/skardi-skills
-```
+It asks twice: once to trust the current workspace, and once to accept a
+third-party extension after printing every skill it is about to install.
 
 **[Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/packages.md)** —
 reads the `pi.skills` field in `package.json`:
@@ -86,40 +81,56 @@ reads the `pi.skills` field in `package.json`:
 pi install git:github.com/SkardiLabs/skardi-skills
 ```
 
-> **How far these three have been checked.** Each manifest follows the host's own
-> published plugin spec, linked above, and is valid against it. None of the three
-> has been installed and launched by us yet, so they are documented paths rather
-> than measured ones; only the Claude Code path above has been run end to end.
-> If a host rejects or silently ignores the plugin, please open an issue saying
-> which host and version.
+> **How far these two have been checked: measured, on 2026-09-10.** Both were
+> installed from this repository and launched, and all four skills reached the
+> agent in each. Gemini CLI 0.59.0 reports `Extension "skardi" installed
+> successfully and enabled`, names all four under `gemini extensions list`, and
+> loads them from `~/.gemini/extensions/skardi/skills/`. Pi 0.75.5 shows the
+> package with all four skills enabled in `pi config` and loads them from its
+> clone of this repo. If a host rejects or silently ignores the plugin, please
+> open an issue saying which host and version.
 
-Codex, Cursor and Grok are not in this list because they distribute through
-their own reviewed marketplaces rather than from a repository manifest, and
-Hermes is not because a Hermes *plugin* has to register each skill from Python
-in `__init__.py` (`skills/` is not auto-registered there) and would namespace
-them as `skardi:auto-context`. For all three, and for any host below, use the
-checkout path.
+**Kimi Code has no one-command path from this repository, and ships no manifest
+for one.** Measured on Kimi Code CLI 1.50.0:
+`kimi plugin install https://github.com/SkardiLabs/skardi-skills.git` fails with
+`No plugin.json at repository root`, and a manifest put in a subdirectory for it
+to find is worse than none. It installs: `kimi plugin list` shows
+`skardi v0.4.0 (installed)` while **no skill at all** reaches the agent and the
+installed directory holds nothing but `plugin.json`. A Kimi plugin declares
+executable `tools`; a `skills` key is not part of that manifest and is ignored.
+Kimi Code discovers skills from directories only, and it reads
+`~/.agents/skills/`, so use the checkout path below, which the next section
+already fills.
+
+Codex, Cursor and Grok are also not in this list, because they distribute
+through their own reviewed marketplaces rather than from a repository manifest,
+and Hermes is not because a Hermes *plugin* has to register each skill from
+Python in `__init__.py` (`skills/` is not auto-registered there) and would
+namespace them as `skardi:auto-context`. For all of them, and for any host
+below, use the checkout path.
 
 ### Other Agent Skills hosts, from a checkout
 
-Codex, Cursor, Pi, dsh, OpenClaw and Hermes load these skills from a directory
-they resolve themselves; they differ in where that directory has to go. All of
-them install from a checkout:
+Codex, Cursor, Pi, dsh, Kimi Code, OpenClaw and Hermes load these skills from a
+directory they resolve themselves; they differ in where that directory has to
+go. All of them install from a checkout:
 
 ```bash
 git clone https://github.com/SkardiLabs/skardi-skills.git && cd skardi-skills
 ```
 
-> **How far each of these has been checked.** The OpenClaw commands for `auto-context` and
-> `retrieval` below were run: both install and the host lists them as ready. `graph-source` and
-> the rest follow each host's own published skills
-> documentation and have not been installed and launched by us. They are the documented paths,
+> **How far each of these has been checked.** Two are measured. The `~/.agents/skills/`
+> copy below was run for Kimi Code CLI 1.50.0 on 2026-09-10: all four skills reach the agent,
+> under its `User` scope. The OpenClaw commands for `auto-context` and
+> `retrieval` were run earlier: both install and the host lists them as ready.
+> Everything else follows each host's own published skills documentation and has not been
+> installed and launched by us. Those are the documented paths,
 > not measured ones — if one of them does not pick the skill up, please open an issue and say
 > which host and version, since that is the kind of thing only a user on that host can catch.
 
-#### Codex, Cursor, Pi, dsh
+#### Codex, Cursor, Pi, dsh, Kimi Code
 
-All four read the cross-tool `~/.agents/skills/` convention, so one copy covers
+All five read the cross-tool `~/.agents/skills/` convention, so one copy covers
 every one of them:
 
 ```bash
@@ -134,7 +145,8 @@ To scope the skill to a single project instead, copy it into that repo's
 `.agents/skills/`. Each host also keeps a native directory if you'd rather
 install per tool — `~/.cursor/skills/` for [Cursor](https://cursor.com/docs/skills),
 `~/.pi/agent/skills/` for [Pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md),
-`~/.dsh/skills/` for [dsh](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/skills.md)
+`~/.dsh/skills/` for [dsh](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/skills.md),
+`~/.kimi/skills/` for [Kimi Code](https://moonshotai.github.io/kimi-cli/en/customization/skills.html)
 — while [Codex](https://learn.chatgpt.com/docs/build-skills) uses
 `~/.agents/skills/` as its only personal location.
 
@@ -180,6 +192,17 @@ or project skills and restart it. These files follow the
 format does not guarantee a host will load them — hosts add rules of their own.
 `auto-context` is named in kebab-case for that reason: dsh rejects any other
 shape outright, and OpenClaw derives its install slug from the same field.
+
+Do not read a successful install elsewhere as proof that a name is fine. Gemini
+CLI 0.59.0, Kimi Code CLI 1.50.0 and Pi 0.75.5 enforce nothing here. Measured
+with probe skills on 2026-09-10: a `SKILL.md` whose `name:` uses underscores, and
+one whose `name:` disagrees with its own directory, both load on all three, and
+`gemini extensions validate` passes them too. On all three the name the agent
+sees comes from the `name:` field rather than from the directory, so the two can
+drift apart with nothing to show for it. That is the failure dsh and OpenClaw
+catch and these hosts do not, which is why every skill here keeps `name:` in
+kebab-case and identical to its directory name, and why CI asserts both on every
+pull request rather than trusting an install to complain.
 
 ## Bundled resources per skill
 
