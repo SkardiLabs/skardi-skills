@@ -5,6 +5,12 @@ description: 'Answer a question about a knowledge graph or property graph served
 
 # graph-rag — answer connection questions from a graph's edges
 
+**Version prerequisite:** this is a preview skill for Skardi `main`, the same
+prerequisite `graph-source` states. v0.5.0, the current release, has neither
+`type: graph` sources nor the `cypher_query` UDTF that every traversal below
+runs on. Connect the graph with `graph-source` first; it names the commit
+this was verified against and how to build it.
+
 Your job: take a question whose answer lives in **relationships**, find the
 right entities to start from, walk the graph from them, and answer with both
 halves shown. Retrieval alone returns documents that mention things; the graph
