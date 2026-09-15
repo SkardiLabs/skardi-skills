@@ -59,6 +59,12 @@ registration by upgrading the credential. Credentials enter Skardi as
 environment-variable NAMES only; a password embedded in
 `connection_string` is rejected at config load.
 
+Pick the AGE graph's name here with three characters or more:
+`create_graph` refuses anything shorter with a bare "graph name is
+invalid", and the short name a reader reaches for is `kg` — which is
+Skardi's catalog name from Phase 2, a different namespace that never
+needed to match. The measured rule is in the reference.
+
 ### Phase 2 — Declare the source
 
 Read [references/configuration.md](references/configuration.md).
