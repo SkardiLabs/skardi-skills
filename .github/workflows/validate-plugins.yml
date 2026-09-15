@@ -24,6 +24,9 @@ jobs:
           claude plugin validate .
           claude plugin validate .claude-plugin/plugin.json
 
+      - name: Host manifests agree on one version
+        run: scripts/bump-version.sh --check
+
       - name: Every skill directory carries a SKILL.md
         shell: bash
         run: |
