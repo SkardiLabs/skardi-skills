@@ -153,6 +153,8 @@ Drop `--dry-run` to install for real. It writes the file, restarts, and probes h
 
 The ledger this skill reads is written by `skardi-server --query-audit-db <path>`, which landed in [skardi#173](https://github.com/SkardiLabs/skardi/pull/173) on 2026-08-06, two days after v0.5.0 shipped. **No release has it** — `git grep query_audit_db v0.5.0` is empty — so on a released binary, or the `skardi-server-rag:0.5.0` image, the flag is not recognised and there is no database for this skill to read. Check what the server you are pointed at was built from before you start.
 
+**Self-hosted servers only; Skardi Cloud is not supported yet.** `read_log.py` opens the ledger as a local SQLite file, `ask.py` sends its queries without an API token, and `add_pipeline.py` installs a pipeline by writing a file next to the server and restarting it. None of that works against a Skardi Cloud workspace.
+
 Building one that has it:
 
 ```bash

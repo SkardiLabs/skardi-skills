@@ -18,7 +18,7 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 
 > **`graph-source` and `graph-rag` both require Skardi `main`, not v0.5.0.** The latest release has neither `type: graph` nor `cypher_query`, so neither skill can do anything against it. `graph-source` was verified against [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48); build that checkout with `cargo build --release -p skardi-server`.
 
-> **`skardi-query-log` requires Skardi `main` too.** The audit ledger it reads is written by `skardi-server --query-audit-db`, which landed after v0.5.0 (`git grep query_audit_db v0.5.0` is empty); build a server that has it from Skardi `main`. What was measured against it, and what was not, is in the skill's own Verification section. `auto-context` and `retrieval` are the released pair — they run on v0.5.0, and only `retrieval`'s `--purpose` / `--session-id` flags need `main`.
+> **`skardi-query-log` requires Skardi `main` too, on a server you host yourself; Skardi Cloud is not supported yet.** The audit ledger it reads is written by `skardi-server --query-audit-db`, which landed after v0.5.0 (`git grep query_audit_db v0.5.0` is empty); build a server that has it from Skardi `main`. What was measured against it, and what was not, is in the skill's own Verification section. `auto-context` and `retrieval` are the released pair — they run on v0.5.0, and only `retrieval`'s `--purpose` / `--session-id` flags need `main`.
 
 ## Installation
 
