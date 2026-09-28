@@ -21,7 +21,7 @@ The `skardi` CLI is a thin HTTP client — every command below is one request to
 2. **A reachable skardi-server.** Connection resolves in this order: `--server <URL>` flag → `$SKARDI_SERVER_URL` → `~/.skardi/config.yaml` → default `http://127.0.0.1:8080`. If auth is enabled on the server, pass `--token` or set `$SKARDI_API_TOKEN`.
 3. **Exit code contract:** `2` means the server was unreachable. That is an environment problem, not a query problem — see the stuck protocol.
 
-This skill is written and tested against **v0.5.0** of both CLI and server (the current release), **except the `--purpose`/`--session-id` audit pair, which needs a `main` build** — the exception below. Deployment behavior — which sources exist, what is read-only, row caps — is discovered live and is never assumed from this text.
+This skill is written and tested against **v0.5.0** of both CLI and server (the current release), **except the `--purpose`/`--session-id` audit pair, which needs a `main` build, and the `--task` that rides with it, which is newer still** — the exceptions below. Deployment behavior — which sources exist, what is read-only, row caps — is discovered live and is never assumed from this text.
 
 > **One exception: `--purpose` / `--session-id` need Skardi `main`, not v0.5.0.**
 > The pair used throughout step 3 landed after v0.5.0 shipped
@@ -35,13 +35,26 @@ This skill is written and tested against **v0.5.0** of both CLI and server (the 
 > crates/cli/` is empty) and the server has no `ai_context` at all
 > (`git grep ai_context v0.5.0 -- crates/server/` is empty), so on a released
 > server there is no ledger for the pair to land in. On v0.5.0, run the queries
-> below without the two flags; everything else in this skill holds there.
+> below without `--purpose`, `--session-id` and `--task`; everything else in this skill holds there.
 >
 > **`skardi --version` cannot tell you which you have** — the workspace version
 > has not been bumped since the release, so a `main` build also prints
 > `skardi 0.5.0`. Probe the capability instead of the version:
 > `skardi query --help` lists `--purpose` exactly when the build carries the
-> pair. Each command template below shows its v0.5.0 form on a commented line.
+> pair. Each command template below shows, on commented lines, its form for a
+> build without `--task` and its v0.5.0 form.
+
+> **`--task` is newer than the pair.** It landed on `main` with
+> [skardi#255](https://github.com/SkardiLabs/skardi/pull/255) (squash commit
+> [`b827286`](https://github.com/SkardiLabs/skardi/commit/b827286)) and is in
+> no release, so a `main` build from before that commit carries `--purpose` and
+> `--session-id` without it. Verified against the PR's head, commit
+> [`1bbdb18`](https://github.com/SkardiLabs/skardi/commit/1bbdb180a952b7171b8ace6b66b2f25d51550a29),
+> whose change is what `b827286` squashed: `skardi query --help` there lists
+> `--task`, and a query sent with it lands in the server's audit ledger as
+> `ai_context.task`. Probe for it the same way,
+> separately: `skardi query --help` lists `--task` exactly when the build has it.
+> Where it is missing, drop `--task` and send the pair alone; nothing else changes.
 
 Before the first query, run that capability check and, only when the audit pair
 is available, mint the one session id that every query in this task will reuse:
@@ -50,7 +63,14 @@ is available, mint the one session id that every query in this task will reuse:
 if skardi query --help | grep -q -- '--purpose'; then
   SKARDI_SESSION=$(uuidgen 2>/dev/null || echo "sess-$(date +%s)-$$")
 fi
+skardi query --help | grep -q -- '--task' && echo "this build takes --task"
 ```
+
+When the build takes `--task`, also settle the task line now, before the first
+query: one line naming the larger piece of work this run of queries serves
+(step 3 says what makes a good one). Write it down once and pass the exact
+same string with `--task` on every query of the task, peeks included. Every
+task gets one, even a single question: then the task line is that question.
 
 ## Rule zero: ask the server, not your memory
 
@@ -108,13 +128,18 @@ category in this file.**
 
   ```bash
   skardi query --purpose "peek at orders to learn its columns" --session-id "$SKARDI_SESSION" \
+    --task "Q3 retention review" \
     -e "SELECT * FROM shop.main.orders LIMIT 5" --table
-  # v0.5.0 build (no --purpose/--session-id — probe: skardi query --help): drop the pair:
+  # build without --task (probe: skardi query --help): drop that one flag:
+  # skardi query --purpose "peek at orders to learn its columns" --session-id "$SKARDI_SESSION" \
+  #   -e "SELECT * FROM shop.main.orders LIMIT 5" --table
+  # v0.5.0 build (no --purpose/--session-id/--task): drop all three:
   # skardi query -e "SELECT * FROM shop.main.orders LIMIT 5" --table
   ```
 
-  (`$SKARDI_SESSION` is the task's session id — step 3 explains the pair;
-  mint it before the first query, peeks included.)
+  (`$SKARDI_SESSION` is the task's session id and the `--task` value is the
+  task line; step 3 explains all three. Settle both before the first query,
+  peeks included.)
 
   A successful peek both proves the name and shows the columns. If the peek
   fails, stop and ask for the table list rather than iterating guesses.
@@ -161,12 +186,17 @@ session id for this task. Reuse it for every query, including the peek:
 
 ```bash
 skardi query --purpose "order counts by lifecycle state" --session-id "$SKARDI_SESSION" \
+  --task "Q3 retention review" \
   -e "SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
-# v0.5.0 build (no --purpose/--session-id — probe: skardi query --help): drop the pair:
+# build without --task (probe: skardi query --help): drop that one flag:
+# skardi query --purpose "order counts by lifecycle state" --session-id "$SKARDI_SESSION" \
+#   -e "SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
+# v0.5.0 build (no --purpose/--session-id/--task): drop all three:
 # skardi query -e "SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
 ```
 
 - **Every `skardi query` carries `--purpose` and `--session-id`.** They are sent as the `ai_context: { purpose, session_id }` object on the request, which is what the server's audit ledger records, the daily brief's intent breakdown groups by, and session-level learning aggregates on — a query without them lands as "(no declared intent)" with no session. The pair is all-or-nothing (the server rejects one without the other; the CLI enforces it too, since [skardi#232](https://github.com/SkardiLabs/skardi/pull/232), which is on `main` and in no release). `--purpose` is one plain-language line on why this query runs, ≤2000 characters; `--session-id` is any non-empty string ≤200 characters — one id per task, minted once (`uuidgen`) and reused across the task's queries so they group as one session. Purpose belongs in the flag, not in a SQL comment: a comment rides inside the SQL text where nothing aggregates it. (If SQL text does start with a comment, use the block form — a leading `-- comment` makes the CLI misparse `-e "--..."` as a flag.)
+- **Every `skardi query` also carries `--task` when the build takes it** (the Prerequisites probe says whether it does). `--purpose` says why *this* query runs; `--task` names the larger piece of work the whole run of queries serves, like "September cross-repo delivery review" or "why checkout errors rose last week". It is sent as `ai_context.task`, which the daily brief reads to say what a day of queries was *for*: purposes alone summarize as a list of lookups, because the larger goal is written in no single row. Pick it once at the start of the task and repeat it **verbatim** on every query that serves the task, peeks included; a reworded task reads as a different piece of work. It only travels with the pair: the CLI refuses `--task` without `--purpose`. When the work really is one question, the task line is that question; send it anyway, so a build that takes `--task` records one on every query.
 - **SELECT only.** The server already rejects DDL and COPY outright, and rejects writes to any source not explicitly configured `read_write` — but do not lean on that: retrieval work is read work, even on writable sources.
 - **One statement per request.** The server rejects multi-statement SQL (`Expected exactly one SQL statement`). Run follow-ups as separate calls.
 - **Peek before the real query.** `SELECT * FROM <table> LIMIT 5` shows you actual value shapes — date formats, status spellings, NULL patterns — that schema output cannot. One peek prevents most wrong-filter answers.
@@ -208,7 +238,8 @@ Lead with the answer, then attach the evidence so the result can be re-run and a
 410 orders are paid, totalling ¥507,467.60.
 
 — from shop.main.orders via skardi query
-  main build: --purpose "paid order count and revenue" --session-id 3fa4…
+  build with --task: --purpose "paid order count and revenue" --session-id 3fa4… --task "Q3 retention review"
+  build with the pair only: --purpose "paid order count and revenue" --session-id 3fa4…
   v0.5.0 build: /* purpose: paid order count and revenue */ (readability only; no ledger intent)
   SELECT COUNT(*) AS n, SUM(amount_cents)/100.0 AS total_yuan
   FROM shop.main.orders WHERE status = 'paid'
