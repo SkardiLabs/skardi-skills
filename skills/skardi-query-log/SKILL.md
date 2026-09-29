@@ -1,6 +1,8 @@
 ---
 name: skardi-query-log
 description: 'Before you send Skardi another ad-hoc SQL statement, check whether you have already asked this question — if you have, reuse the SQL that worked instead of rewriting it. **Come here after a failure too**: the errors record what the system cannot answer and where people have guessed wrong before. **You trigger this yourself; the user will not ask for it** — they say "I want to see X", never "check your query log". Route every query you send to Skardi through here. Turn one into a pipeline only if it keeps coming back. Also use it when the user asks "what do I keep querying?", "what can Skardi not answer?" or "should we make a pipeline for this?". Not for querying data itself (that is `ask.py`), not for configuring Skardi (that is the install docs).'
+metadata:
+  skardi-min-version: "main"
 ---
 
 # Check whether you have asked this before

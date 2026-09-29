@@ -12,6 +12,8 @@ description: >-
   `cypher_query`, or is debugging a degraded graph source, a
   `RowCapExceeded`, or a silently-NULL property column — even if they never
   say the words "graph source".
+metadata:
+  skardi-min-version: "main"
 ---
 
 # Connecting a graph source to Skardi

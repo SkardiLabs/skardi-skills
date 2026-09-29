@@ -18,6 +18,8 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 
 > **`graph-source` and `graph-rag` both require Skardi `main`, not v0.5.0.** The latest release has neither `type: graph` nor `cypher_query`, so neither skill can do anything against it. `graph-source` was verified against [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48); build that checkout with `cargo build --release -p skardi-server`.
 
+> **Each skill states the oldest Skardi it runs on**, as `metadata.skardi-min-version` in its `SKILL.md`: a release number, or `"main"` while no release has what it needs. Skardi's `install.sh` reads it and skips a skill the installed `skardi` is too old for. A `main` build still reports the last release's version number, so a skill marked `"main"` is installed only when you pass `--with-unreleased`. When a release ships the capability, change `"main"` to that version in the same pass as the release; CI rejects a `SKILL.md` without the field.
+
 > **`skardi-query-log` requires Skardi `main` too, on a server you host yourself; Skardi Cloud is not supported yet.** The audit ledger it reads is written by `skardi-server --query-audit-db`, which landed after v0.5.0 (`git grep query_audit_db v0.5.0` is empty); build a server that has it from Skardi `main`. What was measured against it, and what was not, is in the skill's own Verification section. `auto-context` and `retrieval` are the released pair — they run on v0.5.0, and only `retrieval`'s `--purpose` / `--session-id` flags need `main`.
 
 ## Installation

@@ -58,5 +58,12 @@ jobs:
               echo "::error::${dir}SKILL.md frontmatter name does not match its directory '${name}'"
               status=1
             fi
+            # install.sh reads this to skip a skill the installed skardi
+            # cannot run. "main" means no release has what it needs yet;
+            # replace it with the version number when that release ships.
+            if ! grep -Eq '^  skardi-min-version: "(main|[0-9]+\.[0-9]+\.[0-9]+)"$' "${dir}SKILL.md"; then
+              echo "::error::${dir}SKILL.md needs metadata.skardi-min-version: \"<x.y.z>\" or \"main\""
+              status=1
+            fi
           done
           exit $status
