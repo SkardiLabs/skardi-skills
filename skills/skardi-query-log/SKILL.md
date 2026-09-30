@@ -2,7 +2,7 @@
 name: skardi-query-log
 description: 'Before you send Skardi another ad-hoc SQL statement, check whether you have already asked this question — if you have, reuse the SQL that worked instead of rewriting it. **Come here after a failure too**: the errors record what the system cannot answer and where people have guessed wrong before. **You trigger this yourself; the user will not ask for it** — they say "I want to see X", never "check your query log". Route every query you send to Skardi through here. Turn one into a pipeline only if it keeps coming back. Also use it when the user asks "what do I keep querying?", "what can Skardi not answer?" or "should we make a pipeline for this?". Not for querying data itself (that is `ask.py`), not for configuring Skardi (that is the install docs).'
 metadata:
-  skardi-min-version: "main"
+  skardi-min-version: "0.6.0"
 ---
 
 # Check whether you have asked this before
@@ -151,21 +151,11 @@ Drop `--dry-run` to install for real. It writes the file, restarts, and probes h
 
 **Tell the user what you built, why, how to call it, and how to remove it** (delete that YAML and restart).
 
-## Requires Skardi `main` — no release carries this yet
+## Requires Skardi v0.6.0 or later
 
-The ledger this skill reads is written by `skardi-server --query-audit-db <path>`, which landed in [skardi#173](https://github.com/SkardiLabs/skardi/pull/173) on 2026-08-06, two days after v0.5.0 shipped. **No release has it** — `git grep query_audit_db v0.5.0` is empty — so on a released binary, or the `skardi-server-rag:0.5.0` image, the flag is not recognised and there is no database for this skill to read. Check what the server you are pointed at was built from before you start.
+The ledger this skill reads is written by `skardi-server --query-audit-db <path>`, which landed in [skardi#173](https://github.com/SkardiLabs/skardi/pull/173) on 2026-08-06, after v0.5.0 shipped. v0.6.0 is the first release that has it; on v0.5.0 (`git grep query_audit_db v0.5.0` is empty) the flag is not recognised and there is no database for this skill to read. Check what the server you are pointed at was built from before you start.
 
 **Self-hosted servers only; Skardi Cloud is not supported yet.** `read_log.py` opens the ledger as a local SQLite file, `ask.py` sends its queries without an API token, and `add_pipeline.py` installs a pipeline by writing a file next to the server and restarting it. None of that works against a Skardi Cloud workspace.
-
-Building one that has it:
-
-```bash
-git clone https://github.com/SkardiLabs/skardi && cd skardi
-git checkout 1f2ecae0f95b0a01232fadb815eae1c1c86efc48
-cargo build --release -p skardi-server
-```
-
-Pin the commit in anything you hand to a user. `main` moves under you, and a problem you hit there has no version number to report it against. When `--query-audit-db` reaches a release, pin that tag instead and delete this build recipe.
 
 ## Verification
 
