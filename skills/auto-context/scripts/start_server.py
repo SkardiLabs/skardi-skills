@@ -11,7 +11,7 @@ environment for the agent the RAG service will sit behind:
 
   --runtime docker
       Run via `docker run` against the official RAG image
-      (ghcr.io/skardilabs/skardi/skardi-server-full:X.Y.Z, --features rag —
+      (ghcr.io/skardilabs/skardi/skardi-server-full:0.6.0, --features rag —
       bundles chunk() + the embedding UDFs). Right for shipping RAG to
       teammates without asking them to compile Skardi, and for keeping the
       server isolated from the host's Python / OpenSSL / libsqlite versions.
@@ -50,10 +50,10 @@ from setup_context import sqlite_vec_extension_present
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 # skardi-server-full bundles chunk + embedding via --features rag. Pin the
-# released tag (:X.Y.Z), not :latest — :latest moves under you.
+# released tag (:0.6.0), not :latest — :latest moves under you.
 # Older skardi-server-embedding images do NOT register chunk() and break
 # ingest-chunked / search-{vector,hybrid} (which now embed inline server-side).
-DEFAULT_DOCKER_IMAGE = "ghcr.io/skardilabs/skardi/skardi-server-full:X.Y.Z"
+DEFAULT_DOCKER_IMAGE = "ghcr.io/skardilabs/skardi/skardi-server-full:0.6.0"
 DEFAULT_K8S_NAMESPACE = "skardi-rag"
 
 
@@ -545,7 +545,7 @@ def docker_command(workspace, port, breadcrumb, image, container_name):
     #
     #   * ctx.yaml tells the server to load sqlite-vec from the path in
     #     SQLITE_VEC_PATH, so the extension has to exist inside the container.
-    #   * `ghcr.io/skardilabs/skardi/skardi-server-full:X.Y.Z` does not ship
+    #   * `ghcr.io/skardilabs/skardi/skardi-server-full:0.6.0` does not ship
     #     it — `find / -name 'vec0*'` in the image returns nothing.
     #   * Mounting the host's copy does not help: sqlite-vec is a native
     #     library, and a macOS `vec0.dylib` cannot be loaded by the Linux
