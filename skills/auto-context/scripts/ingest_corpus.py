@@ -2,7 +2,7 @@
 """Walk a corpus directory and ingest every file into skardi-server.
 
 Replaces the old chunk_corpus.py + embed.py + http_ingest.py trio. With
-Skardi 0.4.0's chunk() UDF and the skardi-server-rag image (which bundles
+Skardi 0.4.0's chunk() UDF and the skardi-server-full image (which bundles
 chunk + embedding), the server now does both chunking and embedding inline
 inside one INSERT — there is no client-side chunker, and no client-side
 embedding step. We just:
