@@ -4,6 +4,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # A Skardi release can ship what a "main" skill waits for without any
+  # change here, so the unreleased check also runs on its own every day.
+  schedule:
+    - cron: '17 3 * * *'
 
 jobs:
   validate:
@@ -23,6 +27,11 @@ jobs:
         run: |
           claude plugin validate .
           claude plugin validate .claude-plugin/plugin.json
+
+      - name: No skill is still marked "main" for something a release shipped
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/check-unreleased.sh
 
       - name: Host manifests agree on one version
         run: scripts/bump-version.sh --check
