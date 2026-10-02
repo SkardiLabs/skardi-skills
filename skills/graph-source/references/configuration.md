@@ -15,7 +15,8 @@ spec:
       connection_string: postgres://localhost:5432/graphrag   # no credentials here (enforced)
       graph:
         backend: age                  # the shipped backend; neo4j/kuzu are later milestones
-        graph_name: knowledge         # AGE graphs are named per database
+        graph_name: knowledge         # the AGE graph — a DIFFERENT namespace from
+                                      # `name:` above, and named per database
         username_env: KG_READER_USER  # env-var NAMES, never values
         password_env: KG_READER_PASS
         query_timeout_seconds: 30     # default 30; valid 1..=86400
@@ -40,6 +41,15 @@ Notes that prevent re-derivation:
 - `hierarchy_level: catalog` is required — the error if you omit it says
   so, but say it here too: views are catalog tables, so the source must
   register in catalog mode.
+- **`name` and `graph_name` are two different names in two different
+  namespaces**, and this is the pair most worth reading twice. `name: kg`
+  is Skardi's catalog — what `cypher_query('kg', …)` takes and where
+  `kg.main.<view>` lives. `graph_name: knowledge` is the AGE graph inside
+  the Postgres database. They may match, and nothing requires it. One
+  reason they sometimes cannot: AGE's `create_graph` refuses any name
+  shorter than three characters, so an AGE graph literally called `kg`
+  does not exist — see "`create_graph` rejects some names" in
+  `provisioning.md` for the measured rule.
 - The view above carries `WHERE` and `LIMIT` **inside its Cypher**. That
   is not decoration — see "A view's bound lives in its Cypher" below.
 - Column `type` vocabulary (same for views and the ad-hoc `columns`
