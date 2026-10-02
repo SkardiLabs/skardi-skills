@@ -7,7 +7,7 @@ metadata:
 
 # retrieval — answer questions from live data through skardi
 
-Your job: take a concrete question, find the data behind a running skardi-server that answers it, and come back with the answer plus the query that produced it. The loop is always the same: **discover → search meaning first → SQL for precision → check what came back → report**.
+Your job: take a concrete question, find the data behind a running skardi-server that answers it, and come back with the answer plus the query that produced it. The loop is always the same: **check whether it was asked before → discover → search meaning first → SQL for precision → check what came back → report**. The first step applies whenever `skardi-query-log` is in your skill list; step 0 below.
 
 The `skardi` CLI is a thin HTTP client — every command below is one request to the server, which holds the query engine, the source registrations, and the safety policy. You never need database drivers, connection strings, or credentials for the backing stores; if the server is reachable, you can work.
 
@@ -58,14 +58,18 @@ This skill is written and tested against **v0.5.0** of both CLI and server (the 
 > separately: `skardi query --help` lists `--task` exactly when the build has it.
 > Where it is missing, drop `--task` and send the pair alone; nothing else changes.
 
-Before the first query, run that capability check and, only when the audit pair
-is available, mint the one session id that every query in this task will reuse:
+Before the first query, run this block. It does the capability check, mints
+the one session id every query in this task will reuse (only when the audit pair
+is available), and, when `skardi-query-log` is installed next to this skill,
+asks its index whether this question has been answered before:
 
 ```bash
 if skardi query --help | grep -q -- '--purpose'; then
   SKARDI_SESSION=$(uuidgen 2>/dev/null || echo "sess-$(date +%s)-$$")
 fi
 skardi query --help | grep -q -- '--task' && echo "this build takes --task"
+ASK="<this skill's directory>/../skardi-query-log/scripts/ask.py"
+[ -f "$ASK" ] && python3 "$ASK" "<the user's question, in plain words>"
 ```
 
 When the build takes `--task`, also settle the task line now, before the first
@@ -74,9 +78,14 @@ query: one line naming the larger piece of work this run of queries serves
 same string with `--task` on every query of the task, peeks included. Every
 task gets one, even a single question: then the task line is that question.
 
+Read what the last line printed before running anything else. If it lists a
+question that is the same as this one, go straight to step 0 and reuse its SQL;
+no `skardi schema` is needed. If it printed nothing (`skardi-query-log` is not
+installed) or no candidate matches, go on to discovery.
+
 ## Rule zero: ask the server, not your memory
 
-Which tables exist, which pipelines are registered, what a column means, what is writable — these are **deployment facts**. They differ per server and change under you. Re-discover them at the start of every session; never carry them over from a previous conversation or from this file.
+Which tables exist, which pipelines are registered, what a column means, what is writable — these are **deployment facts**. They differ per server and change under you. Re-discover them in every session rather than carrying them over from a previous conversation or from this file. The one thing that comes before discovery is step 0: a question already filed in the `skardi-query-log` index comes with SQL that ran against this server, and running it again is the check.
 
 | Question | Command |
 |---|---|
@@ -108,6 +117,35 @@ Two consequences worth stating, because instructions further down lean on them:
 
 
 ## The retrieval flow
+
+### 0. Has this been asked before?
+
+**The opening block under Prerequisites already ran `ask.py` when `skardi-query-log` is installed; act on what it printed before anything else in this flow.**
+Its `ask.py` keeps an index of questions already answered and the SQL that
+worked for each, plus pitfalls filed from earlier failures. Checking it takes
+one command; skipping it means rediscovering the schema and rewriting a
+statement a previous session already got right.
+
+```bash
+python3 <that skill's directory>/scripts/ask.py "<the user's question, in plain words>"
+```
+
+It needs a small config file the first time; `skardi-query-log`'s SKILL.md says
+what goes in it. Write it before running the command rather than skipping this
+step.
+
+- **One of the listed questions is the same question**: reuse its SQL, changing
+  only the parameters (a date, a limit), and run it through
+  `ask.py "<question>" --sql "<SQL>"`. Then go to step 4.
+- **None matches**: continue with step 1. When you have the query that answers
+  the question, run that final query through `ask.py "<question>" --sql "<SQL>"`
+  instead of `skardi query`, so the next session finds it. Peeks and schema
+  discovery stay on `skardi query`.
+- **A filed pitfall mentions a table you are about to use**: read it before
+  writing SQL.
+
+Whether a listed question is the same question is your judgement; the script
+only lists candidates. When `skardi-query-log` is not in your skill list, start at step 1.
 
 ### 1. Locate the data
 
