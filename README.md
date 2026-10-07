@@ -12,10 +12,13 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 | `skills/retrieval/` | `retrieval` | Answer questions from live data through a running `skardi-server` with the `skardi` CLI. Discovers sources, named pipelines, and the table schemas the deployment exposes, runs the question through any semantic search surface first (`search-hybrid` and friends), then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached. Consumes whatever the server already has — it builds no index, writes no data, and starts no servers. |
 | `skills/graph-source/` | `graph-source` | Connect a property graph (a knowledge graph, a GraphRAG corpus — Apache AGE / openCypher) to Skardi and query it through SQL, end to end: provision AGE with a least-privilege reader role, declare the `type: graph` source and its views in context YAML, triage registration health (healthy / degraded / refused, and what recovery does and does not answer), write correct queries (`cypher_query`, `graph_schema`, the JSON getters), and wire Cypher parameters into pipelines. Encodes the traps that bite in production: positional `columns` binding (same-typed columns declared out of RETURN order swap silently), no predicate pushdown into view Cypher (the bound lives in the view, `RowCapExceeded` otherwise), wrong-getter silently-NULL columns, the deliberately-absent `->`/`->>` operators, lowercase-only view names, and the one working `{params}` pipeline spelling. Read-only by backend enforcement; AGE is a preview backend on Skardi `main` (Neo4j/Kuzu are later milestones). |
 | `skills/graph-rag/` | `graph-rag` | Answer questions whose evidence is in graph relationships: find or verify the named entities, traverse from them through read-only Cypher, and report the bounds and confidence of the edges used. Preview on Skardi `main`, like `graph-source`. |
+| `skills/document-cache/` | `document-cache` | When your agent is about to read a local PDF, DOCX, XLSX, PPTX, Markdown or text file, check whether Skardi already holds a parsed copy and, if so, read only the table of contents and the sections the question needs. Otherwise the agent reads the file locally and offers to upload it to **your personal workspace** — it never uploads without a decision recorded for that folder or an answer given this turn, and every failure falls back to the local read. Consent is remembered per folder in `~/.skardi/doc-cache.json`. Needs the Skardi MCP tools (`find_cached_document`, `prepare_document_upload`, `read_document`) connected and a Skardi Cloud deployment with the document cache enabled; it does not query the cache with SQL or build any index. |
 
 > **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
 
 > **`graph-source` and `graph-rag` both require Skardi `main`, not v0.5.0.** The latest release has neither `type: graph` nor `cypher_query`, so neither skill can do anything against it. `graph-source` was verified against [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48); build that checkout with `cargo build --release -p skardi-server`.
+
+> **`document-cache` talks to Skardi Cloud, not to a local `skardi-server`.** It needs the Skardi MCP tools connected and the document cache enabled on the deployment (it answers `cache_unavailable` otherwise, and the skill reads the local file). It is marked `"main"` until a release carries it.
 
 > **Each skill states the oldest Skardi it runs on**, as `metadata.skardi-min-version` in its `SKILL.md`: a release number, or `"main"` while no release has what it needs. Skardi's `install.sh` reads it and skips a skill the installed `skardi` is too old for. A `main` build still reports the last release's version number, so a skill marked `"main"` is installed only when you pass `--with-unreleased`. When a release ships the capability, change `"main"` to that version in the same pass as the release; CI rejects a `SKILL.md` without the field.
 
@@ -30,7 +33,7 @@ From inside any Claude Code session:
 /plugin install skardi@skardi-skills
 ```
 
-That's it — all four skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
+That's it — all five skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
 
 > **Upgrading from an earlier version:** the individual plugins are now one, named `skardi`, so that every host can install this repository with its own one-line plugin command instead of a manual directory copy. Installed copies of the old per-skill plugins are not removed automatically — run `/plugin uninstall auto-context`, `/plugin uninstall retrieval`, `/plugin uninstall graph-source` and `/plugin uninstall graph-rag`, then install `skardi`. Further back: `auto-knowledge-base` and `auto-rag` were merged into `auto-context`; `skardi-deploy-and-patterns` and `feishu-connector` were retired, and Feishu cloud docs are now raw material for `auto-context`.
 
@@ -50,6 +53,9 @@ cp -r skills/graph-source ~/.claude/skills/graph-source
 
 # graph-rag (answer questions whose evidence is in graph relationships)
 cp -r skills/graph-rag ~/.claude/skills/graph-rag
+
+# document-cache (read cached documents by section instead of whole)
+cp -r skills/document-cache ~/.claude/skills/document-cache
 ```
 
 Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`, or "query our database" / "how many orders last month" / "what tables do we have" for `retrieval`. You can also invoke them directly:
@@ -57,6 +63,7 @@ Claude Code will automatically load the relevant skill when your request matches
 ```text
 /auto-context
 /retrieval
+/document-cache
 ```
 
 ### Other hosts, in one command
@@ -141,6 +148,7 @@ cp -r skills/auto-context ~/.agents/skills/auto-context
 cp -r skills/retrieval ~/.agents/skills/retrieval
 cp -r skills/graph-source ~/.agents/skills/graph-source
 cp -r skills/graph-rag ~/.agents/skills/graph-rag
+cp -r skills/document-cache ~/.agents/skills/document-cache
 ```
 
 To scope the skill to a single project instead, copy it into that repo's
@@ -162,6 +170,7 @@ openclaw skills install ./skills/auto-context
 openclaw skills install ./skills/retrieval
 openclaw skills install ./skills/graph-source
 openclaw skills install ./skills/graph-rag
+openclaw skills install ./skills/document-cache
 ```
 
 That installs into `~/.openclaw/workspace/skills/`, scoped to the active agent
@@ -179,6 +188,7 @@ cp -r skills/auto-context ~/.hermes/skills/auto-context
 cp -r skills/retrieval ~/.hermes/skills/retrieval
 cp -r skills/graph-source ~/.hermes/skills/graph-source
 cp -r skills/graph-rag ~/.hermes/skills/graph-rag
+cp -r skills/document-cache ~/.hermes/skills/document-cache
 ```
 
 Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git
@@ -224,6 +234,13 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 | `references/pipeline_patterns.md` | The exact SQL the skill generates, with commentary on RRF, the DataFusion INSERT-VALUES quirk, and how to extend the pipelines (metadata filters, updates, deletes) |
 | `references/troubleshooting.md` | Symptom → fix for server and own-datastore failures (missing role, missing extension, dim mismatch, tsquery syntax, Docker host-networking, localhost HTTP-proxy interception) |
 | `references/troubleshooting_sqlite.md` | Symptom → fix for the local path (sqlite-vec loading and extension paths, FTS5 syntax, trigger mismatches, model download) |
+
+### `skills/document-cache/`
+
+| Path | Purpose |
+|---|---|
+| `scripts/doc_cache.py` | Python standard library only, no token. `check <path>` hashes the file and reports its content type, size, the folder consent applies to (the git root, otherwise the file's folder) and the recorded decision; `consent <path> always\|never` records a decision for that folder; `upload <path> <url>` streams a single-use ticket PUT; `record <path> <sha256>` notes which hash was last uploaded for the path. State is `~/.skardi/doc-cache.json` (`$SKARDI_HOME` overrides the directory), written atomically with mode `0600`. Absolute paths never leave the machine |
+| `evals/evals.json` | Five execution cases (first read asks, an always folder, a never folder, a parsed hit read by section, a changed file sends `replaces`) and two trigger cases |
 
 ### `skills/retrieval/`
 
