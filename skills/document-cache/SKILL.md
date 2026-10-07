@@ -9,9 +9,9 @@ metadata:
 
 Your job: when you are about to read a local document, find out whether Skardi already holds a parsed copy of exactly that file. If it does, read the table of contents and then only the sections the question needs. If it does not, read the file locally as you always would, and — only with the user's consent — upload it so the next reference is cheap.
 
-Two pieces do the work. A small local script, `scripts/doc_cache.py` (Python standard library only, no token), hashes the file, remembers the user's consent per folder, and streams the upload. The Skardi MCP tools do everything that needs the server. No credential ever reaches the shell: the upload goes to a single-use ticket URL, and no file byte passes through you.
+Two pieces do the work. A small local script, `doc_cache.py` (Python standard library only, no token), hashes the file, remembers the user's consent per folder, and streams the upload. The Skardi MCP tools do everything that needs the server. No credential ever reaches the shell: the upload goes to a single-use ticket URL, and no file byte passes through you.
 
-Run the script as `python3 <this skill's directory>/scripts/doc_cache.py …`. Every subcommand prints exactly one JSON object; a failure prints `{"error": "..."}` and exits 1.
+Run the script as `python3 "<skill dir>/scripts/doc_cache.py" …`, where `<skill dir>` is the directory that contains this `SKILL.md`. Always use that full path: a bare `scripts/doc_cache.py` resolves against the user's project, not the skill, and silently fails there. Every subcommand prints exactly one JSON object; a failure prints `{"error": "..."}` and exits 1.
 
 ## What this skill is not
 
@@ -19,7 +19,7 @@ Run the script as `python3 <this skill's directory>/scripts/doc_cache.py …`. E
 - **Not a way into a team workspace.** Uploads go to the user's **personal** workspace only, even when the MCP connection is pinned to a team workspace. Do not look for a way to change that.
 - **Not a query surface.** Never write SQL against the cached corpus. You read it with `read_document` (table of contents, then sections) and, for a specific question, the full-text search pipeline tool. That is what keeps this skill unchanged when the storage behind it changes.
 - **Not index building or server operations.** Making a folder searchable is `auto-context`; answering from a database is `retrieval`. If the MCP tools are not there, say so once and read locally. Do not install, start or reconfigure anything.
-- **Undoing it.** "Stop caching here" means run `consent <file> never` for that folder. Cached files can be removed in the Skardi console (Integrations → Documents → Agent cache).
+- **Undoing it.** "Stop caching here" means run `consent <file> never` for that folder. To turn caching back on for a folder, run `consent <file> always`; it overrides an earlier `never`. Cached files can be removed in the Skardi console (Integrations → Documents → Agent cache).
 
 ## Prerequisites
 
@@ -34,7 +34,7 @@ Run the script as `python3 <this skill's directory>/scripts/doc_cache.py …`. E
 Run `check` on the file before reading it:
 
 ```bash
-python3 scripts/doc_cache.py check "<path>"
+python3 "<skill dir>/scripts/doc_cache.py" check "<path>"
 ```
 
 ```json
@@ -64,7 +64,7 @@ Use the `sha256` from `check`. Never compute or guess one yourself.
 - **`pending`** — the file was uploaded and is waiting for its parse. Read the local file as usual. Do not upload again.
 - **`not_found`** — read the local file as usual, then go to step 4. (A file whose earlier parse failed also answers `not_found`.)
 
-Any tool error from find (`cache_unavailable` and the like): read locally and stop trying for this session.
+A tool error from find follows the retry rule in step 5: `cache_unavailable` stops the cache for this session; any other error means read this file locally and try again on the next file.
 
 ### 3. Read by section
 
@@ -74,6 +74,8 @@ read_document {source, path: <section path>, workspace}
 ```
 
 Pass back the `source`, `toc_path` and `workspace` that find returned. The table of contents lists each section's `path`; read **only** the sections the question needs, and read more only when the first ones do not answer it. For a specific question over a large file ("where does it say anything about termination?"), run the `documents-okf-search-okf` tool when the connection lists it, then read the sections it points at.
+
+If `read_document` errors on the table of contents or a section, read the local file instead.
 
 If the user asks for the whole document, read every section. This skill saves reads; it never withholds content.
 
@@ -91,10 +93,10 @@ This step runs after a `not_found`, once you have the file in front of you. Use 
   `<file>` is the basename, `<size>` a human size, `<root>` the `consent_root` from `check`. Then:
 
   - **Allow once** — upload this file, record nothing about the folder.
-  - **Always allow in `<root>`** — `python3 scripts/doc_cache.py consent "<path>" always`, then upload.
-  - **Don't upload in `<root>`** — `python3 scripts/doc_cache.py consent "<path>" never`. Do not upload. Do not ask again for this folder.
+  - **Always allow in `<root>`** — `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" always`, then upload.
+  - **Don't upload in `<root>`** — `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" never`. Do not upload. Do not ask again for this folder.
 
-  Ask once per folder, not once per file, when several files from one folder come up in the same turn. If the user does not answer, do not upload.
+  **Allow once** covers only the file you named. If other files from the same folder come up in the same turn, ask again for each, or offer "Always allow in `<root>`" so one answer covers them. If the user does not answer, do not upload.
 
 **Upload.**
 
@@ -110,31 +112,35 @@ Take `filename` (basename), `sha256`, `byte_length` and `content_type` straight 
 - **`upload`** — run
 
   ```bash
-  python3 scripts/doc_cache.py upload "<path>" "<upload_url>"
+  python3 "<skill dir>/scripts/doc_cache.py" upload "<path>" "<upload_url>"
   ```
 
-  It prints `{"status":"ok"|"refused","code":…,"body":"…"}`. On `ok` (HTTP 2xx) run `python3 scripts/doc_cache.py record "<path>" <sha256>`. On `refused`, do not record anything and do not retry in a loop; the next read of the file will try again.
+  It prints `{"status":"ok"|"refused","code":…,"body":"…"}`. On `ok` (HTTP 2xx) run `python3 "<skill dir>/scripts/doc_cache.py" record "<path>" <sha256>`. On `refused`, do not record anything and do not retry in a loop; the next read of the file will try again.
 
 Do not wait for the parse. Tell the user in one line that the file was uploaded and will be readable by section shortly.
 
 ### 5. Any failure falls back to the local file
 
-Whatever goes wrong, you already have, or can still get, the local file. Read it and answer. Two outcomes need the user to act, so mention them **once**, in plain words, and then carry on: `source_quota_exhausted` (their Agent cache is full; files can be removed in the console) and `no_personal_workspace` (they have no personal workspace yet).
+Whatever goes wrong, you already have, or can still get, the local file. Read it and answer.
+
+**One retry rule, everywhere:** after `cache_unavailable` or a missing MCP tool, stop trying the cache for the rest of this session. After any other error, read this file locally and try the cache again on the next file.
+
+Two outcomes need the user to act, so mention them **once**, in plain words, and then carry on: `source_quota_exhausted` (their Agent cache is full; files can be removed in the console) and `no_personal_workspace` (they have no personal workspace yet).
 
 | Code | Where | Do |
 | --- | --- | --- |
-| `cache_unavailable` | find, prepare | read locally; stop trying this session |
-| `no_personal_workspace` | prepare | read locally; tell the user once |
-| `source_quota_exhausted` | prepare | read locally; tell the user once |
-| `unsupported_type`, `file_too_large`, `cache_busy` | prepare | read locally |
-| 410 `ticket_expired` / `ticket_used` | upload | read locally; the next read asks for a new ticket |
-| `hash_mismatch`, `length_mismatch`, not-the-uploader | upload | read locally (the file changed under you, or the ticket was not yours) |
-| `{"status":"refused","code":0,…}` | upload | the server was unreachable or hung up; read locally |
-| entry failed to parse | find → `not_found` | read locally |
+| `cache_unavailable`, or an MCP tool missing | find, prepare | read locally; stop trying this session |
+| `no_personal_workspace` | prepare | read locally; tell the user once; try again on the next file |
+| `source_quota_exhausted` | prepare | read locally; tell the user once; try again on the next file |
+| `unsupported_type`, `file_too_large`, `cache_busy` | prepare | read locally; try again on the next file |
+| 410 `ticket_expired` / `ticket_used` | upload | read locally; try again on the next file (it asks for a new ticket) |
+| `hash_mismatch`, `length_mismatch`, not-the-uploader | upload | read locally; re-run `check` first if the file may have changed; try again on the next file |
+| `{"status":"refused","code":0,…}` | upload | the server was unreachable or hung up; read locally; try again on the next file |
+| entry failed to parse | find → `not_found` | read locally; try again on the next file |
 
 ## Traps
 
-- **Hashing a file you then read differently.** The `sha256` that find and prepare get is the one `check` computed. If you edited the file between `check` and upload, the server refuses it (`hash_mismatch`); run `check` again before retrying, not before.
+- **A stale or invented hash.** Always use the `sha256` that `check` printed, never one you computed or guessed. Re-run `check` when the file may have changed since (for example after `hash_mismatch` or `length_mismatch`, or when you or the user edited it), and use the new output.
 - **Reading the local file when find said `parsed`.** That defeats the point. Read sections.
 - **Uploading on `pending`.** The file is already on its way. A second upload only burns a ticket.
 - **Treating the ticket URL as harmless.** It is the credential for one upload. Use it once, in the `upload` command, and do not print it back to the user or reuse it after any answer, successful or not.
@@ -146,7 +152,7 @@ Whatever goes wrong, you already have, or can still get, the local file. Read it
 
 ## When stuck
 
-Stop after the first failure of a step and take the local read. If the same step has failed twice in one conversation, stop using the cache for the rest of it and tell the user in one sentence what failed and which code it returned. If `check` itself errors (`{"error": …}`: missing file, unreadable state file), read the file normally and mention the error only if the user would otherwise be surprised.
+Stop after the first failure of a step and take the local read, then follow the retry rule in step 5: `cache_unavailable` or a missing MCP tool ends caching for this session; any other error only costs this file, and the next file tries again. When you give up on the cache for the session, tell the user in one sentence what failed and which code it returned. If `check` itself errors (`{"error": …}`: missing file, unreadable state file), read the file normally and mention the error only if the user would otherwise be surprised.
 
 ## Reporting
 
