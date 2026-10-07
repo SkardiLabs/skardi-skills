@@ -19,12 +19,12 @@ Run the script as `python3 <this skill's directory>/scripts/doc_cache.py …`. E
 - **Not a way into a team workspace.** Uploads go to the user's **personal** workspace only, even when the MCP connection is pinned to a team workspace. Do not look for a way to change that.
 - **Not a query surface.** Never write SQL against the cached corpus. You read it with `read_document` (table of contents, then sections) and, for a specific question, the full-text search pipeline tool. That is what keeps this skill unchanged when the storage behind it changes.
 - **Not index building or server operations.** Making a folder searchable is `auto-context`; answering from a database is `retrieval`. If the MCP tools are not there, say so once and read locally. Do not install, start or reconfigure anything.
-- **Undoing it.** "Stop caching here" means run `consent <file> never` for that folder. Cached files can be removed in the Skardi console (Documents → Agent cache).
+- **Undoing it.** "Stop caching here" means run `consent <file> never` for that folder. Cached files can be removed in the Skardi console (Integrations → Documents → Agent cache).
 
 ## Prerequisites
 
 1. **`python3` on PATH.** The script uses only the standard library. State lives in `~/.skardi/doc-cache.json` (override the directory with `$SKARDI_HOME`), mode `0600`: consent per folder and the hash last uploaded per file. Absolute paths stay on this machine.
-2. **The Skardi MCP tools connected:** `find_cached_document`, `prepare_document_upload` and `read_document`. Your host may prefix their names (for example `mcp__skardi__find_cached_document`). Connect the Skardi MCP server for the user's workspace, with a token that reaches their personal workspace, to enable this skill. If the tools are not in your tool list, tell the user that **once** this session, then read locally without calling anything.
+2. **The Skardi MCP tools connected:** `find_cached_document`, `prepare_document_upload` and `read_document`. Your host may prefix their names (for example `mcp__skardi__find_cached_document`). If the tools are not in your tool list, tell the user **once** this session: "In the Skardi console, open your personal workspace's **Agent access** page and add the MCP server it shows to this agent." Then read locally without calling anything.
 3. **Optional:** the full-text pipeline tool `documents-okf-search-okf`, which appears only when the connection lists it. Use it when it is there; it is not required.
 
 ## The flow
