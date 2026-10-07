@@ -25,6 +25,7 @@ being rewritten.
 import argparse
 import contextlib
 import hashlib
+import http.client
 import json
 import os
 import subprocess
@@ -60,7 +61,10 @@ class CacheError(Exception):
 
 
 def _home():
-    return Path(os.environ.get("SKARDI_HOME") or os.path.join(os.path.expanduser("~"), ".skardi"))
+    configured = os.environ.get("SKARDI_HOME")
+    if configured:
+        return Path(os.path.expanduser(configured))
+    return Path(os.path.expanduser("~")) / ".skardi"
 
 
 def _state_path():
@@ -93,7 +97,7 @@ def read_state():
 def _locked():
     """Exclusive lock on a sibling file for a read-modify-write of the state."""
     home = _home()
-    home.mkdir(parents=True, exist_ok=True)
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(str(_state_path()) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
     try:
         if sys.platform == "win32":
@@ -250,8 +254,10 @@ def _body_text(raw):
 
 def upload(path, url):
     abs_path = _abs_path(path)
-    size = os.path.getsize(abs_path)
     with open(abs_path, "rb") as fh:
+        # Measured on the handle we stream from, so the declared length is the
+        # length of what is actually sent even if the file changes meanwhile.
+        size = os.fstat(fh.fileno()).st_size
         # The open file is the body, so urllib streams it in blocks; the
         # explicit Content-Length stops it from trying to chunk or measure it.
         req = urllib.request.Request(
@@ -273,8 +279,9 @@ def upload(path, url):
             except OSError:
                 body = ""
             return {"status": "refused", "code": e.code, "body": body}
-        except (urllib.error.URLError, OSError, ValueError) as e:
-            return {"status": "refused", "code": 0, "body": str(getattr(e, "reason", e))}
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
+            reason = str(getattr(e, "reason", None) or e) or type(e).__name__
+            return {"status": "refused", "code": 0, "body": reason}
     return {"status": "ok" if 200 <= code < 300 else "refused", "code": code, "body": body}
 
 
@@ -317,7 +324,7 @@ def main(argv=None):
     except CacheError as e:
         print(json.dumps({"error": str(e)}))
         return 1
-    except OSError as e:
+    except Exception as e:  # noqa: BLE001 - the one-JSON-object contract has no exceptions
         print(json.dumps({"error": "%s: %s" % (type(e).__name__, e)}))
         return 1
     print(json.dumps(out))

@@ -422,3 +422,108 @@ def test_upload_streams_file_object(monkeypatch, tmp_path):
     assert not issubclass(seen["data_type"], (bytes, bytearray))
     assert seen["cl"] == "3"
     assert seen["method"] == "PUT"
+
+
+# --- hardening (review of Task 5.1) ------------------------------------------
+
+
+def test_upload_incomplete_read_is_refused_code_0(monkeypatch, tmp_path):
+    """http.client.HTTPException is not an OSError; it must not escape."""
+    import http.client
+    f = tmp_path / "a.txt"
+    f.write_bytes(b"abc")
+
+    def boom(req, timeout=None):
+        raise http.client.IncompleteRead(b"par", 10)
+
+    monkeypatch.setattr(doc_cache.urllib.request, "urlopen", boom)
+    out = doc_cache.upload(str(f), "http://example.invalid/x")
+    assert out["status"] == "refused"
+    assert out["code"] == 0
+    assert isinstance(out["body"], str) and out["body"]
+
+
+def test_upload_server_hangs_up_mid_reply_is_refused(home, work):
+    """A real socket: Content-Length promises more than is sent, then close."""
+    import socket
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def serve():
+        conn, _ = srv.accept()
+        conn.recv(65536)
+        conn.sendall(b"HTTP/1.1 201 Created\r\nContent-Length: 100\r\n\r\nshort")
+        conn.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    f = write(work / "a.md")
+    try:
+        out, code = run("upload", f, "http://127.0.0.1:%d/x" % port, home=home)
+    finally:
+        srv.close()
+    assert code == 0
+    assert out["status"] == "refused"
+    assert out["code"] == 0
+
+
+def test_main_catch_all_keeps_one_json_object(monkeypatch, capsys):
+    def boom(path):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(doc_cache, "check", boom)
+    rc = doc_cache.main(["check", "whatever"])
+    assert rc == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"error": "RuntimeError: unexpected"}
+
+
+def test_upload_content_length_comes_from_the_open_handle(monkeypatch, tmp_path):
+    """getsize before open can disagree with what the handle then streams."""
+    f = tmp_path / "a.txt"
+    f.write_bytes(b"abcdef")
+    seen = {}
+
+    class FakeResp:
+        status = 201
+
+        def read(self):
+            return b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["cl"] = req.get_header("Content-length")
+        return FakeResp()
+
+    monkeypatch.setattr(doc_cache.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(doc_cache.os.path, "getsize", lambda p: 999)
+    doc_cache.upload(str(f), "http://example.invalid/x")
+    assert seen["cl"] == "6"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_state_directory_mode_0700(home, work):
+    f = write(work / "a.md")
+    run("consent", f, "always", home=home)
+    assert stat.S_IMODE(os.stat(home).st_mode) == 0o700
+
+
+def test_skardi_home_is_user_expanded(tmp_path, work):
+    fake_home = tmp_path / "fakehome"
+    fake_home.mkdir()
+    f = write(work / "a.md")
+    env = dict(os.environ, HOME=str(fake_home), SKARDI_HOME="~/custom-skardi")
+    r = subprocess.run(
+        [sys.executable, SCRIPT, "consent", str(f), "always"],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path),
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert (fake_home / "custom-skardi" / "doc-cache.json").is_file()
+    assert not (tmp_path / "~").exists()
