@@ -19,7 +19,7 @@ Run the script as `python3 "<skill dir>/scripts/doc_cache.py" …`, where `<skil
 - **Not a way into a team workspace.** Uploads go to the user's **personal** workspace only, even when the MCP connection is pinned to a team workspace. Do not look for a way to change that.
 - **Not a query surface.** Never write SQL against the cached corpus. You read it with `read_document` (table of contents, then sections) and, for a specific question, the full-text search pipeline tool. That is what keeps this skill unchanged when the storage behind it changes.
 - **Not index building or server operations.** Making a folder searchable is `auto-context`; answering from a database is `retrieval`. If the MCP tools are not there, say so once and read locally. Do not install, start or reconfigure anything.
-- **Undoing it.** "Stop caching here" means run `consent <file> never` for that folder. To turn caching back on for a folder, run `consent <file> always`; it overrides an earlier `never`. Cached files can be removed in the Skardi console (Integrations → Documents → Agent cache).
+- **Undoing it.** "Stop caching here" means run `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" never` for that folder. Run `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" always` only when the user asks to turn caching back on for a folder, never on your own initiative; it overrides an earlier `never`. Cached files can be removed in the Skardi console (Integrations → Documents → Agent cache).
 
 ## Prerequisites
 
