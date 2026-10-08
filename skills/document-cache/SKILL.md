@@ -16,7 +16,7 @@ Run the script as `python3 "<skill dir>/scripts/doc_cache.py" …`, where `<skil
 ## What this skill is not
 
 - **Not an upload you decide on your own.** Nothing is uploaded unless the script reports `decision: "always"` for the file's folder, or the user answered the prompt in step 4 *this turn*. A remembered `never` is as binding as an `always`.
-- **Not a way into a team workspace.** Uploads go to the user's **personal** workspace only, even when the MCP connection is pinned to a team workspace. Do not look for a way to change that.
+- **Not a way into a team workspace.** Uploads go to the user's **personal** workspace only. When the MCP connection is pinned to any other workspace, both cache tools answer `no_personal_workspace` and nothing uploads; tell the user once that they can connect without the pin, or pinned to their personal workspace. Do not look for a way around it.
 - **Not a query surface.** Never write SQL against the cached corpus. You read it with `read_document` (table of contents, then sections) and, for a specific question, the full-text search pipeline tool. That is what keeps this skill unchanged when the storage behind it changes.
 - **Not index building or server operations.** Making a folder searchable is `auto-context`; answering from a database is `retrieval`. If the MCP tools are not there, say so once and read locally. Do not install, start or reconfigure anything.
 - **Undoing it.** "Stop caching here" means run `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" never` for that folder. Run `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" always` only when the user asks to turn caching back on for a folder, never on your own initiative; it overrides an earlier `never`. Cached files can be removed in the Skardi console (Integrations → Documents → Agent cache).
@@ -64,7 +64,7 @@ Use the `sha256` from `check`. Never compute or guess one yourself.
 - **`pending`** — the file was uploaded and is waiting for its parse. Read the local file as usual. Do not upload again.
 - **`not_found`** — read the local file as usual, then go to step 4. (A file whose earlier parse failed also answers `not_found`.)
 
-A tool error from find follows the retry rule in step 5: `cache_unavailable` stops the cache for this session; any other error means read this file locally and try again on the next file.
+A tool error from find follows the retry rule in step 5: a session-stop code ends the cache for this session; any other error means read this file locally and try again on the next file.
 
 ### 3. Read by section
 
@@ -73,9 +73,9 @@ read_document {source, path: toc_path, workspace}     → the table of contents
 read_document {source, path: <section path>, workspace}
 ```
 
-Pass back the `source`, `toc_path` and `workspace` that find returned. The table of contents lists each section's `path`; read **only** the sections the question needs, and read more only when the first ones do not answer it. For a specific question over a large file ("where does it say anything about termination?"), run the `documents-okf-search-okf` tool when the connection lists it, then read the sections it points at.
+Pass back the `source` and `workspace` that find returned, and `path` = `toc_path` exactly as returned; the engine accepts the full path. The table of contents lists each section's `path`; read **only** the sections the question needs, and read more only when the first ones do not answer it. For a specific question over a large file ("where does it say anything about termination?"), run the `documents-okf-search-okf` tool when the connection lists it, then read the sections it points at.
 
-If `read_document` errors on the table of contents or a section, read the local file instead.
+If `read_document` errors, or returns no rows, on the table of contents or a section, read the local file instead.
 
 If the user asks for the whole document, read every section. This skill saves reads; it never withholds content.
 
@@ -123,24 +123,40 @@ Do not wait for the parse. Tell the user in one line that the file was uploaded 
 
 Whatever goes wrong, you already have, or can still get, the local file. Read it and answer.
 
-**One retry rule, everywhere:** after `cache_unavailable` or a missing MCP tool, stop trying the cache for the rest of this session. After any other error, read this file locally and try the cache again on the next file.
+**One retry rule, everywhere:** a **session stop** means stop trying the cache for the rest of this session and tell the user once, in plain words, because the cause is the connection, not one file. A session stop is a missing MCP tool, or one of these codes from find or prepare:
 
-Two outcomes need the user to act, so mention them **once**, in plain words, and then carry on: `source_quota_exhausted` (their Agent cache is full; files can be removed in the console) and `no_personal_workspace` (they have no personal workspace yet).
+- `no_personal_workspace`: there is no personal workspace, the connection is pinned to another workspace, the token is scoped away from the personal workspace, or the token is org-bound to a team org. Name those cases and say the user can connect without the pin, or pinned to their personal workspace.
+- `credential_required`, `token_unknown_or_revoked`, `session_revoked`: tell the user to reconnect.
+- `insufficient_role`: tell the user to use a token with at least member access.
+- `cache_unavailable`, including an upload that returns 503 with `body.error` or `body.code` set to `cache_unavailable`.
+
+Every other error: read this file locally and try the cache again on the next file.
+
+One more outcome needs the user to act, so mention it **once** and then carry on: `source_quota_exhausted` (their Agent cache is full; files can be removed in the console).
 
 | Code | Where | Do |
 | --- | --- | --- |
-| `cache_unavailable`, or an MCP tool missing | find, prepare | read locally; stop trying this session |
-| `no_personal_workspace` | prepare | read locally; tell the user once; try again on the next file |
+| an MCP tool missing | any | read locally; session stop |
+| `cache_unavailable` (also an upload 503 with `body.error` or `body.code` `cache_unavailable`) | find, prepare, upload | read locally; session stop |
+| `no_personal_workspace` | find, prepare | read locally; session stop; tell the user once, naming the four cases above |
+| `credential_required`, `token_unknown_or_revoked`, `session_revoked` | find, prepare | read locally; session stop; tell the user to reconnect |
+| `insufficient_role` | find, prepare | read locally; session stop; tell the user to use a token with at least member access |
 | `source_quota_exhausted` | prepare | read locally; tell the user once; try again on the next file |
-| `unsupported_type`, `file_too_large`, `cache_busy` | prepare | read locally; try again on the next file |
-| 410 `ticket_expired` / `ticket_used` | upload | read locally; try again on the next file (it asks for a new ticket) |
-| `hash_mismatch`, `length_mismatch`, not-the-uploader | upload | read locally; re-run `check` first if the file may have changed; try again on the next file |
+| `unsupported_type`, `file_too_large` | prepare | read locally; try again on the next file |
+| `invalid_filename`, `invalid_length`, `invalid_sha256`, or an MCP `invalid_params` protocol error | prepare, find | re-run `check`, use exactly what it printed, and read locally; try again on the next file |
+| `cache_busy` | prepare | read locally; try again on the next file. It also covers a cache that was just created and is not live yet |
+| 410 `ticket_used` / `ticket_expired` | upload | read locally; try again on the next file (it asks for a new ticket) |
+| 413 `body_too_large` / `document-too-large` | upload | the file changed; re-run `check`, read locally |
+| 422 `document-digest-mismatch` / `document-length-mismatch` | upload | read locally; try again on the next file |
+| 400 header or type codes | upload | read locally; try again on the next file |
+| 403, 404, 502, 504 | upload | read locally; try again on the next file |
+| 503 `engine_not_provisioned` | upload | read locally; try again on the next file |
 | `{"status":"refused","code":0,…}` | upload | the server was unreachable or hung up; read locally; try again on the next file |
 | entry failed to parse | find → `not_found` | read locally; try again on the next file |
 
 ## Traps
 
-- **A stale or invented hash.** Always use the `sha256` that `check` printed, never one you computed or guessed. Re-run `check` when the file may have changed since (for example after `hash_mismatch` or `length_mismatch`, or when you or the user edited it), and use the new output.
+- **A stale or invented hash.** Always use the `sha256` that `check` printed, never one you computed or guessed. Re-run `check` when the file may have changed since (for example after a 413 `document-too-large`, or when you or the user edited it), and use the new output.
 - **Reading the local file when find said `parsed`.** That defeats the point. Read sections.
 - **Uploading on `pending`.** The file is already on its way. A second upload only burns a ticket.
 - **Treating the ticket URL as harmless.** It is the credential for one upload. Use it once, in the `upload` command, and do not print it back to the user or reuse it after any answer, successful or not.
@@ -148,11 +164,11 @@ Two outcomes need the user to act, so mention them **once**, in plain words, and
 - **Asking again after "Don't upload".** It is remembered for the folder. Honour it silently.
 - **Calling `consent … always` for "Allow once".** "Once" records nothing.
 - **Re-running `check` on every question about the same file.** Once you know it is `parsed`, keep the `source` and `toc_path` for the rest of the conversation.
-- **Pinning to a team workspace and assuming the upload went there.** It did not; the result's `workspace` names the personal one. Say so if the user asks where the file went.
+- **Pinning to a team workspace and expecting the cache to work.** A connection pinned to any workspace other than the personal one gets `no_personal_workspace` from both tools, and nothing uploads. Do not retry it per file.
 
 ## When stuck
 
-Stop after the first failure of a step and take the local read, then follow the retry rule in step 5: `cache_unavailable` or a missing MCP tool ends caching for this session; any other error only costs this file, and the next file tries again. When you give up on the cache for the session, tell the user in one sentence what failed and which code it returned. If `check` itself errors (`{"error": …}`: missing file, unreadable state file), read the file normally and mention the error only if the user would otherwise be surprised.
+Stop after the first failure of a step and take the local read, then follow the retry rule in step 5: a session stop (a missing MCP tool, `no_personal_workspace`, `credential_required`, `token_unknown_or_revoked`, `session_revoked`, `insufficient_role`, `cache_unavailable`) ends caching for this session; any other error only costs this file, and the next file tries again. When you give up on the cache for the session, tell the user in one sentence what failed and which code it returned. If `check` itself errors (`{"error": …}`: missing file, unreadable state file), read the file normally and mention the error only if the user would otherwise be surprised.
 
 ## Reporting
 
