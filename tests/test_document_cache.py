@@ -24,6 +24,12 @@ sys.path.insert(0, SCRIPTS)
 import doc_cache  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolated_skardi_home(tmp_path, monkeypatch):
+    """No test, including the ones that call doc_cache directly, reads ~/.skardi."""
+    monkeypatch.setenv("SKARDI_HOME", str(tmp_path / "isolated_skardi_home"))
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     h = tmp_path / "skardi_home"
@@ -42,13 +48,16 @@ def real(p):
     return os.path.realpath(str(p))
 
 
-def run(*args, home=None, check_exit=True):
+UPLOAD_URL = "https://gateway.example/documents/cache/upload/t0ken"
+
+
+def run(*args, home=None, check_exit=True, stdin=None):
     env = dict(os.environ)
     if home is not None:
         env["SKARDI_HOME"] = str(home)
     r = subprocess.run(
         [sys.executable, SCRIPT, *[str(a) for a in args]],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, env=env, input=stdin or "",
     )
     out = json.loads(r.stdout)
     if check_exit:
@@ -362,7 +371,7 @@ def test_upload_ok_201(home, work, server_factory):
     data = b"payload-bytes" * 1000
     f = write(work / "a.pdf", data)
     srv = server_factory(201, b'{"ok":true}')
-    out, code = run("upload", f, srv.url, home=home)
+    out, code = run("upload", f, "--once", home=home, stdin=srv.url)
     assert code == 0
     assert out == {"status": "ok", "code": 201, "body": '{"ok":true}'}
     assert srv.method == "PUT"
@@ -373,7 +382,7 @@ def test_upload_ok_201(home, work, server_factory):
 def test_upload_refused_410(home, work, server_factory):
     f = write(work / "a.md")
     srv = server_factory(410, b"ticket spent")
-    out, code = run("upload", f, srv.url, home=home)
+    out, code = run("upload", f, "--once", home=home, stdin=srv.url)
     assert code == 0
     assert out == {"status": "refused", "code": 410, "body": "ticket spent"}
 
@@ -385,7 +394,8 @@ def test_upload_connection_refused(home, work):
     port = s.getsockname()[1]
     s.close()
     f = write(work / "a.md")
-    out, code = run("upload", f, "http://127.0.0.1:%d/x" % port, home=home)
+    out, code = run("upload", f, "--once", home=home,
+                       stdin="http://127.0.0.1:%d/documents/cache/upload/t0ken" % port)
     assert code == 0
     assert out["status"] == "refused"
     assert out["code"] == 0
@@ -417,7 +427,7 @@ def test_upload_streams_file_object(monkeypatch, tmp_path):
         return FakeResp()
 
     monkeypatch.setattr(doc_cache.urllib.request, "urlopen", fake_urlopen)
-    out = doc_cache.upload(str(f), "http://example.invalid/x")
+    out = doc_cache.upload(str(f), UPLOAD_URL, once=True)
     assert out["status"] == "ok"
     assert not issubclass(seen["data_type"], (bytes, bytearray))
     assert seen["cl"] == "3"
@@ -437,7 +447,7 @@ def test_upload_incomplete_read_is_refused_code_0(monkeypatch, tmp_path):
         raise http.client.IncompleteRead(b"par", 10)
 
     monkeypatch.setattr(doc_cache.urllib.request, "urlopen", boom)
-    out = doc_cache.upload(str(f), "http://example.invalid/x")
+    out = doc_cache.upload(str(f), UPLOAD_URL, once=True)
     assert out["status"] == "refused"
     assert out["code"] == 0
     assert isinstance(out["body"], str) and out["body"]
@@ -461,7 +471,8 @@ def test_upload_server_hangs_up_mid_reply_is_refused(home, work):
     t.start()
     f = write(work / "a.md")
     try:
-        out, code = run("upload", f, "http://127.0.0.1:%d/x" % port, home=home)
+        out, code = run("upload", f, "--once", home=home,
+                       stdin="http://127.0.0.1:%d/documents/cache/upload/t0ken" % port)
     finally:
         srv.close()
     assert code == 0
@@ -487,7 +498,8 @@ def test_upload_truncated_error_body_keeps_the_http_status(home, work):
     t.start()
     f = write(work / "a.md")
     try:
-        out, code = run("upload", f, "http://127.0.0.1:%d/x" % port, home=home)
+        out, code = run("upload", f, "--once", home=home,
+                       stdin="http://127.0.0.1:%d/documents/cache/upload/t0ken" % port)
     finally:
         srv.close()
     assert code == 0
@@ -512,7 +524,7 @@ def test_upload_error_body_read_failure_keeps_the_status(monkeypatch, tmp_path):
         raise urllib.error.HTTPError(req.full_url, 503, "busy", {}, BadBody())
 
     monkeypatch.setattr(doc_cache.urllib.request, "urlopen", refuse)
-    out = doc_cache.upload(str(f), "http://example.invalid/x")
+    out = doc_cache.upload(str(f), UPLOAD_URL, once=True)
     assert out == {"status": "refused", "code": 503, "body": ""}
 
 
@@ -529,7 +541,7 @@ def test_upload_sends_only_the_measured_length_when_the_file_grows(home, work, s
 
     import unittest.mock as mock
     with mock.patch.object(doc_cache.os, "fstat", fake_fstat):
-        out = doc_cache.upload(str(f), srv.url)
+        out = doc_cache.upload(str(f), srv.url, once=True)
     assert out["status"] == "ok"
     assert srv.received == b"0123"
     assert srv.headers["Content-Length"] == "4"
@@ -544,9 +556,128 @@ def test_upload_file_that_shrinks_is_refused_not_hung(home, work, server_factory
 
     import unittest.mock as mock
     with mock.patch.object(doc_cache.os, "fstat", lambda fd: Longer()):
-        out = doc_cache.upload(str(f), srv.url)
+        out = doc_cache.upload(str(f), srv.url, once=True)
     assert out["status"] == "refused"
     assert out["code"] == 0
+
+
+# --- upload takes the ticket on stdin and enforces consent (review round 1) ----
+
+
+def test_upload_has_no_url_argument(home, work, server_factory):
+    """The ticket is a credential: argv is visible to every process on the host."""
+    f = write(work / "a.md")
+    srv = server_factory(201)
+    out, code = run("upload", f, "--once", srv.url, home=home, check_exit=False)
+    assert code == 1
+    assert "error" in out
+    assert srv.received is None
+
+
+def test_upload_reads_the_ticket_from_stdin_and_never_echoes_it(home, work, server_factory):
+    f = write(work / "a.md", b"data")
+    srv = server_factory(201, b"{}")
+    r = subprocess.run(
+        [sys.executable, SCRIPT, "upload", str(f), "--once"],
+        capture_output=True, text=True, input=srv.url + "\n",
+        env=dict(os.environ, SKARDI_HOME=str(home)),
+    )
+    assert r.returncode == 0, r.stderr
+    assert "t0ken" not in r.stdout + r.stderr
+    assert srv.received == b"data"
+
+
+def test_upload_without_a_url_on_stdin_is_an_error(home, work):
+    f = write(work / "a.md")
+    out, code = run("upload", f, "--once", home=home, check_exit=False, stdin="")
+    assert code == 1
+    assert "stdin" in out["error"]
+
+
+def _consent_never(home, work, f):
+    run("consent", f, "never", home=home)
+
+
+def test_upload_refused_when_folder_is_never_even_with_once(home, work, server_factory):
+    f = write(work / "a.md")
+    _consent_never(home, work, f)
+    srv = server_factory(201)
+    out, code = run("upload", f, "--once", home=home, stdin=srv.url, check_exit=False)
+    assert code == 1
+    assert "turned off" in out["error"]
+    assert srv.received is None
+
+
+def test_upload_needs_once_when_nothing_is_recorded(home, work, server_factory):
+    f = write(work / "a.md")
+    srv = server_factory(201)
+    out, code = run("upload", f, home=home, stdin=srv.url, check_exit=False)
+    assert code == 1
+    assert "--once" in out["error"]
+    assert srv.received is None
+
+
+def test_upload_with_recorded_always_needs_no_flag(home, work, server_factory):
+    f = write(work / "a.md", b"abc")
+    run("consent", f, "always", home=home)
+    srv = server_factory(201)
+    out, code = run("upload", f, home=home, stdin=srv.url)
+    assert out["status"] == "ok"
+    assert srv.received == b"abc"
+
+
+def test_upload_with_corrupt_state_needs_once(home, work, server_factory):
+    f = write(work / "a.md")
+    home.mkdir(parents=True)
+    state_path(home).write_text("{not json")
+    srv = server_factory(201)
+    out, code = run("upload", f, home=home, stdin=srv.url, check_exit=False)
+    assert code == 1
+    assert srv.received is None
+
+
+@pytest.mark.parametrize("url", [
+    "http://gateway.example/documents/cache/upload/t0ken",          # plain http, not local
+    "ftp://gateway.example/documents/cache/upload/t0ken",
+    "https://gateway.example/other/path/t0ken",                      # not an upload path
+    "https://gateway.example/documents/cache/upload/",               # no ticket
+    "https://gateway.example/documents/cache/upload/../../admin",    # traversal
+    "https://gateway.example/documents/cache/uploads/t0ken",
+    "https://gateway.example/",
+    "https://user:pw@gateway.example/documents/cache/upload/t0ken",
+    "https:///documents/cache/upload/t0ken",
+    "http://localhost.evil.example/documents/cache/upload/t0ken",
+    "http://127.0.0.1.evil.example/documents/cache/upload/t0ken",
+    "http://localhost@evil.example/documents/cache/upload/t0ken",
+    "not a url",
+])
+def test_upload_refuses_bad_destinations(home, work, url):
+    f = write(work / "a.md")
+    out, code = run("upload", f, "--once", home=home, stdin=url, check_exit=False)
+    assert code == 1
+    assert out["error"].startswith("refusing to upload")
+    assert "t0ken" not in out["error"]
+
+
+@pytest.mark.parametrize("url", [
+    "https://gateway.example/documents/cache/upload/t0ken",
+    "https://gateway.example:8443/documents/cache/upload/t0ken",
+    "http://localhost/documents/cache/upload/t0ken",
+    "http://localhost:8080/documents/cache/upload/t0ken",
+    "http://127.0.0.1:9/documents/cache/upload/t0ken",
+    "http://[::1]:9/documents/cache/upload/t0ken",
+])
+def test_upload_accepts_https_and_local_http_ticket_urls(url):
+    doc_cache._check_upload_url(url)
+
+
+def test_upload_refuses_an_unsupported_file_type(home, work, server_factory):
+    f = write(work / "id_rsa.key", b"secret")
+    srv = server_factory(201)
+    out, code = run("upload", f, "--once", home=home, stdin=srv.url, check_exit=False)
+    assert code == 1
+    assert "supported" in out["error"]
+    assert srv.received is None
 
 
 def test_main_catch_all_keeps_one_json_object(monkeypatch, capsys):
@@ -584,7 +715,7 @@ def test_upload_content_length_comes_from_the_open_handle(monkeypatch, tmp_path)
 
     monkeypatch.setattr(doc_cache.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(doc_cache.os.path, "getsize", lambda p: 999)
-    doc_cache.upload(str(f), "http://example.invalid/x")
+    doc_cache.upload(str(f), UPLOAD_URL, once=True)
     assert seen["cl"] == "6"
 
 

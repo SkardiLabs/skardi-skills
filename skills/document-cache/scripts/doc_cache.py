@@ -10,8 +10,13 @@ a failure prints {"error": "..."} and exits 1. No subcommand needs a token:
        "consent_root","decision","indexed_sha256","small"}
   doc_cache.py consent <path> always|never
       {"consent_root","decision"}
-  doc_cache.py upload <path> <url>
+  doc_cache.py upload <path> [--once]    (the ticket URL is read from stdin)
       {"status":"ok"|"refused","code":int,"body":str}
+      The ticket is a single-use credential, so it never goes in argv. Refuses
+      (an {"error"}, exit 1, nothing sent) when the folder's decision is
+      "never"; when it is not "always" and --once was not passed; when the URL
+      is not https (http only for localhost) or not under
+      /documents/cache/upload/; and when the file is not a supported type.
   doc_cache.py record <path> <sha256>
       {"abs_path","sha256"}
 
@@ -32,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -50,6 +56,9 @@ DOCUMENT_TYPES = {
 SMALL_BYTES = 32768
 STATE_VERSION = 1
 UPLOAD_TIMEOUT_SECONDS = 600
+# The gateway serves upload tickets here; anything else is not a ticket URL.
+UPLOAD_PATH_PREFIX = "/documents/cache/upload/"
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 BODY_LIMIT = 8192
 
 
@@ -274,8 +283,46 @@ def _body_text(raw):
     return raw[:BODY_LIMIT].decode("utf-8", errors="replace")
 
 
-def upload(path, url):
+def _check_upload_url(url):
+    """Refuse anything that is not a plain https (or local http) ticket URL.
+
+    The messages never repeat the URL: it is the credential."""
+    try:
+        u = urllib.parse.urlsplit(url)
+        host = u.hostname
+        u.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        raise CacheError("refusing to upload: not a valid URL") from None
+    if not (u.scheme == "https" and host) and not (u.scheme == "http" and host in LOCAL_HOSTS):
+        raise CacheError("refusing to upload: the URL must be https (http only for localhost)")
+    if u.username or u.password:
+        raise CacheError("refusing to upload: the URL must not carry credentials")
+    segments = u.path.split("/")
+    if (
+        not u.path.startswith(UPLOAD_PATH_PREFIX)
+        or len(u.path) == len(UPLOAD_PATH_PREFIX)
+        or ".." in segments
+        or "." in segments
+    ):
+        raise CacheError("refusing to upload: the URL is not under %s" % UPLOAD_PATH_PREFIX)
+
+
+def upload(path, url, once=False):
     abs_path = _abs_path(path)
+    # The script, not only the skill text, enforces consent: a document the agent
+    # reads could talk it into running `upload` on anything, anywhere.
+    if _content_type(abs_path) is None:
+        raise CacheError("refusing to upload: not a supported document type")
+    _check_upload_url(url)
+    root = consent_root(abs_path)
+    decision = decision_for(root, read_state()["consent"])
+    if decision == "never":
+        raise CacheError("refusing to upload: uploads are turned off for %s" % root)
+    if decision != "always" and not once:
+        raise CacheError(
+            "refusing to upload: no recorded consent for %s; pass --once only when "
+            "the user has just said Allow once" % root
+        )
     with open(abs_path, "rb") as fh:
         # Measured on the handle we stream from, and _FixedLength sends exactly
         # that many bytes, so the declared length is the length actually sent
@@ -331,11 +378,19 @@ def _parser():
     c.add_argument("decision")
     c = sub.add_parser("upload")
     c.add_argument("path")
-    c.add_argument("url")
+    c.add_argument("--once", action="store_true")
     c = sub.add_parser("record")
     c.add_argument("path")
     c.add_argument("sha256")
     return p
+
+
+def _read_ticket_url():
+    """The ticket URL, from stdin: argv is visible to every process on the host."""
+    url = sys.stdin.readline().strip()
+    if not url:
+        raise CacheError("no upload URL on stdin")
+    return url
 
 
 def main(argv=None):
@@ -346,7 +401,7 @@ def main(argv=None):
         elif args.cmd == "consent":
             out = consent(args.path, args.decision)
         elif args.cmd == "upload":
-            out = upload(args.path, args.url)
+            out = upload(args.path, _read_ticket_url(), once=args.once)
         else:
             out = record(args.path, args.sha256)
     except CacheError as e:
