@@ -226,12 +226,99 @@ def test_corrupt_state_is_ask_and_not_overwritten_by_check(home, work):
     assert state_path(home).read_text() == "{not json"
 
 
-def test_corrupt_state_is_replaced_by_consent(home, work):
+def _corrupt_files(home):
+    return sorted(p for p in home.iterdir() if ".corrupt-" in p.name)
+
+
+@pytest.mark.parametrize("bad", ["{not json", "[]", '{"consent": "x"}', '{"index": []}', "\xff\xfe"])
+def test_corrupt_state_is_moved_aside_not_destroyed_by_consent(home, work, bad):
     f = write(work / "a.md")
     home.mkdir(parents=True)
-    state_path(home).write_text("[]")
-    run("consent", f, "always", home=home)
+    state_path(home).write_bytes(bad.encode("latin-1"))
+    out, _ = run("consent", f, "always", home=home)
     assert check(f, home)["decision"] == "always"
+    moved = _corrupt_files(home)
+    assert len(moved) == 1
+    assert moved[0].name.startswith("doc-cache.json.corrupt-")
+    assert moved[0].read_bytes() == bad.encode("latin-1")
+    assert out["moved_aside"] == str(moved[0])
+
+
+def test_never_survives_in_the_moved_aside_file(home, work, tmp_path):
+    """The reported repro: a recorded never, then a corrupt file, then another consent."""
+    other = tmp_path / "other"
+    other.mkdir()
+    declined = write(work / "a.md")
+    run("consent", declined, "never", home=home)
+    good = state_path(home).read_text()
+    state_path(home).write_text(good[:-5])  # truncated mid-write
+    run("consent", write(other / "b.md"), "always", home=home)
+    moved = _corrupt_files(home)
+    assert len(moved) == 1
+    assert real(work) in moved[0].read_text()  # the user's earlier choice is recoverable
+
+
+def test_two_corrupt_moves_in_one_second_do_not_clobber(home, work):
+    f = write(work / "a.md")
+    home.mkdir(parents=True)
+    for i in range(2):
+        state_path(home).write_text("{bad %d" % i)
+        run("consent", f, "always", home=home)
+    assert sorted(p.read_text() for p in _corrupt_files(home)) == ["{bad 0", "{bad 1"]
+
+
+def test_record_also_moves_a_corrupt_file_aside(home, work):
+    f = write(work / "a.md")
+    home.mkdir(parents=True)
+    state_path(home).write_text("{nope")
+    out, _ = run("record", f, "ab" * 32, home=home)
+    assert "moved_aside" in out
+    assert check(f, home)["indexed_sha256"] == "ab" * 32
+
+
+def test_clean_write_reports_no_moved_aside(home, work):
+    f = write(work / "a.md")
+    out, _ = run("consent", f, "always", home=home)
+    assert "moved_aside" not in out
+    assert not _corrupt_files(home)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores modes")
+def test_unreadable_state_refuses_the_write_and_leaves_it(home, work):
+    f = write(work / "a.md")
+    home.mkdir(parents=True)
+    state_path(home).write_text(json.dumps(
+        {"version": 1, "consent": {real(work): "never"}, "index": {}}))
+    os.chmod(state_path(home), 0)
+    try:
+        out, code = run("consent", f, "always", home=home, check_exit=False)
+        assert code == 1
+        assert "cannot read" in out["error"]
+        # check never crashes: an unreadable file just means "ask".
+        assert check(f, home)["decision"] == "ask"
+    finally:
+        os.chmod(state_path(home), 0o600)
+    assert json.loads(state_path(home).read_text())["consent"] == {real(work): "never"}
+    assert not _corrupt_files(home)
+
+
+def test_oserror_reading_state_is_an_error_not_an_empty_state(home, work, monkeypatch):
+    f = write(work / "a.md")
+    home.mkdir(parents=True)
+    state_path(home).write_text("{}")
+    real_open = open
+
+    def flaky(path, *a, **k):
+        if str(path) == str(state_path(home)):
+            raise OSError(5, "Input/output error")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    with pytest.raises(doc_cache.CacheError, match="cannot read"):
+        doc_cache.consent(str(f), "always")
+    assert state_path(home).read_text() == "{}"
+    assert not _corrupt_files(home)
 
 
 def test_concurrent_consent_writes_keep_both_roots(home, tmp_path):

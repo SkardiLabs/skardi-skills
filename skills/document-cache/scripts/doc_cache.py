@@ -23,9 +23,12 @@ a failure prints {"error": "..."} and exits 1. No subcommand needs a token:
 State lives in $SKARDI_HOME/doc-cache.json (SKARDI_HOME defaults to
 ~/.skardi): {"version":1,"consent":{<root>:"always"|"never"},
 "index":{<abs path>:<sha256>}}. Absolute paths never leave the machine.
-Only `consent` and `record` write it; `check` only reads, and a missing or
-corrupt file reads as the empty state (so `check` reports "ask") without
-being rewritten.
+Only `consent` and `record` write it; `check` and `upload` only read, and a
+missing or corrupt file reads as the empty state (so `check` reports "ask")
+without being rewritten. A write never discards what it cannot parse: a corrupt
+file is first moved aside as doc-cache.json.corrupt-<timestamp> (the output
+then carries "moved_aside"), and a file that cannot be read at all (an
+OSError) is an error and is left alone.
 """
 import argparse
 import contextlib
@@ -36,6 +39,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -106,22 +110,46 @@ def _empty_state():
     return {"version": STATE_VERSION, "consent": {}, "index": {}}
 
 
-def read_state():
-    """The state file, or the empty state when it is missing or unreadable."""
+def _load_state():
+    """The parsed state; the empty state when the file does not exist.
+
+    Raises ValueError when the file is there but is not a state file, and
+    OSError when it cannot be read."""
     try:
         with open(_state_path(), "r", encoding="utf-8") as fh:
             raw = json.load(fh)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return _empty_state()
     if not isinstance(raw, dict):
+        raise ValueError("state file is not an object")
+    consent = raw.get("consent", {})
+    index = raw.get("index", {})
+    if not isinstance(consent, dict) or not isinstance(index, dict):
+        raise ValueError("state file has the wrong shape")
+    return {"version": STATE_VERSION, "consent": consent, "index": index}
+
+
+def read_state():
+    """The state file, or the empty state when it is missing or unreadable.
+
+    For reading only (`check`, `upload`): they must not crash, and the empty
+    state means "ask". Writers use _update_state, which does not."""
+    try:
+        return _load_state()
+    except (OSError, ValueError):
         return _empty_state()
-    consent = raw.get("consent")
-    index = raw.get("index")
-    return {
-        "version": STATE_VERSION,
-        "consent": consent if isinstance(consent, dict) else {},
-        "index": index if isinstance(index, dict) else {},
-    }
+
+
+def _move_corrupt_aside():
+    """Keep an unparseable state file (it may hold the user's "never" choices)."""
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    base = str(_state_path()) + ".corrupt-" + stamp
+    dest, n = base, 1
+    while os.path.exists(dest):
+        n += 1
+        dest = "%s-%d" % (base, n)
+    os.replace(str(_state_path()), dest)
+    return dest
 
 
 @contextlib.contextmanager
@@ -177,10 +205,27 @@ def _write_state(state):
 
 
 def _update_state(mutate):
+    """Read-modify-write under the lock; returns where a corrupt file went, if it did."""
     with _locked():
-        state = read_state()
+        moved = None
+        try:
+            state = _load_state()
+        except ValueError:
+            moved = _move_corrupt_aside()
+            state = _empty_state()
+        except OSError as e:
+            raise CacheError(
+                "cannot read %s (%s); leaving it untouched" % (_state_path(), e.strerror or e)
+            ) from None
         mutate(state)
         _write_state(state)
+        return moved
+
+
+def _with_moved(out, moved):
+    if moved:
+        out["moved_aside"] = moved
+    return out
 
 
 # --- file facts -------------------------------------------------------------
@@ -266,8 +311,8 @@ def consent(path, decision):
     if decision not in ("always", "never"):
         raise CacheError("decision must be 'always' or 'never'")
     root = consent_root(_abs_path(path))
-    _update_state(lambda s: s["consent"].__setitem__(root, decision))
-    return {"consent_root": root, "decision": decision}
+    moved = _update_state(lambda s: s["consent"].__setitem__(root, decision))
+    return _with_moved({"consent_root": root, "decision": decision}, moved)
 
 
 def record(path, sha256):
@@ -275,8 +320,8 @@ def record(path, sha256):
     if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
         raise CacheError("sha256 must be 64 hex characters")
     abs_path = _abs_path(path)
-    _update_state(lambda s: s["index"].__setitem__(abs_path, sha))
-    return {"abs_path": abs_path, "sha256": sha}
+    moved = _update_state(lambda s: s["index"].__setitem__(abs_path, sha))
+    return _with_moved({"abs_path": abs_path, "sha256": sha}, moved)
 
 
 def _body_text(raw):

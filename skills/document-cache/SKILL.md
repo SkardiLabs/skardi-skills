@@ -23,7 +23,7 @@ Run the script as `python3 "<skill dir>/scripts/doc_cache.py" …`, where `<skil
 
 ## Prerequisites
 
-1. **`python3` on PATH.** The script uses only the standard library. State lives in `~/.skardi/doc-cache.json` (override the directory with `$SKARDI_HOME`), mode `0600`: consent per folder and the hash last uploaded per file. Absolute paths stay on this machine.
+1. **`python3` on PATH.** The script uses only the standard library. State lives in `~/.skardi/doc-cache.json` (override the directory with `$SKARDI_HOME`), mode `0600`: consent per folder and the hash last uploaded per file. Absolute paths stay on this machine. If the file is corrupt, `consent` and `record` move it aside as `doc-cache.json.corrupt-<timestamp>` and report `moved_aside` (tell the user once that earlier folder choices were set aside and they may be asked again); if it cannot be read at all they exit with an error and change nothing.
 2. **The Skardi MCP tools connected:** `find_cached_document`, `prepare_document_upload` and `read_document`. Your host may prefix their names (for example `mcp__skardi__find_cached_document`). If the tools are not in your tool list, tell the user **once** this session: "In the Skardi console, open your personal workspace's **Agent access** page and add the MCP server it shows to this agent." Then read locally without calling anything.
 3. **Optional:** the full-text pipeline tool `documents-okf-search-okf`, which appears only when the connection lists it. Use it when it is there; it is not required.
 
