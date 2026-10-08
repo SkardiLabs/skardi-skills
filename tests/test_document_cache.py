@@ -469,6 +469,86 @@ def test_upload_server_hangs_up_mid_reply_is_refused(home, work):
     assert out["code"] == 0
 
 
+def test_upload_truncated_error_body_keeps_the_http_status(home, work):
+    """A 410 whose body is cut short must still report 410, not code 0 or a crash."""
+    import socket
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def serve():
+        conn, _ = srv.accept()
+        conn.recv(65536)
+        conn.sendall(b"HTTP/1.1 410 Gone\r\nContent-Length: 100\r\n\r\nticket_us")
+        conn.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    f = write(work / "a.md")
+    try:
+        out, code = run("upload", f, "http://127.0.0.1:%d/x" % port, home=home)
+    finally:
+        srv.close()
+    assert code == 0
+    assert out["status"] == "refused"
+    assert out["code"] == 410
+    assert out["body"] == "ticket_us"
+
+
+def test_upload_error_body_read_failure_keeps_the_status(monkeypatch, tmp_path):
+    """Any HTTPException (not only IncompleteRead) from reading the error body."""
+    import http.client
+    import io
+    import urllib.error
+    f = tmp_path / "a.txt"
+    f.write_bytes(b"abc")
+
+    class BadBody(io.BytesIO):
+        def read(self, *a):
+            raise http.client.BadStatusLine("x")
+
+    def refuse(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 503, "busy", {}, BadBody())
+
+    monkeypatch.setattr(doc_cache.urllib.request, "urlopen", refuse)
+    out = doc_cache.upload(str(f), "http://example.invalid/x")
+    assert out == {"status": "refused", "code": 503, "body": ""}
+
+
+def test_upload_sends_only_the_measured_length_when_the_file_grows(home, work, server_factory):
+    """Content-Length is fixed at open; bytes appended afterwards must not be sent."""
+    f = write(work / "a.md", b"0123456789")
+    srv = server_factory(201)
+
+    class Grown:
+        st_size = 4  # what fstat measured before the file grew to 10 bytes
+
+    def fake_fstat(fd):
+        return Grown()
+
+    import unittest.mock as mock
+    with mock.patch.object(doc_cache.os, "fstat", fake_fstat):
+        out = doc_cache.upload(str(f), srv.url)
+    assert out["status"] == "ok"
+    assert srv.received == b"0123"
+    assert srv.headers["Content-Length"] == "4"
+
+
+def test_upload_file_that_shrinks_is_refused_not_hung(home, work, server_factory):
+    f = write(work / "a.md", b"0123456789")
+    srv = server_factory(201)
+
+    class Longer:
+        st_size = 50  # claims more than the file holds
+
+    import unittest.mock as mock
+    with mock.patch.object(doc_cache.os, "fstat", lambda fd: Longer()):
+        out = doc_cache.upload(str(f), srv.url)
+    assert out["status"] == "refused"
+    assert out["code"] == 0
+
+
 def test_main_catch_all_keeps_one_json_object(monkeypatch, capsys):
     def boom(path):
         raise RuntimeError("unexpected")

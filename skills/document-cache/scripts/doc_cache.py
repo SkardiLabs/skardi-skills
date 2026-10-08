@@ -57,6 +57,28 @@ class CacheError(Exception):
     pass
 
 
+class _FixedLength:
+    """File body that yields exactly `size` bytes, however the file changes.
+
+    http.client reads a file body to EOF, so a file that grew after fstat would
+    send more bytes than Content-Length declares. A file that shrank would leave
+    the server waiting for bytes that never come; fail instead."""
+
+    def __init__(self, fh, size):
+        self._fh = fh
+        self._left = size
+
+    def read(self, amt=-1):
+        if self._left <= 0:
+            return b""
+        want = self._left if amt is None or amt < 0 else min(amt, self._left)
+        chunk = self._fh.read(want)
+        if not chunk:
+            raise OSError("the file is shorter than when the upload began")
+        self._left -= len(chunk)
+        return chunk
+
+
 # --- state ------------------------------------------------------------------
 
 
@@ -255,14 +277,15 @@ def _body_text(raw):
 def upload(path, url):
     abs_path = _abs_path(path)
     with open(abs_path, "rb") as fh:
-        # Measured on the handle we stream from, so the declared length is the
-        # length of what is actually sent even if the file changes meanwhile.
+        # Measured on the handle we stream from, and _FixedLength sends exactly
+        # that many bytes, so the declared length is the length actually sent
+        # even if the file grows or shrinks mid-upload.
         size = os.fstat(fh.fileno()).st_size
-        # The open file is the body, so urllib streams it in blocks; the
-        # explicit Content-Length stops it from trying to chunk or measure it.
+        # The file is the body, so urllib streams it in blocks; the explicit
+        # Content-Length stops it from trying to chunk or measure it.
         req = urllib.request.Request(
             url,
-            data=fh,
+            data=_FixedLength(fh, size),
             method="PUT",
             headers={
                 "Content-Length": str(size),
@@ -274,9 +297,14 @@ def upload(path, url):
                 code = getattr(resp, "status", None) or resp.getcode()
                 body = _body_text(resp.read())
         except urllib.error.HTTPError as e:
+            # Reading the error body can fail too (the server hung up before
+            # the declared length). That is not an HTTPError, so the sibling
+            # handler below would not see it; keep the status either way.
             try:
                 body = _body_text(e.read())
-            except OSError:
+            except http.client.IncompleteRead as partial:
+                body = _body_text(partial.partial)
+            except (http.client.HTTPException, OSError):
                 body = ""
             return {"status": "refused", "code": e.code, "body": body}
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
