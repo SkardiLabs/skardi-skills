@@ -115,7 +115,7 @@ Take `filename` (basename), `sha256`, `byte_length` and `content_type` straight 
   python3 "<skill dir>/scripts/doc_cache.py" upload "<path>" "<upload_url>"
   ```
 
-  It prints `{"status":"ok"|"refused","code":…,"body":"…"}`. On `ok` (HTTP 2xx) run `python3 "<skill dir>/scripts/doc_cache.py" record "<path>" <sha256>`. On `refused`, do not record anything and do not retry in a loop; the next read of the file will try again.
+  It prints `{"status":"ok"|"refused","code":…,"body":"…"}`. On `ok` (HTTP 2xx) run `python3 "<skill dir>/scripts/doc_cache.py" record "<path>" <sha256>`. On `refused`, do not record anything and do not retry in a loop. The next read of the file tries again, and that retry needs consent again unless the folder's decision is already `always`; "Allow once" never covers a later attempt.
 
 Do not wait for the parse. Tell the user in one line that the file was uploaded and will be readable by section shortly.
 
@@ -127,10 +127,10 @@ Whatever goes wrong, you already have, or can still get, the local file. Read it
 
 - `no_personal_workspace`: there is no personal workspace, the connection is pinned to another workspace, the token is scoped away from the personal workspace, or the token is org-bound to a team org. Name those cases and say the user can connect without the pin, or pinned to their personal workspace.
 - `credential_required`, `token_unknown_or_revoked`, `session_revoked`: tell the user to reconnect.
-- `insufficient_role`: tell the user to use a token with at least member access.
+- `insufficient_role`: tell the user to reconnect, or use a token that reaches their personal workspace with at least member access.
 - `cache_unavailable`, including an upload that returns 503 with `body.error` or `body.code` set to `cache_unavailable`.
 
-Every other error: read this file locally and try the cache again on the next file.
+Every other error: read this file locally and try the cache again on the next file. A retried upload needs consent again, unless the folder's decision is already `always`; "Allow once" never covers a later attempt.
 
 One more outcome needs the user to act, so mention it **once** and then carry on: `source_quota_exhausted` (their Agent cache is full; files can be removed in the console).
 
@@ -140,7 +140,7 @@ One more outcome needs the user to act, so mention it **once** and then carry on
 | `cache_unavailable` (also an upload 503 with `body.error` or `body.code` `cache_unavailable`) | find, prepare, upload | read locally; session stop |
 | `no_personal_workspace` | find, prepare | read locally; session stop; tell the user once, naming the four cases above |
 | `credential_required`, `token_unknown_or_revoked`, `session_revoked` | find, prepare | read locally; session stop; tell the user to reconnect |
-| `insufficient_role` | find, prepare | read locally; session stop; tell the user to use a token with at least member access |
+| `insufficient_role` | find, prepare | read locally; session stop; tell the user to reconnect, or use a token that reaches their personal workspace with at least member access |
 | `source_quota_exhausted` | prepare | read locally; tell the user once; try again on the next file |
 | `unsupported_type`, `file_too_large` | prepare | read locally; try again on the next file |
 | `invalid_filename`, `invalid_length`, `invalid_sha256`, or an MCP `invalid_params` protocol error | prepare, find | re-run `check`, use exactly what it printed, and read locally; try again on the next file |
@@ -163,7 +163,7 @@ One more outcome needs the user to act, so mention it **once** and then carry on
 - **Sending an absolute path.** Servers see the basename, the hash and the size. `abs_path` is for the script only.
 - **Asking again after "Don't upload".** It is remembered for the folder. Honour it silently.
 - **Calling `consent … always` for "Allow once".** "Once" records nothing.
-- **Re-running `check` on every question about the same file.** Once you know it is `parsed`, keep the `source` and `toc_path` for the rest of the conversation.
+- **Re-running `check` on every question about the same file.** Once you know it is `parsed`, keep the `source`, `toc_path` and `workspace` for the rest of the conversation.
 - **Pinning to a team workspace and expecting the cache to work.** A connection pinned to any workspace other than the personal one gets `no_personal_workspace` from both tools, and nothing uploads. Do not retry it per file.
 
 ## When stuck
