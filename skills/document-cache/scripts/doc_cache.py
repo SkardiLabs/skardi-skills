@@ -7,9 +7,12 @@ a failure prints {"error": "..."} and exits 1. No subcommand needs a token:
 
   doc_cache.py check <path>
       {"abs_path","supported","byte_length","content_type","sha256",
-       "consent_root","decision","indexed_sha256","small"}
+       "consent_root","decision","can_offer_always","indexed_sha256","small"}
   doc_cache.py consent <path> always|never
       {"consent_root","decision"}
+      "always" covers the folder and every subfolder under it, so it is refused
+      (error, exit 1) for a root that contains the user's home folder: the home
+      folder itself (a dotfiles repo, a file straight in ~) or "/".
   doc_cache.py upload <path> [--once]    (the ticket URL is read from stdin)
       {"status":"ok"|"refused","code":int,"body":str}
       The ticket is a single-use credential, so it never goes in argv. Refuses
@@ -273,6 +276,12 @@ def _is_under(root, candidate):
     return len(rp) <= len(cp) and cp[: len(rp)] == rp
 
 
+def covers_home(root):
+    """True when `root` is the user's home folder or an ancestor of it ("/")."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    return _is_under(os.path.realpath(root), home)
+
+
 def decision_for(root, consent):
     best = None
     for recorded, decision in consent.items():
@@ -302,6 +311,9 @@ def check(path):
         "sha256": _sha256(abs_path) if ctype is not None else None,
         "consent_root": root,
         "decision": decision_for(root, state["consent"]),
+        # "Always" covers every subfolder, so it is not on offer where the root
+        # contains the home folder; `consent` refuses it there too.
+        "can_offer_always": not covers_home(root),
         "indexed_sha256": indexed if isinstance(indexed, str) else None,
         "small": size < SMALL_BYTES,
     }
@@ -311,6 +323,11 @@ def consent(path, decision):
     if decision not in ("always", "never"):
         raise CacheError("decision must be 'always' or 'never'")
     root = consent_root(_abs_path(path))
+    if decision == "always" and covers_home(root):
+        raise CacheError(
+            "refusing to record 'always' for %s: it would cover your home folder and "
+            "every subfolder of it; use Allow once, or choose a narrower folder" % root
+        )
     moved = _update_state(lambda s: s["consent"].__setitem__(root, decision))
     return _with_moved({"consent_root": root, "decision": decision}, moved)
 

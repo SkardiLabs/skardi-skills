@@ -28,6 +28,11 @@ import doc_cache  # noqa: E402
 def _isolated_skardi_home(tmp_path, monkeypatch):
     """No test, including the ones that call doc_cache directly, reads ~/.skardi."""
     monkeypatch.setenv("SKARDI_HOME", str(tmp_path / "isolated_skardi_home"))
+    # A home that is not an ancestor of tmp_path, so "always" is never refused by accident.
+    fake = tmp_path / "isolated_user_home"
+    fake.mkdir()
+    monkeypatch.setenv("HOME", str(fake))
+    monkeypatch.setenv("USERPROFILE", str(fake))
 
 
 @pytest.fixture
@@ -172,6 +177,61 @@ def test_consent_records_and_check_reads(home, work):
     assert check(f, home)["decision"] == "always"
     run("consent", f, "never", home=home)
     assert check(f, home)["decision"] == "never"
+
+
+def test_always_is_refused_for_a_file_directly_in_the_home_folder(home, tmp_path, monkeypatch):
+    user_home = tmp_path / "me"
+    user_home.mkdir()
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    f = write(user_home / "resume.pdf")
+    out = check(f, home)
+    assert out["can_offer_always"] is False
+    out, code = run("consent", f, "always", home=home, check_exit=False)
+    assert code == 1
+    assert "home folder" in out["error"]
+    assert not state_path(home).exists()
+    # Declining is always allowed, and a choice there is honoured.
+    run("consent", f, "never", home=home)
+    assert check(f, home)["decision"] == "never"
+
+
+def test_always_is_refused_for_a_home_that_is_a_git_repo(home, tmp_path, monkeypatch):
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    user_home = tmp_path / "me"
+    (user_home / "taxes").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(user_home)], check=True)
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    f = write(user_home / "taxes" / "2025.pdf")
+    assert check(f, home)["consent_root"] == real(user_home)
+    out, code = run("consent", f, "always", home=home, check_exit=False)
+    assert code == 1
+
+
+def test_always_is_refused_at_the_filesystem_root(tmp_path, monkeypatch):
+    f = write(tmp_path / "a.md")
+    monkeypatch.setattr(doc_cache, "consent_root", lambda p: os.path.abspath(os.sep))
+    with pytest.raises(doc_cache.CacheError, match="home folder"):
+        doc_cache.consent(str(f), "always")
+    assert doc_cache.covers_home(os.path.abspath(os.sep))
+
+
+def test_always_is_allowed_for_a_subfolder_of_home(home, tmp_path, monkeypatch):
+    user_home = tmp_path / "me"
+    sub = user_home / "contracts"
+    sub.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    f = write(sub / "a.pdf")
+    assert check(f, home)["can_offer_always"] is True
+    run("consent", f, "always", home=home)
+    assert check(f, home)["decision"] == "always"
+
+
+def test_check_offers_always_for_an_ordinary_folder(home, work):
+    assert check(write(work / "a.md"), home)["can_offer_always"] is True
 
 
 def test_consent_rejects_bad_decision(home, work):

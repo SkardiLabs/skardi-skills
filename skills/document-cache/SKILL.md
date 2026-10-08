@@ -19,7 +19,7 @@ Run the script as `python3 "<skill dir>/scripts/doc_cache.py" …`, where `<skil
 - **Not a way into a team workspace.** Uploads go to the user's **personal** workspace only. When the MCP connection is pinned to any other workspace, both cache tools answer `no_personal_workspace` and nothing uploads; tell the user once that they can connect without the pin, or pinned to their personal workspace. Do not look for a way around it.
 - **Not a query surface.** Never write SQL against the cached corpus. You read it with `read_document` (table of contents, then sections) and, for a specific question, the full-text search pipeline tool. That is what keeps this skill unchanged when the storage behind it changes.
 - **Not index building or server operations.** Making a folder searchable is `auto-context`; answering from a database is `retrieval`. If the MCP tools are not there, say so once and read locally. Do not install, start or reconfigure anything.
-- **Undoing it.** "Stop caching here" means run `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" never` for that folder. Run `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" always` only when the user asks to turn caching back on for a folder, never on your own initiative; it overrides an earlier `never`. Cached files can be removed in the Skardi console (Integrations → Documents → Agent cache).
+- **Undoing it.** "Stop caching here" means run `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" never` for that folder. Run `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" always` only when the user asks to turn caching back on for a folder, never on your own initiative; it overrides an earlier `never`, and it refuses (an error) for the home folder or `/`. Cached files can be removed in the Skardi console (Integrations → Documents → Agent cache).
 
 ## Prerequisites
 
@@ -39,7 +39,8 @@ python3 "<skill dir>/scripts/doc_cache.py" check "<path>"
 
 ```json
 {"abs_path":"…","supported":true,"byte_length":482113,"content_type":"application/pdf",
- "sha256":"…","consent_root":"/home/me/proj","decision":"ask","indexed_sha256":null,"small":false}
+ "sha256":"…","consent_root":"/home/me/proj","decision":"ask","can_offer_always":true,
+ "indexed_sha256":null,"small":false}
 ```
 
 **Step aside and read the file normally, without calling any MCP tool, when:**
@@ -88,15 +89,15 @@ This step runs after a `not_found`, once you have the file in front of you. Use 
 - **`ask`** — ask the user. Use the host's choice UI where it has one, and plain text otherwise:
 
   > Upload `<file>` (`<size>`) to your personal Skardi workspace, so later references read only the parts they need?
-  > **Allow once** / **Always allow in `<root>`** / **Don't upload in `<root>`**
+  > **Allow once** / **Always allow in `<root>` and all its subfolders** / **Don't upload in `<root>`**
 
-  `<file>` is the basename, `<size>` a human size, `<root>` the `consent_root` from `check`. Then:
+  `<file>` is the basename, `<size>` a human size, `<root>` the `consent_root` from `check`. "Always" covers every folder under `<root>`, so the prompt must say so. When `can_offer_always` is `false` (the root is the user's home folder or `/`, for example a file straight in `~` or a home folder that is a dotfiles repo), **leave the "Always" choice out** and offer only **Allow once** and **Don't upload in `<root>`**; `consent … always` refuses there anyway. Then:
 
   - **Allow once** — upload this file with `upload … --once`, record nothing about the folder.
-  - **Always allow in `<root>`** — `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" always`, then upload.
+  - **Always allow in `<root>` and all its subfolders** — `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" always`, then upload.
   - **Don't upload in `<root>`** — `python3 "<skill dir>/scripts/doc_cache.py" consent "<path>" never`. Do not upload. Do not ask again for this folder.
 
-  **Allow once** covers only the file you named. If other files from the same folder come up in the same turn, ask again for each, or offer "Always allow in `<root>`" so one answer covers them. If the user does not answer, do not upload.
+  **Allow once** covers only the file you named. If other files from the same folder come up in the same turn, ask again for each, or, when `can_offer_always` is `true`, offer "Always allow in `<root>` and all its subfolders" so one answer covers them. If the user does not answer, do not upload.
 
 **Upload.**
 
