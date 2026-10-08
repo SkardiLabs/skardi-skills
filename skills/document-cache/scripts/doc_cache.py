@@ -7,7 +7,10 @@ a failure prints {"error": "..."} and exits 1. No subcommand needs a token:
 
   doc_cache.py check <path>
       {"abs_path","supported","byte_length","content_type","sha256",
-       "consent_root","decision","can_offer_always","indexed_sha256","small"}
+       "consent_root","decision","can_offer_always","gitignored","indexed_sha256",
+       "small"}
+      "gitignored" is true when git says the file is ignored (the author kept it
+      out of the repo on purpose): skip it, and `upload` refuses it.
   doc_cache.py consent <path> always|never
       {"consent_root","decision"}
       "always" covers the folder and every subfolder under it, so it is refused
@@ -19,7 +22,8 @@ a failure prints {"error": "..."} and exits 1. No subcommand needs a token:
       (an {"error"}, exit 1, nothing sent) when the folder's decision is
       "never"; when it is not "always" and --once was not passed; when the URL
       is not https (http only for localhost) or not under
-      /documents/cache/upload/; and when the file is not a supported type.
+      /documents/cache/upload/; when git ignores the file; and when the file
+      is not a supported type.
   doc_cache.py record <path> <sha256>
       {"abs_path","sha256"}
 
@@ -269,6 +273,21 @@ def consent_root(abs_path):
     return parent
 
 
+def is_gitignored(abs_path):
+    """True only when git reports the file as ignored.
+
+    No git, a file outside a repository, a timeout or any other failure all
+    read as "not ignored": exit 1 is "not ignored" and 128 is "not a repo"."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", os.path.dirname(abs_path), "check-ignore", "-q", "--", abs_path],
+            capture_output=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
 def _is_under(root, candidate):
     """True when root is candidate or an ancestor of it, by path components."""
     rp = Path(root).parts
@@ -314,6 +333,7 @@ def check(path):
         # "Always" covers every subfolder, so it is not on offer where the root
         # contains the home folder; `consent` refuses it there too.
         "can_offer_always": not covers_home(root),
+        "gitignored": is_gitignored(abs_path),
         "indexed_sha256": indexed if isinstance(indexed, str) else None,
         "small": size < SMALL_BYTES,
     }
@@ -375,6 +395,10 @@ def upload(path, url, once=False):
     # reads could talk it into running `upload` on anything, anywhere.
     if _content_type(abs_path) is None:
         raise CacheError("refusing to upload: not a supported document type")
+    # Even with a recorded "always" or an explicit --once: a file the repository
+    # ignores (notes/secrets.txt) is one the user chose to keep out of it.
+    if is_gitignored(abs_path):
+        raise CacheError("refusing to upload: git ignores this file")
     _check_upload_url(url)
     root = consent_root(abs_path)
     decision = decision_for(root, read_state()["consent"])

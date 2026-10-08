@@ -239,8 +239,8 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 
 | Path | Purpose |
 |---|---|
-| `scripts/doc_cache.py` | Python standard library only, no token. `check <path>` hashes the file and reports its content type, size, the folder consent applies to (the git root, otherwise the file's folder) and the recorded decision; `consent <path> always\|never` records a decision for that folder; `upload <path> <url>` streams a single-use ticket PUT; `record <path> <sha256>` notes which hash was last uploaded for the path. State is `~/.skardi/doc-cache.json` (`$SKARDI_HOME` overrides the directory), written atomically with mode `0600`. Absolute paths never leave the machine |
-| `evals/evals.json` | Five execution cases (first read asks, an always folder, a never folder, a parsed hit read by section, a changed file sends `replaces`) and two trigger cases |
+| `scripts/doc_cache.py` | Python standard library only, no token. `check <path>` hashes the file and reports its content type, size, the folder consent applies to (the git root, otherwise the file's folder) and the recorded decision, whether git ignores it and whether "always" may be offered; `consent <path> always\|never` records a decision for that folder and its subfolders ("always" is refused for the home folder and `/`); `upload <path> [--once]` streams a single-use ticket PUT (the ticket URL is read from stdin, never argv; it refuses a `never` folder, a missing consent without `--once`, a non-https or non-ticket URL, an unsupported type and any file git ignores); `record <path> <sha256>` notes which hash was last uploaded for the path. State is `~/.skardi/doc-cache.json` (`$SKARDI_HOME` overrides the directory), written atomically with mode `0600`. Absolute paths never leave the machine |
+| `evals/evals.json` | Seven execution cases (first read asks, an always folder, a never folder, a parsed hit read by section, a changed file sends `replaces`, a gitignored file never uploads, a home-folder file offers no "always") and three trigger cases (including that reading a README while coding does not trigger) |
 
 ### `skills/retrieval/`
 

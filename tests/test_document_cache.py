@@ -827,6 +827,69 @@ def test_upload_refuses_an_unsupported_file_type(home, work, server_factory):
     assert srv.received is None
 
 
+# --- gitignored files are skipped (review round 1) -----------------------------
+
+
+@pytest.fixture
+def repo(work):
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    subprocess.run(["git", "init", "-q", str(work)], check=True)
+    (work / ".gitignore").write_text("notes/\n*.secret.txt\n")
+    (work / "notes").mkdir()
+    (work / "docs").mkdir()
+    return work
+
+
+def test_check_reports_gitignored_files(home, repo):
+    ignored = write(repo / "notes" / "secrets.txt")
+    ignored_by_pattern = write(repo / "docs" / "a.secret.txt")
+    kept = write(repo / "docs" / "README.md")
+    assert check(ignored, home)["gitignored"] is True
+    assert check(ignored_by_pattern, home)["gitignored"] is True
+    assert check(kept, home)["gitignored"] is False
+
+
+def test_tracked_file_matching_an_ignore_pattern_is_not_ignored(home, repo):
+    f = write(repo / "docs" / "kept.secret.txt")
+    subprocess.run(["git", "-C", str(repo), "add", "-f", "docs/kept.secret.txt"], check=True)
+    assert check(f, home)["gitignored"] is False
+
+
+def test_file_outside_a_repo_is_not_ignored(home, tmp_path):
+    d = tmp_path / "norepo"
+    d.mkdir()
+    f = write(d / "x.md")
+    env = dict(os.environ, SKARDI_HOME=str(home), GIT_CEILING_DIRECTORIES=str(tmp_path))
+    r = subprocess.run([sys.executable, SCRIPT, "check", str(f)],
+                       capture_output=True, text=True, env=env)
+    assert json.loads(r.stdout)["gitignored"] is False
+
+
+def test_missing_git_means_not_ignored(home, repo):
+    f = write(repo / "notes" / "secrets.txt")
+    env = dict(os.environ, SKARDI_HOME=str(home), PATH="")
+    r = subprocess.run([sys.executable, SCRIPT, "check", str(f)],
+                       capture_output=True, text=True, env=env)
+    assert json.loads(r.stdout)["gitignored"] is False
+
+
+def test_upload_refuses_a_gitignored_file_even_in_an_always_folder(home, repo, server_factory):
+    f = write(repo / "notes" / "secrets.txt")
+    run("consent", f, "always", home=home)
+    srv = server_factory(201)
+    for args in ((), ("--once",)):
+        out, code = run("upload", f, *args, home=home, stdin=srv.url, check_exit=False)
+        assert code == 1
+        assert "git ignores" in out["error"]
+    assert srv.received is None
+    # The same folder still uploads a file git does not ignore.
+    ok = write(repo / "docs" / "README.md", b"abc")
+    out, code = run("upload", ok, home=home, stdin=srv.url)
+    assert out["status"] == "ok"
+    assert srv.received == b"abc"
+
+
 def test_main_catch_all_keeps_one_json_object(monkeypatch, capsys):
     def boom(path):
         raise RuntimeError("unexpected")
