@@ -13,7 +13,7 @@ description: >-
   `RowCapExceeded`, or a silently-NULL property column — even if they never
   say the words "graph source".
 metadata:
-  skardi-min-version: "main"
+  skardi-min-version: "0.6.0"
 ---
 
 # Connecting a graph source to Skardi
@@ -28,10 +28,11 @@ in the [skardi repo](https://github.com/SkardiLabs/skardi); operational truth:
 there. When this skill and those documents
 disagree, the documents win — check them, then fix this skill.
 
-**Version prerequisite:** this is a preview skill for Skardi `main`, verified
-against commit [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48). Clone that revision and run
-`cargo build --release -p skardi-server`; v0.5.0 has neither `type: graph`
-sources nor the `cypher_query` / `graph_schema` UDTFs. The preview backend is
+**Version prerequisite:** Skardi v0.6.0 or later, the first release with
+`type: graph` sources and the `cypher_query` / `graph_schema` UDTFs; v0.5.0
+has neither. This skill was verified against commit
+[`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48),
+which v0.6.0 contains. The backend is
 AGE (milestone status M4 — YAML catalog views and pipeline parameter
 passthrough). Neo4j and Kuzu are later milestones: the config carries a
 `backend:` field for them, but do not write configuration or guidance for a
