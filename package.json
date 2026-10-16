@@ -1,10 +1,10 @@
 {
   "name": "skardi-skills",
   "version": "0.4.0",
-  "description": "Agent Skills for working with Skardi: searchable context, live-data retrieval, and graph queries.",
+  "description": "Agent Skills for working with Skardi: searchable context, live-data retrieval, graph queries, and reusing the queries that already worked instead of rewriting them.",
   "license": "Apache-2.0",
   "repository": "https://github.com/SkardiLabs/skardi-skills",
-  "keywords": ["pi-package", "skardi", "skills", "context", "rag", "retrieval", "graph"],
+  "keywords": ["pi-package", "skardi", "skills", "context", "rag", "retrieval", "graph", "query-audit", "pipelines"],
   "pi": {
     "skills": ["./skills"]
   }
