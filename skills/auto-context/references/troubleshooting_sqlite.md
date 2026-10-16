@@ -8,10 +8,10 @@ Fix the symptoms below by applying the prescribed remedy. Don't retry the same c
 
 `--backend sqlite` cannot use the container image: it needs the `sqlite-vec` extension, which the published image does not ship for Linux, and the host's copy is the wrong platform to mount in. So the local path means a server binary on this machine.
 
-**There is no published `skardi-server` binary for any platform.** The v0.5.0 GitHub Release attaches the `skardi` CLI only; the server ships as a container image (which the local path can't use) or as source. Build it from the released tag so you get exactly what v0.5.0 contains:
+**There is no published `skardi-server` binary for any platform.** The v0.7.0 GitHub Release attaches the `skardi` CLI only; the server ships as a container image (which the local path can't use) or as source. Build it from the released tag so you get exactly what v0.7.0 contains:
 
 ```bash
-git clone --depth 1 --branch v0.5.0 https://github.com/SkardiLabs/skardi.git
+git clone --depth 1 --branch v0.7.0 https://github.com/SkardiLabs/skardi.git
 cd skardi
 cargo install --locked --path crates/server --features rag
 ```
@@ -185,7 +185,7 @@ The chunk() UDF rejects `overlap >= size` to avoid infinite loops. Pass `--overl
 
 ## `chunk: unsupported mode '<x>'`
 
-Only `'character'` and `'markdown'` are supported as of v0.5.0. Token-based / code-aware splitters are roadmap items. Pass `--chunk-mode markdown` (default) or `--chunk-mode character` to `setup_context.py`.
+Only `'character'` and `'markdown'` are supported as of v0.7.0. Token-based / code-aware splitters are roadmap items. Pass `--chunk-mode markdown` (default) or `--chunk-mode character` to `setup_context.py`.
 
 ## `skardi` hangs indefinitely on the first query
 
