@@ -890,6 +890,61 @@ def test_upload_refuses_a_gitignored_file_even_in_an_always_folder(home, repo, s
     assert srv.received == b"abc"
 
 
+# --- links are judged where the user asked, too (review round 2) ---------------
+
+
+def test_a_link_inside_an_ignored_folder_is_ignored_whatever_it_points_at(home, repo, server_factory):
+    # notes/ is ignored; the link's target, docs/private.pdf, is not.
+    target = write(repo / "docs" / "private.pdf", b"%PDF-private")
+    link = repo / "notes" / "x.pdf"
+    link.symlink_to(os.path.join("..", "docs", "private.pdf"))
+    assert check(target, home)["gitignored"] is False
+    assert check(link, home)["gitignored"] is True
+    # Not even a recorded "always" for the repository carries it out.
+    run("consent", target, "always", home=home)
+    srv = server_factory(201)
+    for args in ((), ("--once",)):
+        out, code = run("upload", link, *args, home=home, stdin=srv.url, check_exit=False)
+        assert code == 1
+        assert "git ignores" in out["error"]
+    assert srv.received is None
+
+
+def test_a_link_from_a_never_folder_does_not_borrow_its_targets_always(home, tmp_path, monkeypatch, server_factory):
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    on, off = tmp_path / "on", tmp_path / "off"
+    on.mkdir()
+    off.mkdir()
+    target = write(on / "report.pdf", b"%PDF-on")
+    link = off / "report.pdf"
+    link.symlink_to(target)
+    run("consent", target, "always", home=home)
+    run("consent", write(off / "other.pdf"), "never", home=home)
+    assert check(target, home)["decision"] == "always"
+    assert check(link, home)["decision"] == "never"
+    srv = server_factory(201)
+    out, code = run("upload", link, "--once", home=home, stdin=srv.url, check_exit=False)
+    assert code == 1
+    assert "turned off" in out["error"]
+    assert srv.received is None
+
+
+def test_an_ordinary_link_keeps_its_targets_decision(home, tmp_path, monkeypatch):
+    # Consent is recorded where the bytes live, so following a link does not
+    # turn an "always" back into a question.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    on, elsewhere = tmp_path / "on", tmp_path / "elsewhere"
+    on.mkdir()
+    elsewhere.mkdir()
+    target = write(on / "report.pdf", b"%PDF-on")
+    link = elsewhere / "report.pdf"
+    link.symlink_to(target)
+    run("consent", target, "always", home=home)
+    out = check(link, home)
+    assert out["decision"] == "always"
+    assert out["gitignored"] is False
+
+
 def test_main_catch_all_keeps_one_json_object(monkeypatch, capsys):
     def boom(path):
         raise RuntimeError("unexpected")

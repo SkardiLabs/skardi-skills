@@ -245,6 +245,34 @@ def _abs_path(path):
     return p
 
 
+def _requested_path(path):
+    """The path as the caller named it: absolute, but with its links kept.
+
+    `_abs_path` resolves links, which is right for reading the bytes and wrong
+    for the user's rules about where they asked from. A link `notes/x.pdf ->
+    ../private.pdf` inside an ignored `notes/` is a file the user kept out of
+    the repository, whatever it points at."""
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def _gitignored(requested, abs_path):
+    """Ignored at the path the user named OR at the file it resolves to."""
+    return is_gitignored(abs_path) or (requested != abs_path and is_gitignored(requested))
+
+
+def _decision(requested, abs_path, consent):
+    """The decision for a file, with "never" at the requested path winning.
+
+    Consent is recorded and read for where the bytes live (the resolved file's
+    root), so following a link does not ask again forever. But a link placed in
+    a folder the user turned off must not carry its target out because the
+    target's folder said "always"."""
+    decision = decision_for(consent_root(abs_path), consent)
+    if requested != abs_path and decision_for(consent_root(requested), consent) == "never":
+        return "never"
+    return decision
+
+
 def _content_type(abs_path):
     return DOCUMENT_TYPES.get(os.path.splitext(abs_path)[1].lower())
 
@@ -315,6 +343,7 @@ def decision_for(root, consent):
 
 
 def check(path):
+    requested = _requested_path(path)
     abs_path = _abs_path(path)
     size = os.path.getsize(abs_path)
     ctype = _content_type(abs_path)
@@ -329,11 +358,11 @@ def check(path):
         # Unsupported files are never uploaded, so they are not worth hashing.
         "sha256": _sha256(abs_path) if ctype is not None else None,
         "consent_root": root,
-        "decision": decision_for(root, state["consent"]),
+        "decision": _decision(requested, abs_path, state["consent"]),
         # "Always" covers every subfolder, so it is not on offer where the root
         # contains the home folder; `consent` refuses it there too.
         "can_offer_always": not covers_home(root),
-        "gitignored": is_gitignored(abs_path),
+        "gitignored": _gitignored(requested, abs_path),
         "indexed_sha256": indexed if isinstance(indexed, str) else None,
         "small": size < SMALL_BYTES,
     }
@@ -390,6 +419,7 @@ def _check_upload_url(url):
 
 
 def upload(path, url, once=False):
+    requested = _requested_path(path)
     abs_path = _abs_path(path)
     # The script, not only the skill text, enforces consent: a document the agent
     # reads could talk it into running `upload` on anything, anywhere.
@@ -397,11 +427,11 @@ def upload(path, url, once=False):
         raise CacheError("refusing to upload: not a supported document type")
     # Even with a recorded "always" or an explicit --once: a file the repository
     # ignores (notes/secrets.txt) is one the user chose to keep out of it.
-    if is_gitignored(abs_path):
+    if _gitignored(requested, abs_path):
         raise CacheError("refusing to upload: git ignores this file")
     _check_upload_url(url)
     root = consent_root(abs_path)
-    decision = decision_for(root, read_state()["consent"])
+    decision = _decision(requested, abs_path, read_state()["consent"])
     if decision == "never":
         raise CacheError("refusing to upload: uploads are turned off for %s" % root)
     if decision != "always" and not once:
