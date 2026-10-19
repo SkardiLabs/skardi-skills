@@ -23,40 +23,26 @@ The `skardi` CLI is a thin HTTP client — every command below is one request to
 2. **A reachable skardi-server.** Connection resolves in this order: `--server <URL>` flag → `$SKARDI_SERVER_URL` → `~/.skardi/config.yaml` → default `http://127.0.0.1:8080`. If auth is enabled on the server, pass `--token` or set `$SKARDI_API_TOKEN`.
 3. **Exit code contract:** `2` means the server was unreachable. That is an environment problem, not a query problem — see the stuck protocol.
 
-This skill is written and tested against **v0.5.0** of both CLI and server (the current release), **except the `--purpose`/`--session-id` audit pair, which needs a `main` build, and the `--task` that rides with it, which is newer still** — the exceptions below. Deployment behavior — which sources exist, what is read-only, row caps — is discovered live and is never assumed from this text.
+This skill runs on **v0.5.0 or later** of both CLI and server. **The `--purpose` / `--session-id` audit pair and the `--task` that rides with it need v0.6.0 or later** — the exception below. Deployment behavior — which sources exist, what is read-only, row caps — is discovered live and is never assumed from this text.
 
-> **One exception: `--purpose` / `--session-id` need Skardi `main`, not v0.5.0.**
-> The pair used throughout step 3 landed after v0.5.0 shipped
-> ([skardi#232](https://github.com/SkardiLabs/skardi/pull/232)) and is in no
-> release yet. Verified against commit
-> [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48):
-> `cargo build --release -p skardi-cli` there produces a `skardi query --help`
-> that lists both flags, and `cargo test -p skardi-cli --bins -- purpose
-> ai_context session_id` passes (12 tests). Both halves are missing from
-> v0.5.0 — the CLI has no such flags (`git grep session-id v0.5.0 --
+> **One exception: `--purpose`, `--session-id` and `--task` need Skardi v0.6.0.**
+> The pair ([skardi#232](https://github.com/SkardiLabs/skardi/pull/232)) and
+> `--task` ([skardi#255](https://github.com/SkardiLabs/skardi/pull/255)) are
+> both in v0.6.0: its `skardi query --help` lists all three flags, and its
+> server records them in the audit ledger as `ai_context`. v0.5.0 has none of
+> them — the CLI has no such flags (`git grep session-id v0.5.0 --
 > crates/cli/` is empty) and the server has no `ai_context` at all
-> (`git grep ai_context v0.5.0 -- crates/server/` is empty), so on a released
-> server there is no ledger for the pair to land in. On v0.5.0, run the queries
+> (`git grep ai_context v0.5.0 -- crates/server/` is empty), so on a v0.5.0
+> server there is no ledger for them to land in. On v0.5.0, run the queries
 > below without `--purpose`, `--session-id` and `--task`; everything else in this skill holds there.
 >
-> **`skardi --version` cannot tell you which you have** — the workspace version
-> has not been bumped since the release, so a `main` build also prints
-> `skardi 0.5.0`. Probe the capability instead of the version:
-> `skardi query --help` lists `--purpose` exactly when the build carries the
-> pair. Each command template below shows, on commented lines, its form for a
-> build without `--task` and its v0.5.0 form.
-
-> **`--task` is newer than the pair.** It landed on `main` with
-> [skardi#255](https://github.com/SkardiLabs/skardi/pull/255) (squash commit
-> [`b827286`](https://github.com/SkardiLabs/skardi/commit/b827286)) and is in
-> no release, so a `main` build from before that commit carries `--purpose` and
-> `--session-id` without it. Verified against the PR's head, commit
-> [`1bbdb18`](https://github.com/SkardiLabs/skardi/commit/1bbdb180a952b7171b8ace6b66b2f25d51550a29),
-> whose change is what `b827286` squashed: `skardi query --help` there lists
-> `--task`, and a query sent with it lands in the server's audit ledger as
-> `ai_context.task`. Probe for it the same way,
-> separately: `skardi query --help` lists `--task` exactly when the build has it.
-> Where it is missing, drop `--task` and send the pair alone; nothing else changes.
+> **Probe the capability rather than trusting the version.** A build of `main`
+> taken between releases prints the previous release's number, so
+> `skardi --version` alone can mislead. `skardi query --help` lists `--purpose`
+> exactly when the build carries the pair, and lists `--task` exactly when it
+> has that too; probe each separately. Each command template below shows, on
+> commented lines, its form for a build without `--task` and its v0.5.0 form.
+> Where `--task` is missing, drop it and send the pair alone; nothing else changes.
 
 Before the first query, run that capability check and, only when the audit pair
 is available, mint the one session id that every query in this task will reuse:
@@ -177,7 +163,7 @@ Check `skardi pipeline list` for a search surface: the `auto-context` standard n
 
 Everything else — however retrieval-flavored its name — you do not call from this skill. Answer with an ad-hoc `SELECT` (validated read-only on every request) or ask what the pipeline is. Never run a pipeline to find out what it does.
 
-**This rule is a workaround for a gap in v0.5.0, and is meant to go away.** Asking a human to vouch for a pipeline is what you do when the machine cannot answer — and here it nearly can: the server already determines each pipeline's statement kind when it validates the SQL at load time (that is how a pipeline writing to a `read_only` source gets rejected at startup). It simply does not expose that verdict, so `pipeline show` returns parameters and nothing about what the statement does. Once the server reports statement kind — ideally alongside a result-bound signal — this whole declaration dance collapses into one runtime question the agent asks the engine, and the two conditions above should be deleted rather than maintained. That belongs to the runtime capability contract the engine still owes its callers; until it exists, declarations are the only honest way to keep the read-only promise.
+**This rule is a workaround for a gap the engine still has (v0.6.0 included), and is meant to go away.** Asking a human to vouch for a pipeline is what you do when the machine cannot answer — and here it nearly can: the server already determines each pipeline's statement kind when it validates the SQL at load time (that is how a pipeline writing to a `read_only` source gets rejected at startup). It simply does not expose that verdict, so `pipeline show` returns parameters and nothing about what the statement does. Once the server reports statement kind — ideally alongside a result-bound signal — this whole declaration dance collapses into one runtime question the agent asks the engine, and the two conditions above should be deleted rather than maintained. That belongs to the runtime capability contract the engine still owes its callers; until it exists, declarations are the only honest way to keep the read-only promise.
 
 Invocation: `skardi run <name> -p key=value` — values parse as JSON first (numbers, booleans), then fall back to plain strings.
 
@@ -197,7 +183,7 @@ skardi query --purpose "order counts by lifecycle state" --session-id "$SKARDI_S
 # skardi query -e "SELECT status, COUNT(*) AS n FROM shop.main.orders GROUP BY status" --table
 ```
 
-- **Every `skardi query` carries `--purpose` and `--session-id`.** They are sent as the `ai_context: { purpose, session_id }` object on the request, which is what the server's audit ledger records, the daily brief's intent breakdown groups by, and session-level learning aggregates on — a query without them lands as "(no declared intent)" with no session. The pair is all-or-nothing (the server rejects one without the other; the CLI enforces it too, since [skardi#232](https://github.com/SkardiLabs/skardi/pull/232), which is on `main` and in no release). `--purpose` is one plain-language line on why this query runs, ≤2000 characters; `--session-id` is any non-empty string ≤200 characters — one id per task, minted once (`uuidgen`) and reused across the task's queries so they group as one session. Purpose belongs in the flag, not in a SQL comment: a comment rides inside the SQL text where nothing aggregates it. (If SQL text does start with a comment, use the block form — a leading `-- comment` makes the CLI misparse `-e "--..."` as a flag.)
+- **Every `skardi query` carries `--purpose` and `--session-id`.** They are sent as the `ai_context: { purpose, session_id }` object on the request, which is what the server's audit ledger records, the daily brief's intent breakdown groups by, and session-level learning aggregates on — a query without them lands as "(no declared intent)" with no session. The pair is all-or-nothing (the server rejects one without the other; the CLI enforces it too, since [skardi#232](https://github.com/SkardiLabs/skardi/pull/232), in v0.6.0 and later). `--purpose` is one plain-language line on why this query runs, ≤2000 characters; `--session-id` is any non-empty string ≤200 characters — one id per task, minted once (`uuidgen`) and reused across the task's queries so they group as one session. Purpose belongs in the flag, not in a SQL comment: a comment rides inside the SQL text where nothing aggregates it. (If SQL text does start with a comment, use the block form — a leading `-- comment` makes the CLI misparse `-e "--..."` as a flag.)
 - **Every `skardi query` also carries `--task` when the build takes it** (the Prerequisites probe says whether it does). `--purpose` says why *this* query runs; `--task` names the larger piece of work the whole run of queries serves, like "September cross-repo delivery review" or "why checkout errors rose last week". It is sent as `ai_context.task`, which the daily brief reads to say what a day of queries was *for*: purposes alone summarize as a list of lookups, because the larger goal is written in no single row. Pick it once at the start of the task and repeat it **verbatim** on every query that serves the task, peeks included; a reworded task reads as a different piece of work. It only travels with the pair: the CLI refuses `--task` without `--purpose`. When the work really is one question, the task line is that question; send it anyway, so a build that takes `--task` records one on every query.
 - **SELECT only.** The server already rejects DDL and COPY outright, and rejects writes to any source not explicitly configured `read_write` — but do not lean on that: retrieval work is read work, even on writable sources.
 - **One statement per request.** The server rejects multi-statement SQL (`Expected exactly one SQL statement`). Run follow-ups as separate calls.

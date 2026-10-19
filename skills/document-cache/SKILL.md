@@ -2,7 +2,7 @@
 name: document-cache
 description: 'Cache the local documents you read in the user''s personal Skardi workspace, so that when the user refers to the same file again you read only the sections you need instead of the whole file. Use whenever you are about to read a local PDF, DOCX, XLSX or PPTX of any real size, and whenever the user refers back to a document they showed you earlier ("the doc I showed you earlier", "that spec again", "the contract from last week"). Markdown and text files (.md .markdown .txt) count only when the user refers to them as documents ("the spec", "my notes from the meeting"); do not use it for a README, CHANGELOG or other .md/.txt file you read as part of ordinary coding work in a repository. Checks whether the file is already parsed, reads it by table of contents and section if so, and otherwise reads it locally and offers to upload it. It never uploads without a recorded decision for that folder or an answer given this turn, never uploads a file git ignores, only ever to the user''s own personal workspace, and falls back to reading the local file whenever anything fails. Needs the Skardi MCP tools connected (find_cached_document, prepare_document_upload, read_document); with them absent it steps aside. Does not search or query the cached corpus with SQL, does not build indexes (auto-context does that), and does not start or configure servers.'
 metadata:
-  skardi-min-version: "main"
+  skardi-min-version: "0.6.0"
 ---
 
 # document-cache — upload what you read once, then read it by section
