@@ -35,6 +35,8 @@ From inside any Claude Code session:
 
 That's it — all five skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
 
+> **Changing a skill? Raise the version in the same PR.** Claude Code compares only the plugin version when it looks for updates, so a skill merged without a new version never reaches anyone who already installed the plugin: `claude plugin update skardi@skardi-skills` reports it is already at the latest version. Run `scripts/bump-version.sh <x.y.z>` (minor for a new skill, patch for a fix); it sets every host manifest at once. CI fails a PR that changes `skills/` or a manifest without a higher version than the base branch.
+
 > **Upgrading from an earlier version:** the individual plugins are now one, named `skardi`, so that every host can install this repository with its own one-line plugin command instead of a manual directory copy. Installed copies of the old per-skill plugins are not removed automatically — run `/plugin uninstall auto-context`, `/plugin uninstall retrieval`, `/plugin uninstall graph-source` and `/plugin uninstall graph-rag`, then install `skardi`. Further back: `auto-knowledge-base` and `auto-rag` were merged into `auto-context`; `skardi-deploy-and-patterns` and `feishu-connector` were retired, and Feishu cloud docs are now raw material for `auto-context`.
 
 ### Claude Code (manual copy)
