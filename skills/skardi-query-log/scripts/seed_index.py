@@ -23,8 +23,25 @@ import argparse, hashlib, json, re, sqlite3, sys
 from pathlib import Path
 
 
+# A quoted run: a '...' string literal or a "..." identifier, doubled quotes
+# inside included. Whitespace there is data, so norm() never touches it.
+_QUOTED = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+
+
 def norm(sql):
-    return re.sub(r"\s+", " ", sql).strip()
+    """Collapse runs of whitespace between tokens, leaving quoted text as written.
+
+    Only for telling two statements apart. `'A  B'` and `'A B'` match different
+    rows, so they must stay different statements, and the SQL that gets filed is
+    the one that ran, not this normalised form.
+    """
+    out, pos = [], 0
+    for m in _QUOTED.finditer(sql):
+        out.append(re.sub(r"\s+", " ", sql[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(re.sub(r"\s+", " ", sql[pos:]))
+    return "".join(out).strip()
 
 
 def sig(sql):
@@ -37,20 +54,26 @@ def tables_in(sql):
 
 
 def load(path):
-    """Index file as (questions, rejected signatures). Reads the old bare-list format too."""
+    """Index file as a dict with at least questions and rejected. Reads the old bare-list format too.
+
+    Everything else in the file (pitfalls, anything added later) is carried as is,
+    so that writing the index back does not drop what this script never looks at.
+    """
     try:
         d = json.loads(Path(path).read_text())
     except Exception:
-        return [], set()
+        d = {}
     if isinstance(d, list):
-        return d, set()
-    return d.get("questions", []), set(d.get("rejected", []))
+        d = {"questions": d}
+    d.setdefault("questions", [])
+    d["rejected"] = set(d.get("rejected", []))
+    return d
 
 
-def save(path, questions, rejected):
+def save(path, index):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(
-        {"questions": questions, "rejected": sorted(rejected)},
+        {**index, "rejected": sorted(index["rejected"])},
         ensure_ascii=False, indent=2))
 
 
@@ -82,7 +105,7 @@ def candidates(db, questions, rejected):
             if purpose not in out[s]["aliases"] and purpose != out[s]["question"]:
                 out[s]["aliases"].append(purpose)
         else:
-            out[s] = {"sig": s, "question": purpose, "sql": norm(sql),
+            out[s] = {"sig": s, "question": purpose, "sql": sql.strip(),
                       "tables": tables_in(sql), "hits": 1,
                       "first_seen": created, "last_used": created, "aliases": []}
     return list(out.values())
@@ -104,7 +127,8 @@ def main():
                          "as unwanted and never offered again**. Omit it to only list candidates.")
     a = ap.parse_args()
 
-    questions, rejected = load(a.index)
+    index = load(a.index)
+    questions, rejected = index["questions"], index["rejected"]
     cands = candidates(a.db, questions, rejected)
     # Ids are valid within this batch only; assigned in log order, so listing and
     # filing in two runs agree with each other.
@@ -118,7 +142,7 @@ def main():
     print(f"Index holds {len(questions)}; {len(cands)} in the log are still unfiled:\n")
     for c in cands:
         print(f"  [{c['id']}] {c['hits']}x  {c['question'][:46]}")
-        print(f"          {c['sql'][:96]}")
+        print(f"          {norm(c['sql'])[:96]}")
 
     if not a.keep:
         print("\nWhich of these are real questions and which are your own test runs or sample data "
@@ -142,7 +166,7 @@ def main():
         else:
             rejected.add(c["sig"])
             dropped += 1
-    save(a.index, questions, rejected)
+    save(a.index, index)
     print(f"\nFiled {kept}, recorded {dropped} as unwanted (not asked again). Index now holds {len(questions)}.")
     return 0
 

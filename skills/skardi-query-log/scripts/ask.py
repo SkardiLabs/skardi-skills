@@ -35,10 +35,17 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def session_id():
+def session_id(given=None):
+    """The task's session id: --session-id, else $SKARDI_SESSION, else a fresh one.
+
+    `retrieval` mints one id per task and sends it on every query, peeks
+    included; pass that same id here so the final query lands in the same
+    session as the queries that led to it. A fresh id is the fallback for a
+    call made outside any task, and it groups with nothing.
+    """
     import os, uuid
-    return os.environ.get("SKARDI_SESSION_ID") or (
-        "s-" + datetime.now().strftime("%m%d") + "-" + uuid.uuid4().hex[:6])
+    return (given or os.environ.get("SKARDI_SESSION") or os.environ.get("SKARDI_SESSION_ID")
+            or "s-" + datetime.now().strftime("%m%d") + "-" + uuid.uuid4().hex[:6])
 
 
 def load_config(path):
@@ -77,8 +84,8 @@ def uncollected(db, items, rejected):
     if not db or not Path(db).exists():
         return None
     try:
-        import hashlib, sqlite3
-        def sig(s): return hashlib.sha1(re.sub(r"\s+", " ", s).strip().encode()).hexdigest()[:12]
+        import sqlite3
+        from seed_index import sig     # same signature, or filed queries count as unfiled
         known = {sig(i["sql"]) for i in items} | set(rejected)
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         rows = con.execute("SELECT sql, ai_context FROM query_audit "
@@ -125,15 +132,15 @@ def rank(question, items):
     return sorted(items, key=score, reverse=True)
 
 
-def run_query(url, sql, question):
-    payload = json.dumps({
-        "sql": sql, "max_rows": 200,
-        # The session id has to differ every time. Hard-coding one flattens the
-        # session information in the ledger, and this skill's discipline is
-        # "look at sessions, not just counts" — that is exactly what separates
-        # your own testing from a real request.
-        "ai_context": {"purpose": question, "session_id": session_id()},
-    }).encode()
+def run_query(url, sql, question, session=None, task=None):
+    # One session id per task, never one hard-coded for everything: a constant
+    # flattens the session information in the ledger, and this skill's
+    # discipline is "look at sessions, not just counts" — that is exactly what
+    # separates your own testing from a real request.
+    ctx = {"purpose": question, "session_id": session_id(session)}
+    if task:
+        ctx["task"] = task        # only when given: a build without --task has no use for it
+    payload = json.dumps({"sql": sql, "max_rows": 200, "ai_context": ctx}).encode()
     req = urllib.request.Request(url, data=payload,
                                  headers={"Content-Type": "application/json"})
     try:
@@ -225,7 +232,7 @@ def cmd_run(args, cfg, index, rejected, pitfalls, index_path):
         return 2
     print(f"# posting to {url}", file=sys.stderr)
 
-    res, err = run_query(url, args.sql, args.question)
+    res, err = run_query(url, args.sql, args.question, args.session_id, args.task)
     if err:
         print(f"[failed] {err}", file=sys.stderr)
         on_failure(pitfalls)
@@ -273,6 +280,10 @@ def main():
     ap.add_argument("question", help="What you are trying to find out, in plain words")
     ap.add_argument("--sql", help="Run it and file it; without it, only list what has been asked")
     ap.add_argument("--url", help="Skardi's /query endpoint; falls back to the config file")
+    ap.add_argument("--session-id", help="The task's session id, the one every other query in "
+                                         "this task carries; falls back to $SKARDI_SESSION")
+    ap.add_argument("--task", help="The task line, verbatim as on the task's other queries; "
+                                   "omit it when the server build does not take --task")
     ap.add_argument("--config", default=str(DEFAULT_CONFIG))
     ap.add_argument("--index", help="Index file; falls back to the config file")
     args = ap.parse_args()

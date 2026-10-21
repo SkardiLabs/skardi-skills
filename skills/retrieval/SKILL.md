@@ -46,8 +46,9 @@ This skill runs on **v0.5.0 or later** of both CLI and server. **The `--purpose`
 
 Before the first query, run this block. It does the capability check, mints
 the one session id every query in this task will reuse (only when the audit pair
-is available), and, when `skardi-query-log` is installed next to this skill,
-asks its index whether this question has been answered before:
+is available), and, when `skardi-query-log` is installed next to this skill and
+the server is one you host yourself, asks its index whether this question has
+been answered before:
 
 ```bash
 if skardi query --help | grep -q -- '--purpose'; then
@@ -55,7 +56,13 @@ if skardi query --help | grep -q -- '--purpose'; then
 fi
 skardi query --help | grep -q -- '--task' && echo "this build takes --task"
 ASK="<this skill's directory>/../skardi-query-log/scripts/ask.py"
-[ -f "$ASK" ] && python3 "$ASK" "<the user's question, in plain words>"
+# ask.py sends no API token, so it only serves a self-hosted server without auth.
+# On Skardi Cloud (current context mode is cloud) or with a token in play, skip it.
+if [ -f "$ASK" ] && [ -z "$SKARDI_API_TOKEN" ] \
+   && ! skardi config get-contexts 2>/dev/null | awk '$1=="*"{print $3}' | grep -qx cloud; then
+  USE_QUERY_LOG=1
+  python3 "$ASK" "<the user's question, in plain words>"
+fi
 ```
 
 When the build takes `--task`, also settle the task line now, before the first
@@ -67,7 +74,8 @@ task gets one, even a single question: then the task line is that question.
 Read what the last line printed before running anything else. If it lists a
 question that is the same as this one, go straight to step 0 and reuse its SQL;
 no `skardi schema` is needed. If it printed nothing (`skardi-query-log` is not
-installed) or no candidate matches, go on to discovery.
+installed, or this is Skardi Cloud or a server that takes a token) or no
+candidate matches, go on to discovery.
 
 ## Rule zero: ask the server, not your memory
 
@@ -106,7 +114,7 @@ Two consequences worth stating, because instructions further down lean on them:
 
 ### 0. Has this been asked before?
 
-**The opening block under Prerequisites already ran `ask.py` when `skardi-query-log` is installed; act on what it printed before anything else in this flow.**
+**This step applies only when the opening block under Prerequisites set `USE_QUERY_LOG`: `skardi-query-log` is installed and the server is self-hosted with no token.** Then the block already ran `ask.py`; act on what it printed before anything else in this flow. On Skardi Cloud, or any server that takes a token, skip this step and send every query, the final one included, with `skardi query` as steps 1 to 3 show: `ask.py` cannot authenticate there.
 Its `ask.py` keeps an index of questions already answered and the SQL that
 worked for each, plus pitfalls filed from earlier failures. Checking it takes
 one command; skipping it means rediscovering the schema and rewriting a
@@ -122,11 +130,15 @@ step.
 
 - **One of the listed questions is the same question**: reuse its SQL, changing
   only the parameters (a date, a limit), and run it through
-  `ask.py "<question>" --sql "<SQL>"`. Then go to step 4.
+  `ask.py "<question>" --sql "<SQL>" --session-id "$SKARDI_SESSION" --task "<task line>"`.
+  Then go to step 4.
 - **None matches**: continue with step 1. When you have the query that answers
-  the question, run that final query through `ask.py "<question>" --sql "<SQL>"`
+  the question, run that final query through the same `ask.py … --sql` command
   instead of `skardi query`, so the next session finds it. Peeks and schema
   discovery stay on `skardi query`.
+- `--session-id` and `--task` keep the final query in the same session and task
+  as the peeks, exactly as `skardi query` would send them. Drop `--task` on a
+  build without it.
 - **A filed pitfall mentions a table you are about to use**: read it before
   writing SQL.
 

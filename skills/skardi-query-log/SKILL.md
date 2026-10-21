@@ -20,6 +20,8 @@ ask.py "<what you are trying to find out, in plain words>"                 # has
 ask.py "<the same sentence>" --sql "<SQL>"                                 # run it for real; on success it is filed in the index
 ```
 
+When the query is part of a task that already has a session id and a task line (the way `retrieval` runs), pass both with `--session-id "$SKARDI_SESSION" --task "<task line>"`, so the final query sits in the ledger next to the peeks that led to it. Without `--session-id` it reads `$SKARDI_SESSION`, and failing that mints a fresh id; `--task` is sent only when given, so leave it off on a server build that does not take it.
+
 **Why this is a command and not a line in a document saying "remember to check the log first"**: because that does not work. This machine has a hand-written note sitting on it that says to query through Skardi and names the tables; the person who wrote it was using a different tool the next day. Expecting yourself to remember to look is a mechanism that has already failed. So the check goes *on the path the query has to take* — you cannot query without going through it, and going through it means you see it.
 
 Step one gives you candidates. **Whether one of them is the same question is your judgement** — the script fetches and coarse-filters, it does not decide meaning. If one matches, copy that SQL (adjust the parameters for this time). If none does, write your own and run it with `--sql` anyway.
@@ -185,7 +187,7 @@ Measured again on 2026-09-24 and 2026-09-25 on a real deployment: one person's d
 
 - **Here the index pays.** Without this skill a session took about 5 minutes and 1.4 USD on average; with it, about 3 minutes and 0.9 USD. Every answer was correct in both arms. Most of the saving is table names: `skardi schema` does not list the tables behind an Open Connector source, so without the index the agent guessed names and read errors until one worked.
 - **A step written as a sentence was mostly skipped.** With step 0 as a paragraph after the opening command block, only one of six sessions checked the index first; one never loaded this skill, and the rest reached it after failed guesses. Moving the `ask.py` call into the opening block that every session runs verbatim changed that to five of six, and the average fell to about 1.7 minutes and 0.75 USD. The sixth session looked at the schema once before checking.
-- **Final queries sent through `ask.py` do not share `retrieval`'s audit context.** `ask.py` sends the question as the purpose and its own session id (from `SKARDI_SESSION_ID`, or a fresh one), not the `$SKARDI_SESSION` that `retrieval` mints, and it sends no task line. In the ledger the final query therefore sits in a different session from the peeks that led to it. Not fixed here.
+- **Final queries sent through `ask.py` carry `retrieval`'s audit context only when it is passed.** `retrieval` hands its `$SKARDI_SESSION` and task line to `ask.py --session-id … --task …`; a call without them gets a fresh session id and no task, and in the ledger that query sits apart from the peeks that led to it. The runs above predate these flags.
 
 **Not verified**: a second person or a second machine (one person, one Apple-silicon Mac); Linux, Intel macOS and Windows (stdlib-only, no platform-specific calls, but expecting is not running); Postgres as the ledger backend (`SKARDI_QUERY_AUDIT_PG_DSN` exists on `main` as an alternative to the SQLite file, and `read_log.py` only opens SQLite).
 
