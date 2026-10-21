@@ -36,7 +36,7 @@ Skardi was built without the matching feature flag. Each embedding UDF is gated 
 
 Three options, in order of preference:
 
-1. Rebuild the **server** with the feature you need, from the released tag (e.g. `cargo install --locked --path crates/server --features candle,gguf,remote-embed` inside a `v0.5.0` checkout, for all three; `--features rag` covers `candle` + `gguf` + `remote-embed` + `chunking` in one).
+1. Rebuild the **server** with the feature you need, from the released tag (e.g. `cargo install --locked --path crates/server --features candle,gguf,remote-embed` inside a `v0.7.0` checkout, for all three; `--features rag` covers `candle` + `gguf` + `remote-embed` + `chunking` in one).
 2. Re-run `setup_context.py` with a different `--embedding-udf` whose feature *is* available in your build.
 3. Embed externally (Python + sentence-transformers / a vendor SDK) and skip Skardi for the write path — feed embeddings directly into `documents.embedding` as packed f32 BLOBs via the simpler `ingest` pipeline.
 
