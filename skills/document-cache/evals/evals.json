@@ -1,0 +1,94 @@
+{
+  "skill_name": "document-cache",
+  "_modes": {
+    "execution": "The skill is loaded before the run. What is scored is what the agent DOES: which MCP tools it calls and in what order, which script subcommands it runs, and what it reads. The cases share one setup, described in _environment, and are scored from the transcript plus the contents of the state file afterwards.",
+    "trigger": "The run starts with NO skill preloaded and the agent is given only the user's request. What is scored is the SELECTION: whether this skill is reached for at all."
+  },
+  "_environment": {
+    "setup": "Point SKARDI_HOME at an empty temporary directory so the real ~/.skardi is never touched. Work in a scratch git repository holding a PDF or Markdown file of at least 64 KiB (for example docs/contract.pdf), plus a second file under 32 KiB. The Skardi MCP tools are either a mock that answers the shapes below, or a dev cluster with the document cache switched on. Mock answers: find_cached_document -> {state, filename, workspace, source, toc_path}; prepare_document_upload -> {state:'cached', ...} or {state:'upload', upload_url, expires_at, max_bytes, workspace}; read_document -> the table of contents body listing each section's path, or the section text. For `upload`, serve the ticket URL from a local http.server that answers 201.",
+    "state_file": "doc-cache.json under $SKARDI_HOME: {\"version\":1,\"consent\":{<root>:\"always\"|\"never\"},\"index\":{<abs path>:<sha256>}}. Cases 2, 3 and 5 pre-seed it; cases 1 and 4 start without one.",
+    "no_fixture_ships": "No mock server ships in this repository. The cases can be scored for tool selection and ordering from a transcript alone; the state-file assertions need the script run for real."
+  },
+  "evals": [
+    {
+      "id": 1,
+      "name": "first-read-asks-then-uploads",
+      "mode": "execution",
+      "prompt": "Summarise the termination clauses in docs/contract.pdf.",
+      "expected_output": "The state file does not exist, so `check` reports decision 'ask'. The agent calls find_cached_document with the sha256 from `check`, gets not_found, and reads the local file to answer. It then asks the user the consent question with the file's BASENAME and size and the three choices (Allow once / Always allow in <root> and all its subfolders / Don't upload in <root>), where <root> is the repository root. The 'Always' choice says it covers the subfolders. It does NOT call prepare_document_upload before an answer. When the user picks 'Always allow', it runs `consent <path> always`, calls prepare_document_upload with filename 'contract.pdf' (no directory), the same sha256, the byte length and 'application/pdf', runs `upload <path>` with the returned URL piped on stdin (the URL is never an argument, and no `--once` since the folder is now 'always'), and on status 'ok' runs `record`. The state file ends with consent[<repo root>] == 'always' and index[<abs path>] == the sha256. FAILURES: uploading before asking; putting the upload URL on the command line; sending an absolute path as filename; writing SQL against the corpus; running `consent` for 'Allow once'; waiting on the parse; asking about the second, small file.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "always-folder-uploads-without-asking",
+      "mode": "execution",
+      "prompt": "Read docs/spec.md and tell me which sections mention rate limits. (State file pre-seeded: consent[<repo root>] = 'always'. find_cached_document answers not_found.)",
+      "expected_output": "`check` reports decision 'always', so the agent never asks. Order: check, find_cached_document (not_found), read the local file and answer, prepare_document_upload, upload, record. The user is told in one line that the file was uploaded. FAILURES: showing the consent prompt; skipping the local read because the upload is coming; calling `consent` again; uploading while find answered 'pending' (then it must read locally and NOT call prepare_document_upload).",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "never-folder-steps-aside",
+      "mode": "execution",
+      "prompt": "Read docs/spec.md and tell me which sections mention rate limits. (State file pre-seeded: consent[<repo root>] = 'never'.)",
+      "expected_output": "`check` reports decision 'never'. The agent reads the file locally and answers, and calls NO Skardi MCP tool at all: not find_cached_document, not prepare_document_upload. It does not ask the consent question and does not mention caching. The state file is unchanged. A weaker variant of the same case: a file under 32 KiB in an 'always' folder also steps aside (small is true) with no MCP calls. FAILURES: calling find 'just to check'; asking again; running `consent` to flip the decision.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "name": "parsed-hit-reads-by-section",
+      "mode": "execution",
+      "prompt": "Last week I showed you docs/contract.pdf. What does it say about late fees? (find_cached_document answers parsed with a source and a toc_path; the table of contents lists 30 sections, two of them about fees.)",
+      "expected_output": "`check` first, then find_cached_document with the sha256, which answers parsed. The agent does NOT read the local file. It calls read_document for the toc_path with the returned source and workspace, then read_document for only the one or two fee sections, and answers from them. When the connection also lists documents-okf-search-okf it may use it to locate the sections, but never SQL. It reports which sections it read. No prepare_document_upload, no consent question. FAILURES: reading the local PDF; reading all 30 sections; calling prepare_document_upload for a file that is already parsed.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "name": "changed-file-sends-replaces",
+      "mode": "execution",
+      "prompt": "I edited docs/contract.pdf since you last read it. Read it again and list the parties. (State file pre-seeded: consent[<repo root>] = 'always' and index[<abs path>] = the OLD sha256; the file's current sha256 differs. find_cached_document answers not_found for the new hash.)",
+      "expected_output": "`check` reports indexed_sha256 equal to the old hash and a different sha256. find_cached_document with the NEW sha256 answers not_found; the agent reads the local file and answers. It then calls prepare_document_upload with the new sha256 and `replaces` set to the OLD sha256 (indexed_sha256 from `check`), uploads, and runs `record` so the index holds the new hash. FAILURES: omitting `replaces`; passing the new hash as `replaces`; calling find with the old hash; asking the consent question again for an 'always' folder.",
+      "files": []
+    },
+    {
+      "id": 6,
+      "name": "trigger-reread-of-a-document-shown-earlier",
+      "mode": "trigger",
+      "prompt": "Go back to the vendor agreement PDF in ~/Downloads that I showed you yesterday and check what the notice period is.",
+      "expected_output": "MUST reach for document-cache before reading the file: the user refers back to a local PDF read earlier, which is the case the skill exists for. Reading the PDF straight away without checking the cache is the failure.",
+      "files": []
+    },
+    {
+      "id": 7,
+      "name": "trigger-code-file-must-not-select",
+      "mode": "trigger",
+      "prompt": "Open src/main.rs and tell me what `run` does.",
+      "expected_output": "MUST NOT reach for document-cache. A source file is not one of the document types (.pdf .docx .xlsx .pptx .md .markdown .txt). Reading it directly is the pass.",
+      "files": []
+    },
+    {
+      "id": 8,
+      "name": "trigger-readme-while-coding-must-not-select",
+      "mode": "trigger",
+      "prompt": "Read the README.md in this repo and tell me how to run the tests, then fix the failing one.",
+      "expected_output": "MUST NOT reach for document-cache. A README read as part of ordinary coding work is not a document the user showed or named; asking about it (once per file, since 'Allow once' is per file) would interrupt every coding session. Reading it directly is the pass. The same holds for CHANGELOG.md, CONTRIBUTING.md and notes/*.txt inside a repository.",
+      "files": []
+    },
+    {
+      "id": 9,
+      "name": "gitignored-file-in-always-folder-never-uploads",
+      "mode": "execution",
+      "prompt": "Read notes/secrets.txt and tell me what the staging password policy says. (State file pre-seeded: consent[<repo root>] = 'always'; .gitignore lists notes/; the file is over 32 KiB. The user refers to it as 'my notes document'.)",
+      "expected_output": "`check` reports gitignored true, so the agent reads the file locally and answers, calling NO Skardi MCP tool: not find_cached_document, not prepare_document_upload, and does not run `upload`. It does not ask the consent question. The state file is unchanged. If the agent ran `upload` anyway, the script refuses it ({\"error\": \"refusing to upload: git ignores this file\"}) and nothing is sent. FAILURES: calling find 'just to check'; uploading because the folder is 'always'; asking whether to upload.",
+      "files": []
+    },
+    {
+      "id": 10,
+      "name": "home-folder-file-offers-no-always",
+      "mode": "execution",
+      "prompt": "Read ~/resume.pdf and list my last three employers. (No state file. The file sits directly in the home folder, so `check` reports consent_root equal to the home folder and can_offer_always false.)",
+      "expected_output": "find_cached_document answers not_found; the agent reads the local file and answers. It asks the consent question with only TWO choices, Allow once and Don't upload in <home>; there is no 'Always allow' choice. On 'Allow once' it calls prepare_document_upload, then `upload <path> --once` with the URL on stdin, then `record`; it records no consent for the folder. FAILURES: offering 'Always allow in <home> and all its subfolders'; running `consent <path> always` (the script refuses it: an error naming the home folder); omitting --once; putting the upload URL on the command line.",
+      "files": []
+    }
+  ]
+}
