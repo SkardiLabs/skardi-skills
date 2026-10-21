@@ -13,10 +13,13 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 | `skills/graph-source/` | `graph-source` | Connect a property graph (a knowledge graph, a GraphRAG corpus — Apache AGE / openCypher) to Skardi and query it through SQL, end to end: provision AGE with a least-privilege reader role, declare the `type: graph` source and its views in context YAML, triage registration health (healthy / degraded / refused, and what recovery does and does not answer), write correct queries (`cypher_query`, `graph_schema`, the JSON getters), and wire Cypher parameters into pipelines. Encodes the traps that bite in production: positional `columns` binding (same-typed columns declared out of RETURN order swap silently), no predicate pushdown into view Cypher (the bound lives in the view, `RowCapExceeded` otherwise), wrong-getter silently-NULL columns, the deliberately-absent `->`/`->>` operators, lowercase-only view names, and the one working `{params}` pipeline spelling. Read-only by backend enforcement; AGE is the backend from Skardi v0.6.0 on (Neo4j/Kuzu are later milestones). |
 | `skills/graph-rag/` | `graph-rag` | Answer questions whose evidence is in graph relationships: find or verify the named entities, traverse from them through read-only Cypher, and report the bounds and confidence of the edges used. Needs Skardi v0.6.0 or later, like `graph-source`. |
 | `skills/skardi-query-log/` | `skardi-query-log` | Stop rewriting SQL you already got working. Every query goes through `ask.py`, which checks the index first: if this question has been asked, it hands back the statement that worked last time; if not, it files the one that works now. Reads the audit ledger `skardi-server --query-audit-db` writes (read-only) — `seed_index.py` picks unfiled queries out of it, `read_failures.py` reads the failures for what the system cannot answer, and `read_log.py` reports the overall shape, including whether the pipelines you built are being called. Turns a question into a real pipeline only when it keeps coming back, and then installs it itself: writes the YAML, restarts, probes `/health`, and rolls the file back out if the server does not come up. The agent triggers this on its own; a user never asks for a log analysis. |
+| `skills/document-cache/` | `document-cache` | When your agent is about to read a local PDF, DOCX, XLSX, PPTX, Markdown or text file, check whether Skardi already holds a parsed copy and, if so, read only the table of contents and the sections the question needs. Otherwise the agent reads the file locally and offers to upload it to **your personal workspace** — it never uploads without a decision recorded for that folder or an answer given this turn, and every failure falls back to the local read. Consent is remembered per folder in `~/.skardi/doc-cache.json`. Needs the Skardi MCP tools (`find_cached_document`, `prepare_document_upload`, `read_document`) connected and a Skardi Cloud deployment with the document cache enabled; it does not query the cache with SQL or build any index. |
 
 > **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
 
 > **`graph-source` and `graph-rag` both require Skardi v0.6.0 or later.** v0.5.0 has neither `type: graph` nor `cypher_query`, so neither skill can do anything against it. `graph-source` was verified against [`1f2ecae`](https://github.com/SkardiLabs/skardi/commit/1f2ecae0f95b0a01232fadb815eae1c1c86efc48), which v0.6.0 contains.
+
+> **`document-cache` talks to Skardi Cloud, not to a local `skardi-server`.** It needs the Skardi MCP tools connected and the document cache enabled on the deployment (it answers `cache_unavailable` otherwise, and the skill reads the local file). It uses nothing from the `skardi` CLI, so it is installed with any Skardi it is marked for; without the MCP tools it says once how to connect and reads files locally.
 
 > **Each skill states the oldest Skardi it runs on**, as `metadata.skardi-min-version` in its `SKILL.md`: a release number, or `"main"` while no release has what it needs. Skardi's `install.sh` reads it and skips a skill the installed `skardi` is too old for. A `main` build still reports the last release's version number, so a skill marked `"main"` is installed only when you pass `--with-unreleased`. A skill marked `"main"` also names what it waits for, as `metadata.skardi-needs`: an identifier that appears in the skardi source once the capability exists. CI looks for it in the latest Skardi release every day and fails once a release ships it, which is the signal to change `"main"` to that version; CI also rejects a `SKILL.md` without `skardi-min-version`.
 
@@ -56,6 +59,8 @@ cp -r skills/graph-rag ~/.claude/skills/graph-rag
 
 # skardi-query-log (stop rewriting SQL you already got working)
 cp -r skills/skardi-query-log ~/.claude/skills/skardi-query-log
+# document-cache (read cached documents by section instead of whole)
+cp -r skills/document-cache ~/.claude/skills/document-cache
 ```
 
 Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`, or "query our database" / "how many orders last month" / "what tables do we have" for `retrieval`. You can also invoke them directly:
@@ -63,6 +68,7 @@ Claude Code will automatically load the relevant skill when your request matches
 ```text
 /auto-context
 /retrieval
+/document-cache
 ```
 
 ### Other hosts, in one command
@@ -148,6 +154,7 @@ cp -r skills/retrieval ~/.agents/skills/retrieval
 cp -r skills/graph-source ~/.agents/skills/graph-source
 cp -r skills/graph-rag ~/.agents/skills/graph-rag
 cp -r skills/skardi-query-log ~/.agents/skills/skardi-query-log
+cp -r skills/document-cache ~/.agents/skills/document-cache
 ```
 
 To scope the skill to a single project instead, copy it into that repo's
@@ -170,6 +177,7 @@ openclaw skills install ./skills/retrieval
 openclaw skills install ./skills/graph-source
 openclaw skills install ./skills/graph-rag
 openclaw skills install ./skills/skardi-query-log
+openclaw skills install ./skills/document-cache
 ```
 
 That installs into `~/.openclaw/workspace/skills/`, scoped to the active agent
@@ -188,6 +196,7 @@ cp -r skills/retrieval ~/.hermes/skills/retrieval
 cp -r skills/graph-source ~/.hermes/skills/graph-source
 cp -r skills/graph-rag ~/.hermes/skills/graph-rag
 cp -r skills/skardi-query-log ~/.hermes/skills/skardi-query-log
+cp -r skills/document-cache ~/.hermes/skills/document-cache
 ```
 
 Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git
@@ -233,6 +242,13 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 | `references/pipeline_patterns.md` | The exact SQL the skill generates, with commentary on RRF, the DataFusion INSERT-VALUES quirk, and how to extend the pipelines (metadata filters, updates, deletes) |
 | `references/troubleshooting.md` | Symptom → fix for server and own-datastore failures (missing role, missing extension, dim mismatch, tsquery syntax, Docker host-networking, localhost HTTP-proxy interception) |
 | `references/troubleshooting_sqlite.md` | Symptom → fix for the local path (sqlite-vec loading and extension paths, FTS5 syntax, trigger mismatches, model download) |
+
+### `skills/document-cache/`
+
+| Path | Purpose |
+|---|---|
+| `scripts/doc_cache.py` | Python standard library only, no token. `check <path>` hashes the file and reports its content type, size, the folder consent applies to (the git root, otherwise the file's folder) and the recorded decision, whether git ignores it and whether "always" may be offered; `consent <path> always\|never` records a decision for that folder and its subfolders ("always" is refused for the home folder and `/`); `upload <path> [--once]` streams a single-use ticket PUT (the ticket URL is read from stdin, never argv; it refuses a `never` folder, a missing consent without `--once`, a non-https or non-ticket URL, an unsupported type and any file git ignores); `record <path> <sha256>` notes which hash was last uploaded for the path. State is `~/.skardi/doc-cache.json` (`$SKARDI_HOME` overrides the directory), written atomically with mode `0600`. Absolute paths never leave the machine |
+| `evals/evals.json` | Seven execution cases (first read asks, an always folder, a never folder, a parsed hit read by section, a changed file sends `replaces`, a gitignored file never uploads, a home-folder file offers no "always") and three trigger cases (including that reading a README while coding does not trigger) |
 
 ### `skills/retrieval/`
 
