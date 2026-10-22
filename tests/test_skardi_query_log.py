@@ -91,6 +91,39 @@ def test_literals_that_differ_in_whitespace_are_different_statements(tmp_path):
     assert "2 in the log are still unfiled" in out
 
 
+def test_a_line_comment_does_not_swallow_the_next_line(tmp_path):
+    # `SELECT 1 -- note` then `+ 1` on the next line returns 2; on one line it
+    # returns 1. Different results, so both must reach the person choosing.
+    db, index = tmp_path / "audit.db", tmp_path / "index.json"
+    audit_db(db, [("SELECT 1 -- note\n+ 1", "two lines"),
+                  ("SELECT 1 -- note + 1", "one line")])
+
+    out = seed("--db", str(db), "--index", str(index))
+
+    assert "2 in the log are still unfiled" in out
+
+
+def test_statements_that_differ_only_in_comments_are_one_statement(tmp_path):
+    db, index = tmp_path / "audit.db", tmp_path / "index.json"
+    audit_db(db, [("SELECT a FROM t -- first try\nWHERE b = 1", "with a line comment"),
+                  ("SELECT a FROM t /* why */ WHERE b = 1", "with a block comment"),
+                  ("SELECT a FROM t WHERE b = 1", "no comment")])
+
+    out = seed("--db", str(db), "--index", str(index))
+
+    assert "1 in the log are still unfiled" in out
+
+
+def test_comment_markers_inside_a_literal_are_data(tmp_path):
+    db, index = tmp_path / "audit.db", tmp_path / "index.json"
+    audit_db(db, [("SELECT * FROM p WHERE n = 'a -- b'", "dashes in a value"),
+                  ("SELECT * FROM p WHERE n = 'a -- c'", "different value")])
+
+    out = seed("--db", str(db), "--index", str(index))
+
+    assert "2 in the log are still unfiled" in out
+
+
 # --- ask.py -------------------------------------------------------------------
 
 @pytest.fixture
@@ -151,11 +184,12 @@ def opening_block():
     return block.replace("<this skill's directory>/../skardi-query-log/scripts/ask.py", "$FAKE_ASK")
 
 
-def run_block(tmp_path, contexts, token=None):
+def run_block(tmp_path, contexts, token=None, view=""):
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     skardi = bindir / "skardi"
     skardi.write_text("#!/bin/sh\n"
+                      'if [ "$1 $2" = "config view" ]; then cat "$FAKE_VIEW"; exit 0; fi\n'
                       'if [ "$1" = config ]; then cat "$FAKE_CONTEXTS"; exit 0; fi\n'
                       'echo "--purpose --session-id --task"\n')
     skardi.chmod(skardi.stat().st_mode | stat.S_IEXEC)
@@ -164,8 +198,10 @@ def run_block(tmp_path, contexts, token=None):
     fake_ask.write_text(f"open({str(marker)!r}, 'w').write('yes')\n")
     ctx = tmp_path / "contexts"
     ctx.write_text(contexts)
+    view_file = tmp_path / "view"
+    view_file.write_text(view)
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_ASK=str(fake_ask),
-               FAKE_CONTEXTS=str(ctx))
+               FAKE_CONTEXTS=str(ctx), FAKE_VIEW=str(view_file))
     env.pop("SKARDI_API_TOKEN", None)
     if token:
         env["SKARDI_API_TOKEN"] = token
@@ -193,3 +229,29 @@ def test_cloud_context_skips_ask(tmp_path):
 
 def test_token_in_env_skips_ask(tmp_path):
     assert not run_block(tmp_path, "no contexts configured (/x/config.yaml)\n", token="t")
+
+
+# What `skardi config view` prints: tokens redacted, but the key is still there.
+LOCAL_AND_TEAM = (HEADER
+                  + "*  local                    server   -                    http://127.0.0.1:8080\n"
+                  + "   team                     cloud    acme                 https://gw.example\n")
+
+
+def test_token_saved_with_the_current_context_skips_ask(tmp_path):
+    view = ("current-context: local\ncontexts:\n"
+            "- name: local\n  server: http://127.0.0.1:8080\n  token: (redacted)\n"
+            "- name: team\n  server: https://gw.example\n  mode: cloud\n  workspace: acme\n")
+    assert not run_block(tmp_path, LOCAL_AND_TEAM, view=view)
+
+
+def test_token_saved_only_with_another_context_still_checks_the_index(tmp_path):
+    view = ("current-context: local\ncontexts:\n"
+            "- name: local\n  server: http://127.0.0.1:8080\n"
+            "- name: team\n  server: https://gw.example\n  mode: cloud\n  workspace: acme\n"
+            "  token: (redacted)\n  token-id: pat_1\n")
+    assert run_block(tmp_path, LOCAL_AND_TEAM, view=view)
+
+
+def test_token_in_a_legacy_spec_file_skips_ask(tmp_path):
+    view = "kind: client\nspec:\n  server: http://legacy:8080\n  token: (redacted)\n"
+    assert not run_block(tmp_path, "no contexts configured (/x/config.yaml)\n", view=view)

@@ -57,9 +57,15 @@ fi
 skardi query --help | grep -q -- '--task' && echo "this build takes --task"
 ASK="<this skill's directory>/../skardi-query-log/scripts/ask.py"
 # ask.py sends no API token, so it only serves a self-hosted server without auth.
-# On Skardi Cloud (current context mode is cloud) or with a token in play, skip it.
-if [ -f "$ASK" ] && [ -z "$SKARDI_API_TOKEN" ] \
-   && ! skardi config get-contexts 2>/dev/null | awk '$1=="*"{print $3}' | grep -qx cloud; then
+# Skip it on Skardi Cloud (current context mode is cloud) and whenever a token is
+# in play: in the environment, or saved with the current context in config.yaml.
+CUR=$(skardi config get-contexts 2>/dev/null | awk '$1=="*"{print $2, $3}')
+SAVED_TOKEN=$(skardi config view 2>/dev/null | awk -v cur="${CUR%% *}" '
+  /^[^ -]/ { top = $1 }
+  /^ *- name:/ { n = $0; sub(/^ *- name: */, "", n); gsub(/"/, "", n); mine = (n == cur); next }
+  /^ *token:/ && ((top == "contexts:" && mine) || top == "spec:") { print "yes"; exit }')
+if [ -f "$ASK" ] && [ -z "$SKARDI_API_TOKEN" ] && [ -z "$SAVED_TOKEN" ] \
+   && [ "${CUR#* }" != cloud ]; then
   USE_QUERY_LOG=1
   python3 "$ASK" "<the user's question, in plain words>"
 fi

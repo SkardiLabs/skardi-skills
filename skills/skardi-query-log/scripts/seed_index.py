@@ -25,22 +25,33 @@ from pathlib import Path
 
 # A quoted run: a '...' string literal or a "..." identifier, doubled quotes
 # inside included. Whitespace there is data, so norm() never touches it.
-_QUOTED = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+# A comment: `-- …` to the end of the line, or `/* … */`. Matched in the same
+# pass so that `--` inside a string literal stays part of the literal.
+_QUOTED_OR_COMMENT = re.compile(
+    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?\*/", re.S)
 
 
 def norm(sql):
-    """Collapse runs of whitespace between tokens, leaving quoted text as written.
+    """Drop comments and collapse runs of whitespace, leaving quoted text as written.
 
     Only for telling two statements apart. `'A  B'` and `'A B'` match different
     rows, so they must stay different statements, and the SQL that gets filed is
-    the one that ran, not this normalised form.
+    the one that ran, not this normalised form. Comments go first: the newline
+    that ends a `--` comment is what keeps the next line running, so collapsing
+    it into a space would fold `SELECT 1 -- note` / `+ 1` (result 2) into
+    `SELECT 1 -- note + 1` (result 1).
     """
-    out, pos = [], 0
-    for m in _QUOTED.finditer(sql):
-        out.append(re.sub(r"\s+", " ", sql[pos:m.start()]))
-        out.append(m.group(0))
+    out, code, pos = [], "", 0
+    for m in _QUOTED_OR_COMMENT.finditer(sql):
+        code += sql[pos:m.start()]
+        token = m.group(0)
+        if token.startswith(("--", "/*")):
+            code += " "
+        else:
+            out += [re.sub(r"\s+", " ", code), token]
+            code = ""
         pos = m.end()
-    out.append(re.sub(r"\s+", " ", sql[pos:]))
+    out.append(re.sub(r"\s+", " ", code + sql[pos:]))
     return "".join(out).strip()
 
 
