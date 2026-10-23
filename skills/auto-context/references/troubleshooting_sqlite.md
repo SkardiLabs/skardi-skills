@@ -8,10 +8,10 @@ Fix the symptoms below by applying the prescribed remedy. Don't retry the same c
 
 `--backend sqlite` cannot use the container image: it needs the `sqlite-vec` extension, which the published image does not ship for Linux, and the host's copy is the wrong platform to mount in. So the local path means a server binary on this machine.
 
-**There is no published `skardi-server` binary for any platform.** The v0.5.0 GitHub Release attaches the `skardi` CLI only; the server ships as a container image (which the local path can't use) or as source. Build it from the released tag so you get exactly what v0.5.0 contains:
+**There is no published `skardi-server` binary for any platform.** The v0.7.0 GitHub Release attaches the `skardi` CLI only; the server ships as a container image (which the local path can't use) or as source. Build it from the released tag so you get exactly what v0.7.0 contains:
 
 ```bash
-git clone --depth 1 --branch v0.5.0 https://github.com/SkardiLabs/skardi.git
+git clone --depth 1 --branch v0.7.0 https://github.com/SkardiLabs/skardi.git
 cd skardi
 cargo install --locked --path crates/server --features rag
 ```
@@ -20,7 +20,7 @@ cargo install --locked --path crates/server --features rag
 
 Pin the tag. Do **not** install from `main`: `main` carries unreleased changes, so a workspace that works today can break on the next pull with no version to point at.
 
-> The **override path** (`--backend postgres` / `mongo` / `lance`) has no such constraint — use `--runtime docker` with `ghcr.io/skardilabs/skardi/skardi-server-full:0.6.0` and skip the toolchain entirely.
+> The **override path** (`--backend postgres` / `mongo` / `lance`) has no such constraint — use `--runtime docker` with `ghcr.io/skardilabs/skardi/skardi-server-full:0.7.0` and skip the toolchain entirely.
 
 ## `error: Invalid function 'chunk'` (or `Unknown function: chunk`) at ingest time
 
@@ -36,7 +36,7 @@ Skardi was built without the matching feature flag. Each embedding UDF is gated 
 
 Three options, in order of preference:
 
-1. Rebuild the **server** with the feature you need, from the released tag (e.g. `cargo install --locked --path crates/server --features candle,gguf,remote-embed` inside a `v0.5.0` checkout, for all three; `--features rag` covers `candle` + `gguf` + `remote-embed` + `chunking` in one).
+1. Rebuild the **server** with the feature you need, from the released tag (e.g. `cargo install --locked --path crates/server --features candle,gguf,remote-embed` inside a `v0.7.0` checkout, for all three; `--features rag` covers `candle` + `gguf` + `remote-embed` + `chunking` in one).
 2. Re-run `setup_context.py` with a different `--embedding-udf` whose feature *is* available in your build.
 3. Embed externally (Python + sentence-transformers / a vendor SDK) and skip Skardi for the write path — feed embeddings directly into `documents.embedding` as packed f32 BLOBs via the simpler `ingest` pipeline.
 
@@ -185,7 +185,7 @@ The chunk() UDF rejects `overlap >= size` to avoid infinite loops. Pass `--overl
 
 ## `chunk: unsupported mode '<x>'`
 
-Only `'character'` and `'markdown'` are supported as of v0.5.0. Token-based / code-aware splitters are roadmap items. Pass `--chunk-mode markdown` (default) or `--chunk-mode character` to `setup_context.py`.
+Only `'character'` and `'markdown'` are supported as of v0.7.0. Token-based / code-aware splitters are roadmap items. Pass `--chunk-mode markdown` (default) or `--chunk-mode character` to `setup_context.py`.
 
 ## `skardi` hangs indefinitely on the first query
 
