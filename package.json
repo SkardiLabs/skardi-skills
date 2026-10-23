@@ -1,6 +1,6 @@
 {
   "name": "skardi-skills",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Agent Skills for working with Skardi: searchable context, live-data retrieval, and graph queries.",
   "license": "Apache-2.0",
   "repository": "https://github.com/SkardiLabs/skardi-skills",
