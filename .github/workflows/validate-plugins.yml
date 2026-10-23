@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The version-bump check reads the base branch's plugin.json.
+          fetch-depth: 0
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -35,6 +38,15 @@ jobs:
 
       - name: Host manifests agree on one version
         run: scripts/bump-version.sh --check
+
+      # Claude Code only offers an update when the version changes, so a
+      # skill merged without a bump never reaches existing users.
+      - name: Shipped changes raise the plugin version
+        if: github.event_name == 'pull_request'
+        run: scripts/check-version-bump.sh "${{ github.event.pull_request.base.sha }}"
+
+      - name: Version-bump check behaves as specified
+        run: python3 tests/test_check_version_bump.py
 
       - name: Every skill directory carries a SKILL.md
         shell: bash
