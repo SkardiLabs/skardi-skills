@@ -12,6 +12,7 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 | `skills/retrieval/` | `retrieval` | Answer questions from live data through a running `skardi-server` with the `skardi` CLI. Discovers sources, named pipelines, and the table schemas the deployment exposes, runs the question through any semantic search surface first (`search-hybrid` and friends), then writes read-only SQL against exact qualified table names, checks truncation before trusting counts, and reports with the query attached. Consumes whatever the server already has — it builds no index, writes no data, and starts no servers. |
 | `skills/graph-source/` | `graph-source` | Connect a property graph (a knowledge graph, a GraphRAG corpus — Apache AGE / openCypher) to Skardi and query it through SQL, end to end: provision AGE with a least-privilege reader role, declare the `type: graph` source and its views in context YAML, triage registration health (healthy / degraded / refused, and what recovery does and does not answer), write correct queries (`cypher_query`, `graph_schema`, the JSON getters), and wire Cypher parameters into pipelines. Encodes the traps that bite in production: positional `columns` binding (same-typed columns declared out of RETURN order swap silently), no predicate pushdown into view Cypher (the bound lives in the view, `RowCapExceeded` otherwise), wrong-getter silently-NULL columns, the deliberately-absent `->`/`->>` operators, lowercase-only view names, and the one working `{params}` pipeline spelling. Read-only by backend enforcement; AGE is the backend from Skardi v0.6.0 on (Neo4j/Kuzu are later milestones). |
 | `skills/graph-rag/` | `graph-rag` | Answer questions whose evidence is in graph relationships: find or verify the named entities, traverse from them through read-only Cypher, and report the bounds and confidence of the edges used. Needs Skardi v0.6.0 or later, like `graph-source`. |
+| `skills/skardi-query-log/` | `skardi-query-log` | Stop rewriting SQL you already got working. Every query goes through `ask.py`, which checks the index first: if this question has been asked, it hands back the statement that worked last time; if not, it files the one that works now. Reads the audit ledger `skardi-server --query-audit-db` writes (read-only) — `seed_index.py` picks unfiled queries out of it, `read_failures.py` reads the failures for what the system cannot answer, and `read_log.py` reports the overall shape, including whether the pipelines you built are being called. Turns a question into a real pipeline only when it keeps coming back, and then installs it itself: writes the YAML, restarts, checks `/health` and that `/pipelines` lists the new name, and rolls the file back out if the restart fails or the server comes back without it. The agent triggers this on its own; a user never asks for a log analysis. |
 | `skills/document-cache/` | `document-cache` | When your agent is about to read a local PDF, DOCX, XLSX, PPTX, Markdown or text file, check whether Skardi already holds a parsed copy and, if so, read only the table of contents and the sections the question needs. Otherwise the agent reads the file locally and offers to upload it to **your personal workspace** — it never uploads without a decision recorded for that folder or an answer given this turn, and every failure falls back to the local read. Consent is remembered per folder in `~/.skardi/doc-cache.json`. Needs the Skardi MCP tools (`find_cached_document`, `prepare_document_upload`, `read_document`) connected and a Skardi Cloud deployment with the document cache enabled; it does not query the cache with SQL or build any index. |
 
 > **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
@@ -21,6 +22,8 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 > **`document-cache` talks to Skardi Cloud, not to a local `skardi-server`.** It needs the Skardi MCP tools connected and the document cache enabled on the deployment (it answers `cache_unavailable` otherwise, and the skill reads the local file). It uses nothing from the `skardi` CLI, so it is installed with any Skardi it is marked for; without the MCP tools it says once how to connect and reads files locally.
 
 > **Each skill states the oldest Skardi it runs on**, as `metadata.skardi-min-version` in its `SKILL.md`: a release number, or `"main"` while no release has what it needs. Skardi's `install.sh` reads it and skips a skill the installed `skardi` is too old for. A `main` build still reports the last release's version number, so a skill marked `"main"` is installed only when you pass `--with-unreleased`. A skill marked `"main"` also names what it waits for, as `metadata.skardi-needs`: an identifier that appears in the skardi source once the capability exists. CI looks for it in the latest Skardi release every day and fails once a release ships it, which is the signal to change `"main"` to that version; CI also rejects a `SKILL.md` without `skardi-min-version`.
+
+> **`skardi-query-log` requires Skardi v0.6.0 or later, on a server you host yourself; Skardi Cloud is not supported yet.** The audit ledger it reads is written by `skardi-server --query-audit-db`, which v0.6.0 is the first release to carry (`git grep query_audit_db v0.5.0` is empty). What was measured against it, and what was not, is in the skill's own Verification section. `auto-context` and `retrieval` run on v0.5.0 too; only `retrieval`'s `--purpose` / `--session-id` / `--task` flags need v0.6.0.
 
 ## Installation
 
@@ -56,6 +59,8 @@ cp -r skills/graph-source ~/.claude/skills/graph-source
 # graph-rag (answer questions whose evidence is in graph relationships)
 cp -r skills/graph-rag ~/.claude/skills/graph-rag
 
+# skardi-query-log (stop rewriting SQL you already got working)
+cp -r skills/skardi-query-log ~/.claude/skills/skardi-query-log
 # document-cache (read cached documents by section instead of whole)
 cp -r skills/document-cache ~/.claude/skills/document-cache
 ```
@@ -150,6 +155,7 @@ cp -r skills/auto-context ~/.agents/skills/auto-context
 cp -r skills/retrieval ~/.agents/skills/retrieval
 cp -r skills/graph-source ~/.agents/skills/graph-source
 cp -r skills/graph-rag ~/.agents/skills/graph-rag
+cp -r skills/skardi-query-log ~/.agents/skills/skardi-query-log
 cp -r skills/document-cache ~/.agents/skills/document-cache
 ```
 
@@ -172,6 +178,7 @@ openclaw skills install ./skills/auto-context
 openclaw skills install ./skills/retrieval
 openclaw skills install ./skills/graph-source
 openclaw skills install ./skills/graph-rag
+openclaw skills install ./skills/skardi-query-log
 openclaw skills install ./skills/document-cache
 ```
 
@@ -190,6 +197,7 @@ cp -r skills/auto-context ~/.hermes/skills/auto-context
 cp -r skills/retrieval ~/.hermes/skills/retrieval
 cp -r skills/graph-source ~/.hermes/skills/graph-source
 cp -r skills/graph-rag ~/.hermes/skills/graph-rag
+cp -r skills/skardi-query-log ~/.hermes/skills/skardi-query-log
 cp -r skills/document-cache ~/.hermes/skills/document-cache
 ```
 
@@ -247,3 +255,13 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 ### `skills/retrieval/`
 
 No scripts — the skill is the procedure: `SKILL.md` is the whole skill.
+
+### `skills/skardi-query-log/`
+
+| Path | Purpose |
+|---|---|
+| `scripts/ask.py` | The path every query takes. Without `--sql` it lists what has been asked and any pitfalls filed from past failures; with `--sql` it runs the statement and files it in the index on success. The index holds one row per question, not per query, so it grows with distinct questions rather than with usage. Keeps the index out of the skill directory, because it holds real queries and real field names. An index belongs to one server: when the `skardi` CLI is pointed at a different one, it stops (exit 3) instead of answering from the wrong server's SQL |
+| `scripts/seed_index.py` | Lists the succeeded queries in the ledger that carry a stated purpose but never reached the index — queries sent around `ask.py` are not lost, just unfiled — and files the ids you pass to `--keep`. The rest of that batch is recorded as unwanted so you are not asked twice. Picking is yours: the log mixes test runs with real work and the script cannot tell them apart |
+| `scripts/read_failures.py` | Groups failures by the wording Skardi itself emits — missing table, missing field, action not allowed, runtime breakage, wrong call form — and flags the ones where the same table was queried successfully afterwards. With `--index`, pairs each failure with the statement that later worked and files it as a pitfall, with both statements kept exactly as they ran, so step one of `ask.py` shows it before the next query. Failures need no volume: one row carries information |
+| `scripts/read_log.py` | Opens the audit ledger read-only and formats rows — an overview (totals, pass/fail, sessions), the last N statements, one session, failures only. Reads `statement_kind = 'query'` by default so a pipeline run cannot be counted as another instance of the question it already answers; `--kind pipeline` asks the opposite question, whether a pipeline you built is being called. Matched case-insensitively, because the column is case-sensitive and its casing changed under existing ledgers (skardi#219) — matching `= 'query'` on an older one returns zero rows and says nothing. Makes no judgements: which repeats deserve hardening is the agent's call |
+| `scripts/add_pipeline.py` | Installs one pipeline and verifies its own work — writes the YAML, runs the restart command you supply, polls `/health` and checks that `/pipelines` lists the new name, and when the restart command fails or the pipeline is not there, deletes the file and restarts again so the server is left as it was found. `--dir`, `--port` and `--restart-cmd` are required and never guessed: one pipeline that fails to plan takes the whole server down at startup |

@@ -88,3 +88,9 @@ jobs:
             fi
           done
           exit $status
+
+      # The scripts under skills/ ship to users; these are their regression tests.
+      - name: Python tests
+        run: |
+          python3 -m pip install --quiet pytest
+          python3 -m pytest -q tests

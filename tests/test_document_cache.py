@@ -600,6 +600,26 @@ def test_upload_incomplete_read_is_refused_code_0(monkeypatch, tmp_path):
     assert isinstance(out["body"], str) and out["body"]
 
 
+def _hang_up(conn):
+    """Close after the reply without resetting the connection.
+
+    One recv() does not always take the whole upload. Closing with request
+    bytes still unread makes the kernel send a reset instead of a clean close,
+    and a reset can reach the client before it has read the reply, so the
+    reply's body comes back empty (2 of 40 runs on Linux). Stop writing, drain
+    what the client is still sending, then close.
+    """
+    import socket
+    conn.shutdown(socket.SHUT_WR)
+    conn.settimeout(5)
+    try:
+        while conn.recv(65536):
+            pass
+    except OSError:
+        pass
+    conn.close()
+
+
 def test_upload_server_hangs_up_mid_reply_is_refused(home, work):
     """A real socket: Content-Length promises more than is sent, then close."""
     import socket
@@ -612,7 +632,7 @@ def test_upload_server_hangs_up_mid_reply_is_refused(home, work):
         conn, _ = srv.accept()
         conn.recv(65536)
         conn.sendall(b"HTTP/1.1 201 Created\r\nContent-Length: 100\r\n\r\nshort")
-        conn.close()
+        _hang_up(conn)
 
     t = threading.Thread(target=serve, daemon=True)
     t.start()
@@ -639,7 +659,7 @@ def test_upload_truncated_error_body_keeps_the_http_status(home, work):
         conn, _ = srv.accept()
         conn.recv(65536)
         conn.sendall(b"HTTP/1.1 410 Gone\r\nContent-Length: 100\r\n\r\nticket_us")
-        conn.close()
+        _hang_up(conn)
 
     t = threading.Thread(target=serve, daemon=True)
     t.start()
