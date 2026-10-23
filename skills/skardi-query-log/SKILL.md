@@ -44,6 +44,8 @@ The index holds **one row per question, not one per query** — so it grows with
 
 Point `--config` at it if you keep it elsewhere, or override `--url` / `--index` per call. `audit_db` is optional and only powers the "N queries are still unfiled" hint.
 
+One config file serves one server: its index holds that server's SQL. `ask.py` checks where the `skardi` CLI is pointed (`$SKARDI_SERVER_URL`, else the current context) and stops with exit code 3 when that is a different server from `url`, sending and listing nothing. For a second server, keep a second config file with its own `url` and `index`, and pass it with `--config`.
+
 > **Keep the index out of the skill directory.** It holds your real queries and real field names, and a skill directory is something you might hand to someone. Put it next to the audit database, or anywhere else that is yours.
 
 ## Keeping the index fed: pick out of the log
@@ -141,7 +143,7 @@ python3 scripts/add_pipeline.py --dry-run \
   --sql "SELECT ... WHERE status = {status} LIMIT {limit}"
 ```
 
-Drop `--dry-run` to install for real. It writes the file, restarts, and probes health; **if the server does not come back it deletes the file, restarts again, and leaves the server as it found it.**
+Drop `--dry-run` to install for real. It writes the file, runs the restart command, probes health and checks that `GET /pipelines` lists the new name; **if the restart command fails, or the server does not come back with the pipeline, it deletes the file, restarts again, and leaves the server as it found it.** A healthy server alone does not count: after a failed restart, the old process still answers `/health` without the new pipeline.
 
 > **A placeholder stands bare, including for strings.** `{name}` is bound as a parameter, not pasted into the SQL text, so `WHERE status = {status}` is right and `WHERE status = '{status}'` is wrong. The quoted form is worth naming because it is the one mistake that passes every check: the server starts, the pipeline registers, its parameter is even validated as required, and the failure only appears on the first real call, as a parser error. `add_pipeline.py` refuses it up front. Bare binding is also the safe form: values containing spaces or an apostrophe go through as values, not as SQL.
 

@@ -138,6 +138,8 @@ step.
   only the parameters (a date, a limit), and run it through
   `ask.py "<question>" --sql "<SQL>" --session-id "$SKARDI_SESSION" --task "<task line>"`.
   Then go to step 4.
+- **It says the skardi CLI is pointed at another server**: the index belongs to
+  that other server. Continue with step 1 and send every query with `skardi query`.
 - **None matches**: continue with step 1. When you have the query that answers
   the question, run that final query through the same `ask.py … --sql` command
   instead of `skardi query`, so the next session finds it. Peeks and schema

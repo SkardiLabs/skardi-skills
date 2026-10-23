@@ -25,6 +25,11 @@ import argparse, json, re, sys, urllib.request, urllib.error
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+
+def one_line(sql, width):
+    """A statement shortened for a listing. Display only: the index keeps it as it ran."""
+    return re.sub(r"\s+", " ", sql or "")[:width]
+
 # Where the config is looked for by default; without it, pass --url / --index
 DEFAULT_CONFIG = Path.home() / ".skardi" / "query-tool.json"
 RETIRE_DAYS = 180        # unused this long and it drops out of the candidate list
@@ -46,6 +51,38 @@ def session_id(given=None):
     import os, uuid
     return (given or os.environ.get("SKARDI_SESSION") or os.environ.get("SKARDI_SESSION_ID")
             or "s-" + datetime.now().strftime("%m%d") + "-" + uuid.uuid4().hex[:6])
+
+
+def cli_server():
+    """Where `skardi query` would send a statement right now, or None if that cannot be read.
+
+    $SKARDI_SERVER_URL wins, as it does in the CLI; then the current context's
+    SERVER column; then the CLI's own default when no context is current.
+    """
+    import os, subprocess
+    if os.environ.get("SKARDI_SERVER_URL"):
+        return os.environ["SKARDI_SERVER_URL"]
+    try:
+        out = subprocess.run(["skardi", "config", "get-contexts"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except Exception:
+        return None          # no CLI on PATH: nothing to compare against
+    for line in out.splitlines():
+        cols = line.split()
+        if len(cols) >= 5 and cols[0] == "*":
+            return cols[4]
+    return "http://127.0.0.1:8080"
+
+
+def same_server(a, b):
+    """Scheme, host and port equal; `localhost` counts as 127.0.0.1. Paths (/query) are ignored."""
+    from urllib.parse import urlsplit
+    def key(url):
+        u = urlsplit(url if "://" in url else "http://" + url)
+        host = (u.hostname or "").lower()
+        host = "127.0.0.1" if host in ("localhost", "::1") else host
+        return u.scheme, host, u.port or (443 if u.scheme == "https" else 80)
+    return key(a) == key(b)
 
 
 def load_config(path):
@@ -177,8 +214,8 @@ def print_pitfalls(pitfalls):
     print(f"! These pitfalls have been hit before ({len(pitfalls)}); skim them before writing SQL:\n")
     for p in pitfalls:
         print(f"  - {p['kind']}: {p['what']}")
-        print(f"    not like this: {p['bad'][:96]}")
-        print(f"    what worked:   {p['good'][:96]}")
+        print(f"    not like this: {one_line(p['bad'], 96)}")
+        print(f"    what worked:   {one_line(p['good'], 96)}")
     print()
 
 
@@ -220,7 +257,7 @@ def on_failure(pitfalls):
         print("\nHit before; check whether this is the same thing:", file=sys.stderr)
         for p in pitfalls:
             print(f"  - {p['kind']}: {p['what']}", file=sys.stderr)
-            print(f"    what worked: {p['good'][:96]}", file=sys.stderr)
+            print(f"    what worked: {one_line(p['good'], 96)}", file=sys.stderr)
     print("\nThis failure is in the ledger now. read_failures.py can pair it with the statement "
           "that later worked, so it does not get hit twice.", file=sys.stderr)
 
@@ -295,6 +332,18 @@ def main():
               file=sys.stderr)
         return 2
     index, rejected, pitfalls = load_index(index_path)
+
+    # The index and url belong to one server. If the CLI has since been switched
+    # to another, a reused statement would run against the wrong data, and the
+    # candidates listed are that other server's SQL.
+    url = args.url or cfg.get("url")
+    cli = cli_server()
+    if url and cli and not same_server(url, cli):
+        print(f"The skardi CLI is pointed at {cli}, but this index and its url are for {url}.\n"
+              "Nothing was looked up or sent. Switch the CLI back (skardi config use-context ...), "
+              "or keep a separate config file for this server, with its own url and index, and "
+              "pass it with --config.", file=sys.stderr)
+        return 3
 
     if args.sql:
         return cmd_run(args, cfg, index, rejected, pitfalls, index_path)

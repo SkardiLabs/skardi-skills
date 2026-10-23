@@ -34,9 +34,28 @@ def server_running(port):
     return http_ok(f"http://127.0.0.1:{port}/health")
 
 
+def registered(port, name):
+    """Whether the server answering on `port` lists a pipeline called `name` (GET /pipelines)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/pipelines", timeout=5) as r:
+            listed = json.loads(r.read()).get("pipelines") or []
+    except Exception:
+        return False
+    return any(isinstance(p, dict) and p.get("name") == name for p in listed)
+
+
 def restart(restart_cmd, port):
-    """Restart with the command the caller supplied, then wait for /health. Never guesses how the server is started."""
-    subprocess.run(restart_cmd, shell=True, capture_output=True, text=True)
+    """Restart with the command the caller supplied, then wait for /health. Never guesses how the server is started.
+
+    A non-zero exit is a failed restart even if /health answers: the server that
+    answers can be the old process, still running because the restart never
+    replaced it, and that one does not have the new pipeline.
+    """
+    r = subprocess.run(restart_cmd, shell=True, capture_output=True, text=True)
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip()
+        print(f"  the restart command exited {r.returncode}" + (f": {detail[:300]}" if detail else ""))
+        return False
     return wait_health(port)
 
 
@@ -105,15 +124,19 @@ def main():
     print(f"wrote {path}")
 
     print("restarting the server and verifying...")
-    if restart(a.restart_cmd, a.port):
+    came_back = restart(a.restart_cmd, a.port)
+    if came_back and not registered(a.port, a.name):
+        print(f"  the server answers /health but does not list {a.name} under /pipelines.")
+        came_back = False
+    if came_back:
         print(f"[ok] the server came back and {a.name} is registered at POST /{a.name}/execute, "
               "taking the SQL's placeholders as parameters.\n"
               "     That is all this proves. Call it once with real parameters before telling "
               "anyone it works: a pipeline can register and still fail on execution.")
         return
 
-    # It did not come back -- roll the pipeline out and restore the server to how it was
-    print("[fail] server did not come up. Rolling this pipeline back.")
+    # It did not come back with the pipeline -- roll it out and restore the server to how it was
+    print("[fail] the server did not come back with this pipeline. Rolling it back.")
     os.remove(path)
     print(f"  removed {path}")
     if was_up:

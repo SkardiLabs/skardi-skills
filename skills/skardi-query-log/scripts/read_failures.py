@@ -20,6 +20,11 @@ call — that is yours.**
 import argparse, json, pathlib, re, sqlite3, sys
 from collections import defaultdict
 
+
+def one_line(sql, width):
+    """A statement shortened for a listing. Display only: the index keeps it as it ran."""
+    return re.sub(r"\s+", " ", sql or "")[:width]
+
 # The wordings Skardi itself emits. What is extracted is the name it already named,
 # not a guess about what went wrong.
 SHAPES = [
@@ -143,7 +148,7 @@ def harvest(a, fails, ok_after):
         fix = None
         for c2, s2, _ in succ:
             if c2 > created and tabs & set(TABLE_RE.findall(s2 or "")):
-                fix = re.sub(r"\s+", " ", s2)[:200]
+                fix = s2      # filed as it ran: it is the statement people copy and run
                 break
         if not fix:
             continue
@@ -154,7 +159,7 @@ def harvest(a, fails, ok_after):
         kind, what, _ = classify(err)
         cands.append({"kind": kind, "what": what, "when": created[:10],
                       "purpose": purpose,
-                      "bad": re.sub(r"\s+", " ", sql or "")[:150],
+                      "bad": sql or "",
                       "err": re.sub(r"\s+", " ", err or "")[:180],
                       "good": fix})
 
@@ -175,8 +180,8 @@ def harvest(a, fails, ok_after):
     for c in cands:
         print(f"  [{c['id']}] {c['when']}  {c['kind']}: {c['what']}")
         print(f"        was asking: {c['purpose'] or '(none written)'}")
-        print(f"        failed like this: {c['bad'][:110]}")
-        print(f"        worked like this: {c['good'][:110]}")
+        print(f"        failed like this: {one_line(c['bad'], 110)}")
+        print(f"        worked like this: {one_line(c['good'], 110)}")
         print()
     if not a.keep:
         print("Pairs are joined only by 'the earliest later success on the same table' — "

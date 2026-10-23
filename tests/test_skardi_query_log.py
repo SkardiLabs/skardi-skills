@@ -150,6 +150,7 @@ def server():
 
 def ask(url, index, *args, env=None):
     e = {k: v for k, v in os.environ.items() if not k.startswith("SKARDI_SESSION")}
+    e["SKARDI_SERVER_URL"] = url.rsplit("/query", 1)[0]   # the CLI points where the index does
     e.update(env or {})
     r = subprocess.run([sys.executable, str(ASK), "how many orders", "--sql", "SELECT 1",
                         "--url", url, "--index", str(index), "--config", "/nonexistent", *args],
@@ -255,3 +256,146 @@ def test_token_saved_only_with_another_context_still_checks_the_index(tmp_path):
 def test_token_in_a_legacy_spec_file_skips_ask(tmp_path):
     view = "kind: client\nspec:\n  server: http://legacy:8080\n  token: (redacted)\n"
     assert not run_block(tmp_path, "no contexts configured (/x/config.yaml)\n", view=view)
+
+
+# --- ask.py against a CLI pointed elsewhere -----------------------------------
+
+def fake_cli(tmp_path, current_server):
+    bindir = tmp_path / "clibin"
+    bindir.mkdir(exist_ok=True)
+    cli = bindir / "skardi"
+    cli.write_text("#!/bin/sh\n"
+                   "echo '   NAME                     MODE     WORKSPACE            SERVER'\n"
+                   "echo '   a                        server   -                    http://127.0.0.1:1'\n"
+                   f"echo '*  b                        server   -                    {current_server}'\n")
+    cli.chmod(cli.stat().st_mode | stat.S_IEXEC)
+    e = {k: v for k, v in os.environ.items() if k != "SKARDI_SERVER_URL"}
+    e["PATH"] = f"{bindir}:{e['PATH']}"
+    return e
+
+
+# The index and url belong to one server. After `skardi config use-context b`,
+# a reused statement would otherwise run against server a and answer from the
+# wrong data.
+@pytest.mark.parametrize("with_sql", [True, False])
+def test_a_cli_switched_to_another_server_stops_ask(tmp_path, server, with_sql):
+    url, seen = server
+    env = fake_cli(tmp_path, "http://10.9.9.9:8080")
+    cmd = [sys.executable, str(ASK), "how many orders", "--url", url,
+           "--index", str(tmp_path / "index.json"), "--config", "/nonexistent"]
+    if with_sql:
+        cmd += ["--sql", "SELECT 1"]
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    assert r.returncode == 3, r.stderr + r.stdout
+    assert "http://10.9.9.9:8080" in r.stderr
+    assert seen == []
+
+
+def test_localhost_and_127_0_0_1_are_the_same_server(tmp_path, server):
+    url, seen = server
+    port = url.split(":")[2].split("/")[0]
+    env = fake_cli(tmp_path, f"http://localhost:{port}")
+    r = subprocess.run([sys.executable, str(ASK), "how many orders", "--sql", "SELECT 1",
+                        "--url", url, "--index", str(tmp_path / "index.json"),
+                        "--config", "/nonexistent"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert len(seen) == 1
+
+
+# --- add_pipeline.py ----------------------------------------------------------
+
+ADD = SCRIPTS / "add_pipeline.py"
+
+
+@pytest.fixture
+def pipeline_server():
+    """/health always answers, as the old process would; /pipelines lists `listed`."""
+    listed = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/health":
+                body = b"{}"
+            elif self.path == "/pipelines":
+                body = json.dumps({"success": True,
+                                   "pipelines": [{"name": n} for n in listed]}).encode()
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    httpd = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield httpd.server_port, listed
+    httpd.shutdown()
+
+
+def add(tmp_path, port, restart_cmd):
+    d = tmp_path / "pipelines"
+    r = subprocess.run([sys.executable, str(ADD), "--name", "open_prs", "--sql",
+                        "SELECT id FROM github.prs WHERE state = {state}", "--dir", str(d),
+                        "--port", str(port), "--restart-cmd", restart_cmd],
+                       capture_output=True, text=True, timeout=120)
+    return r, d / "open_prs.yaml"
+
+
+def test_a_failed_restart_is_a_failed_install_even_while_the_old_server_answers(tmp_path, pipeline_server):
+    port, listed = pipeline_server
+    listed.append("open_prs")      # even a listing that looks right does not excuse the exit code
+    r, yaml = add(tmp_path, port, "exit 7")
+    assert r.returncode != 0, r.stdout
+    assert "[ok]" not in r.stdout
+    assert not yaml.exists()
+
+
+def test_a_server_that_comes_back_without_the_pipeline_is_a_failed_install(tmp_path, pipeline_server):
+    port, _ = pipeline_server
+    r, yaml = add(tmp_path, port, "true")
+    assert r.returncode != 0, r.stdout
+    assert "[ok]" not in r.stdout
+    assert not yaml.exists()
+
+
+def test_a_restart_that_registers_the_pipeline_succeeds(tmp_path, pipeline_server):
+    port, listed = pipeline_server
+    listed.append("open_prs")
+    r, yaml = add(tmp_path, port, "true")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "[ok]" in r.stdout
+    assert yaml.exists()
+
+
+# --- read_failures.py ---------------------------------------------------------
+
+READ_FAILURES = SCRIPTS / "read_failures.py"
+
+
+def test_a_filed_pitfall_keeps_both_statements_as_they_ran(tmp_path):
+    # The working statement is what the next person copies and runs. Flattened,
+    # `-- open ones only` swallowed the WHERE on the next line and the copy
+    # returned every row instead of the open ones.
+    bad = "SELECT id FROM github.prs\nWHERE stat = 'open'"
+    good = "SELECT id FROM github.prs -- open ones only\nWHERE state = 'open'"
+    db, index = tmp_path / "audit.db", tmp_path / "index.json"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE query_audit (created_at TEXT, sql TEXT, ai_context TEXT, "
+                "error TEXT, status TEXT)")
+    con.execute("INSERT INTO query_audit VALUES ('2026-10-21T00:00:01+00:00', ?, NULL, "
+                "'Schema error: No field named stat', 'failed')", (bad,))
+    con.execute("INSERT INTO query_audit VALUES ('2026-10-21T00:00:02+00:00', ?, NULL, NULL, "
+                "'succeeded')", (good,))
+    con.commit()
+    con.close()
+
+    r = subprocess.run([sys.executable, str(READ_FAILURES), "--db", str(db), "--index", str(index),
+                        "--keep", "p001"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr + r.stdout
+    [pitfall] = json.loads(index.read_text())["pitfalls"]
+    assert pitfall["good"] == good
+    assert pitfall["bad"] == bad
