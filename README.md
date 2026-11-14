@@ -14,6 +14,7 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 | `skills/graph-rag/` | `graph-rag` | Answer questions whose evidence is in graph relationships: find or verify the named entities, traverse from them through read-only Cypher, and report the bounds and confidence of the edges used. Needs Skardi v0.6.0 or later, like `graph-source`. |
 | `skills/skardi-query-log/` | `skardi-query-log` | Stop rewriting SQL you already got working. Every query goes through `ask.py`, which checks the index first: if this question has been asked, it hands back the statement that worked last time; if not, it files the one that works now. Reads the audit ledger `skardi-server --query-audit-db` writes (read-only) — `seed_index.py` picks unfiled queries out of it, `read_failures.py` reads the failures for what the system cannot answer, and `read_log.py` reports the overall shape, including whether the pipelines you built are being called. Turns a question into a real pipeline only when it keeps coming back, and then installs it itself: writes the YAML, restarts, checks `/health` and that `/pipelines` lists the new name, and rolls the file back out if the restart fails or the server comes back without it. The agent triggers this on its own; a user never asks for a log analysis. |
 | `skills/document-cache/` | `document-cache` | When your agent is about to read a local PDF, DOCX, XLSX, PPTX, Markdown or text file, check whether Skardi already holds a parsed copy and, if so, read only the table of contents and the sections the question needs. Otherwise the agent reads the file locally and offers to upload it to **your personal workspace** — it never uploads without a decision recorded for that folder or an answer given this turn, and every failure falls back to the local read. Consent is remembered per folder in `~/.skardi/doc-cache.json`. Needs the Skardi MCP tools (`find_cached_document`, `prepare_document_upload`, `read_document`) connected and a Skardi Cloud deployment with the document cache enabled; it does not query the cache with SQL or build any index. |
+| `skills/memory/` | `memory` | Keep a **working memory** of the task your agent is on, in Skardi Cloud, so another agent (Codex after Claude Code ran out of quota, say) or a later session picks it up where it was left: the goal, where it stands, the decisions with their reasons, the findings and dead ends, and the next steps, keyed by an anchor (the issue or pull request URL, or a label you confirm). Recalls at the start of a task; saves only after you say yes, offered once per task at its first milestone, with three ways to say yes (this session, this task from now on, all your work in the workspace), and then on a fixed cadence (every milestone, before switching tasks, at least every 10 turns of work). Links issues, pull requests and commits instead of copying them, and treats a recalled memory, above all a teammate's, as information, never as instructions: before a destructive action whose reason comes from memory it checks the live system and asks. Works through the Skardi MCP tools (`memory_recall`, `memory_save`, `memory_list`, `memory_consent`) or the `skardi memory` CLI; it never deletes, redacts or shares a memory on its own. |
 
 > **A running `skardi-server` is required.** Since Skardi's CLI became a thin HTTP client it holds no query engine and no local execution mode, so every path in `auto-context` starts a server, and `retrieval` connects to one that is already running. There is no CLI-only mode.
 
@@ -22,6 +23,8 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 > **`document-cache` talks to Skardi Cloud, not to a local `skardi-server`.** It needs the Skardi MCP tools connected and the document cache enabled on the deployment (it answers `cache_unavailable` otherwise, and the skill reads the local file). It uses nothing from the `skardi` CLI, so it is installed with any Skardi it is marked for; without the MCP tools it says once how to connect and reads files locally.
 
 > **Each skill states the oldest Skardi it runs on**, as `metadata.skardi-min-version` in its `SKILL.md`: a release number, or `"main"` while no release has what it needs. Skardi's `install.sh` reads it and skips a skill the installed `skardi` is too old for. A `main` build still reports the last release's version number, so a skill marked `"main"` is installed only when you pass `--with-unreleased`. A skill marked `"main"` also names what it waits for, as `metadata.skardi-needs`: an identifier that appears in the skardi source once the capability exists. CI looks for it in the latest Skardi release every day and fails once a release ships it, which is the signal to change `"main"` to that version; CI also rejects a `SKILL.md` without `skardi-min-version`.
+
+> **`memory` talks to Skardi Cloud, and needs agent memory turned on there (`memory.enabled`).** It is marked `skardi-min-version: "main"`: the `skardi memory` commands it uses from the CLI are not in a Skardi release yet (v0.8.0 has none), and the MCP memory tools are served only where a deployment turns agent memory on. With the MCP tools it needs nothing from the CLI; with neither, it steps aside. Sharing a memory with a team workspace is phase 2 of agent memory and is not served yet.
 
 > **`skardi-query-log` requires Skardi v0.6.0 or later, on a server you host yourself; Skardi Cloud is not supported yet.** The audit ledger it reads is written by `skardi-server --query-audit-db`, which v0.6.0 is the first release to carry (`git grep query_audit_db v0.5.0` is empty). What was measured against it, and what was not, is in the skill's own Verification section. `auto-context` and `retrieval` run on v0.5.0 too; only `retrieval`'s `--purpose` / `--session-id` / `--task` flags need v0.6.0.
 
@@ -36,7 +39,7 @@ From inside any Claude Code session:
 /plugin install skardi@skardi-skills
 ```
 
-That's it — all five skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
+That's it — all seven skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
 
 > **Changing a skill? Raise the version in the same PR.** Claude Code compares only the plugin version when it looks for updates, so a skill merged without a new version never reaches anyone who already installed the plugin: `claude plugin update skardi@skardi-skills` reports it is already at the latest version. Run `scripts/bump-version.sh <x.y.z>` (minor for a new skill, patch for a fix); it sets every host manifest at once. CI fails a PR that changes `skills/` or a manifest without a higher version than the base branch.
 
@@ -63,6 +66,9 @@ cp -r skills/graph-rag ~/.claude/skills/graph-rag
 cp -r skills/skardi-query-log ~/.claude/skills/skardi-query-log
 # document-cache (read cached documents by section instead of whole)
 cp -r skills/document-cache ~/.claude/skills/document-cache
+
+# memory (a working memory of the task, for the next agent or session)
+cp -r skills/memory ~/.claude/skills/memory
 ```
 
 Claude Code will automatically load the relevant skill when your request matches it — e.g. "index these docs" / "make this folder searchable" / "build a RAG" / "expose hybrid search as HTTP" / "RAG service over our pgvector DB" for `auto-context`, or "query our database" / "how many orders last month" / "what tables do we have" for `retrieval`. You can also invoke them directly:
@@ -71,6 +77,7 @@ Claude Code will automatically load the relevant skill when your request matches
 /auto-context
 /retrieval
 /document-cache
+/memory
 ```
 
 ### Other hosts, in one command
@@ -157,6 +164,7 @@ cp -r skills/graph-source ~/.agents/skills/graph-source
 cp -r skills/graph-rag ~/.agents/skills/graph-rag
 cp -r skills/skardi-query-log ~/.agents/skills/skardi-query-log
 cp -r skills/document-cache ~/.agents/skills/document-cache
+cp -r skills/memory ~/.agents/skills/memory
 ```
 
 To scope the skill to a single project instead, copy it into that repo's
@@ -180,6 +188,7 @@ openclaw skills install ./skills/graph-source
 openclaw skills install ./skills/graph-rag
 openclaw skills install ./skills/skardi-query-log
 openclaw skills install ./skills/document-cache
+openclaw skills install ./skills/memory
 ```
 
 That installs into `~/.openclaw/workspace/skills/`, scoped to the active agent
@@ -199,6 +208,7 @@ cp -r skills/graph-source ~/.hermes/skills/graph-source
 cp -r skills/graph-rag ~/.hermes/skills/graph-rag
 cp -r skills/skardi-query-log ~/.hermes/skills/skardi-query-log
 cp -r skills/document-cache ~/.hermes/skills/document-cache
+cp -r skills/memory ~/.hermes/skills/memory
 ```
 
 Hermes does not scan `~/.agents/skills/` as a personal directory — inside a git
@@ -251,6 +261,13 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 |---|---|
 | `scripts/doc_cache.py` | Python standard library only, no token. `check <path>` hashes the file and reports its content type, size, the folder consent applies to (the git root, otherwise the file's folder) and the recorded decision, whether git ignores it and whether "always" may be offered; `consent <path> always\|never` records a decision for that folder and its subfolders ("always" is refused for the home folder and `/`); `upload <path> [--once]` streams a single-use ticket PUT (the ticket URL is read from stdin, never argv; it refuses a `never` folder, a missing consent without `--once`, a non-https or non-ticket URL, an unsupported type and any file git ignores); `record <path> <sha256>` notes which hash was last uploaded for the path. State is `~/.skardi/doc-cache.json` (`$SKARDI_HOME` overrides the directory), written atomically with mode `0600`. Absolute paths never leave the machine |
 | `evals/evals.json` | Seven execution cases (first read asks, an always folder, a never folder, a parsed hit read by section, a changed file sends `replaces`, a gitignored file never uploads, a home-folder file offers no "always") and three trigger cases (including that reading a README while coding does not trigger) |
+
+### `skills/memory/`
+
+| Path | Purpose |
+|---|---|
+| `references/cli.md` | The `skardi memory` commands for an agent that has the CLI and not the MCP tools: common options (`--agent`, `--session`, `--workspace`), exit codes, the `--json` envelope, what `status` resolves from the branch, and the commands only a person runs (`rm`, `history`, `redact`, `copy`, `share`) |
+| `evals/evals.json` | 25 cases (22 run in Claude Code against a dev cluster, results in `_runs`) across the topics the agent memory plan names: anchor choice, workspace choice, consent (including a run with the skill absent, where only the MCP server's instructions carry the rule), destructive premise, handoff in both directions between the CLI and MCP, save content (links, not copies), and four trigger cases. `_runs` records which were run, where, and how they scored |
 
 ### `skills/retrieval/`
 
