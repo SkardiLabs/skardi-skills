@@ -33,17 +33,18 @@ For an agent that has the `skardi` CLI and not the MCP tools, and for the comman
 ```bash
 skardi memory status --json                       # the current branch's task, its consent and memories
 skardi memory recall <anchor> --json              # your memory + teammates' shared ones, and consent
-skardi memory list [--anchor <a>] [--text <t>] --json
+skardi memory list [--anchor <a>] [--text <t>] --json   # --text: one word, matched case-insensitively in goal and status only
 skardi memory save <anchor> --file - [--if-version <n>] [--parent <anchor>] --agent <name> --session <id> --json
 skardi memory consent on <anchor>                 # "this task from now on"
 skardi memory consent on --workspace-wide         # "all my work in this workspace"
 skardi memory consent off <anchor>                # "stop saving memory" for one task
 skardi memory consent off --workspace-wide        # withdraw the workspace-wide yes
+# if a `consent off` fails, the stop is NOT recorded: retry, and give the user this exact command
 ```
 
 **`status`** finds the anchor without being told: an issue number in the branch name on a GitHub remote (`upstream` before `origin`), else the branch's pull request through `gh pr view` (the one issue it closes, else the pull request), else none (`main`, `master`, `develop`, `trunk`, detached `HEAD`). Its `result`:
 
-- `{"enabled": false, "reason": "not_a_cloud_context" | "memory_disabled" | "memory_unavailable"}`: memory does not apply here (exit `0`);
+- `{"enabled": false, "reason": "not_a_cloud_context" | "memory_disabled" | "memory_unavailable"}`: memory does not apply to **this context** (exit `0`). Try the other cloud contexts with `skardi memory status --context <name> --json` before concluding memory is unavailable;
 - `{"enabled": true, "ready": false, "reason": "memory_provisioning"}`: try again at the next milestone;
 - `{"enabled": true, "anchor": null, "reason": "no_anchor", "branch": …}`: no task from the branch; use rule 1 or 3 of the anchor order;
 - otherwise `anchor`, `anchor_from` (`flag`, `branch_issue`, `pull_request_issue`, `pull_request`), `branch`, `consent`, `hint`, up to five `memories` (goal, status, first `next` steps, clipped), `workspace_used` and `workspace_cap`.

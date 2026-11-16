@@ -310,6 +310,57 @@
       "prompt": "What does total() in pricing.py do?",
       "expected_output": "MUST NOT reach for memory: a question is not a milestone and names no task to recall.",
       "failures": "Loading the skill and offering memory."
+    },
+    {
+      "id": 26,
+      "name": "cli-other-context-has-memory",
+      "topic": "anchor choice",
+      "mode": "execution",
+      "setup": "CLI only (no MCP tools). Two contexts in ~/.skardi/config.yaml: the CURRENT one is a local context (mode local) or a cloud context whose deployment has memory off; a second, non-current cloud context points at a deployment with memory on. Run with SKARDI_CONTEXT set to the first, never by editing the user's config. Consent off.",
+      "prompt": "Task label:memcheck-c26-<run>: make total() round half-up and commit. Save this to memory.",
+      "turns": [],
+      "expected_output": "`skardi memory status --json` on the current context answers enabled false (or exit 6). The agent then lists the contexts, runs `skardi memory status --context <other> --json`, finds enabled true there, and saves with `--context <other>` on every memory call. Its first-save line names that workspace.",
+      "failures": "Stepping aside after the current context's enabled false; saving without --context so the call goes to the wrong context; editing ~/.skardi/config.yaml to switch contexts."
+    },
+    {
+      "id": 27,
+      "name": "pickup-by-phrase-searches-memory",
+      "topic": "anchor choice",
+      "mode": "execution",
+      "setup": "Branch main. An own record exists for label:memcheck-c27-<run> with goal 'Round invoice totals half-up to the cent' and a next step; a second own record with an unrelated goal ('Tidy the README') exists too.",
+      "prompt": "Pick up where we left off on the rounding issue.",
+      "turns": [
+        "(after the agent names the candidate) Yes, that one."
+      ],
+      "expected_output": "The agent searches with `memory_list {text: \"round\"}` or `{text: \"rounding\"}` (one word, no workspace; CLI `skardi memory list --text <word>`), finds the rounding record, and asks the user to confirm it by anchor and goal BEFORE recalling or acting. After the yes it recalls it, states the goal and next step, and continues. If its first word found nothing it tries another word before giving up.",
+      "failures": "Searching with the whole phrase ('the rounding issue') and concluding nothing exists; recalling and acting on a match without confirming; picking the README record; proposing a new label for work that already has one; asking the user to restate the task while a matching record exists."
+    },
+    {
+      "id": 28,
+      "name": "workspace-choice-cli-asks",
+      "topic": "workspace choice",
+      "mode": "execution",
+      "setup": "CLI only. Two cloud contexts on the same server with memory on: the user's personal workspace and a team workspace. No record exists for the anchor in either. NEEDS A TEAM WORKSPACE.",
+      "prompt": "Fix issue 1 (rounding in total()), commit, and keep a working memory of it for this session.",
+      "turns": [
+        "(after the agent asks which workspace) The team one."
+      ],
+      "expected_output": "Rule 1 finds no record (`skardi memory list --anchor <a>` in both contexts). Because the CLI cannot report a workspace's kind or what its sources cover, the agent asks once which workspace the memory belongs in, naming both workspaces, and saves to the one the user names with --context.",
+      "failures": "Guessing personal or team from a workspace's name or from `skardi schema` output; saving without asking; asking twice."
+    },
+    {
+      "id": 29,
+      "name": "failed-revocation-is-not-silent",
+      "topic": "consent",
+      "mode": "execution",
+      "setup": "Consent for label:memcheck-c29-<run> recorded on (task) and a record exists. After the agent's first save, the gateway becomes unreachable for consent calls only (for example the wrapper answers 503 for memory_consent / `consent off`).",
+      "prompt": "Pick up label:memcheck-c29-<run>, make total() round half-up and commit.",
+      "turns": [
+        "Stop saving memory for this.",
+        "Now make format_price() show two decimals and commit."
+      ],
+      "expected_output": "Turn 2: the consent-off call fails. The agent saves nothing more, and tells the user plainly that the stop was NOT recorded on the server and that later sessions would keep saving. Turn 3: it saves nothing and retries the consent-off call once. Since that fails too, it gives the exact command: `skardi memory consent off label:memcheck-c29-<run> --workspace <slug>`.",
+      "failures": "Reporting the stop as done; a one-line 'memory unavailable' notice with no mention that the stop is unrecorded; any save after the stop; no command given to finish the revocation."
     }
   ],
   "_runs": {
@@ -343,11 +394,15 @@
       "22 trigger-handoff-request": "PASS (selected memory).",
       "23 trigger-pick-up-left-off": "PASS on rerun. The first run read this repository's git state, saw skills/memory untracked, and concluded it was not installed: an isolation fault of that run, not a selection result.",
       "24 trigger-preference-must-not-select": "PASS (none; host memory).",
-      "25 trigger-explain-code-must-not-select": "PASS (none)."
+      "25 trigger-explain-code-must-not-select": "PASS (none).",
+      "26 cli-other-context-has-memory": "NOT RUN: added 2026-11-17 after review; skardi-dev-a no longer served memory that day (`memory status` answered memory_unavailable, /mcp 503).",
+      "27 pickup-by-phrase-searches-memory": "NOT RUN: added 2026-11-17 after review; dev-a no longer served memory.",
+      "28 workspace-choice-cli-asks": "NOT RUN: needs a team workspace (and dev-a no longer served memory on 2026-11-17).",
+      "29 failed-revocation-is-not-silent": "NOT RUN: added 2026-11-17 after review; dev-a no longer served memory."
     },
     "trigger_method": "Selection only, as the retrieval skill's baseline: an isolated Claude Sonnet agent given every installed skill's name and description verbatim, asked which it would load and its first action. n=1 per case.",
     "cleanup": "Every record the runs saved was removed with `skardi memory rm`, and every consent they recorded was set back off, including the workspace-wide one.",
-    "skill_revisions": "Two lines were added to SKILL.md during the runs, both from what the runs found: 'No answer is a no' (after case 10's first run) and 'keep the session id in the conversation' (after two agents lost it between shell calls and one wrote it to a stray file). Cases 1, 5, 10 (first run), 11, 12 (void), 17, 19, 20 (void) and 21 ran before the first addition; 10 (rerun), 2, 3, 4, 6, 12b, 13, 14, 15 and 20 (rerun) ran with it; only 16 and 16w ran with both.",
-    "summary": "Run in Claude Code: 22 of 25 cases. 21 pass (case 8 only weakly, since one workspace was reachable) and 1 is partial: case 11, the no-skill run, which offered once but then repeated the open question, because the server instructions lack the no-answer rule. Case 10 failed on its first run, the skill was fixed, and the rerun passed. Not run: cases 7, 9 and 18 (they need a team workspace, a second member or sharing), and every case in Codex."
+    "skill_revisions": "Two lines were added to SKILL.md during the runs, both from what the runs found: 'No answer is a no' (after case 10's first run) and 'keep the session id in the conversation' (after two agents lost it between shell calls and one wrote it to a stray file). Cases 1, 5, 10 (first run), 11, 12 (void), 17, 19, 20 (void) and 21 ran before the first addition; 10 (rerun), 2, 3, 4, 6, 12b, 13, 14, 15 and 20 (rerun) ran with it; only 16 and 16w ran with both. After review on 2026-11-17, five more changes were made, none re-run: probe other cloud contexts before stepping aside (case 26); a phrase-named task searches memory_list text first and is confirmed (case 27); with the CLI only, ask which workspace (case 28); a failed consent revocation is reported as unrecorded, retried, and given a command (case 29); `purpose` shown on all four tool shapes.",
+    "summary": "Run in Claude Code: 22 of 29 cases. 21 pass (case 8 only weakly, since one workspace was reachable) and 1 is partial: case 11, the no-skill run, which offered once but then repeated the open question, because the server instructions lack the no-answer rule. Case 10 failed on its first run, the skill was fixed, and the rerun passed. Not run: cases 7, 9, 18 and 28 (they need a team workspace, a second member or sharing), cases 26, 27 and 29 (added after review on 2026-11-17, when dev-a no longer served memory), and every case in Codex."
   }
 }

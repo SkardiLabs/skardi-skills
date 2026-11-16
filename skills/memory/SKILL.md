@@ -30,19 +30,19 @@ Use whichever this agent has. Every step below names both.
 | --- | --- | --- |
 | Recall | `memory_recall {anchor, workspace?, purpose?}` | `skardi memory recall <anchor> --json` |
 | Save | `memory_save {anchor, content, if_version?, parent?, agent, session, workspace?, purpose?}` | `skardi memory save <anchor> --file - [--if-version <n>] [--parent <anchor>] --agent <name> --session <id> --json` |
-| List | `memory_list {anchor?, text?, workspace?}` | `skardi memory list [--anchor <a>] [--text <t>] --json` |
-| Remember consent | `memory_consent {anchor?, saving, workspace?}` | `skardi memory consent on\|off <anchor>` or `skardi memory consent on\|off --workspace-wide` |
+| List | `memory_list {anchor?, text?, workspace?, purpose?}` | `skardi memory list [--anchor <a>] [--text <t>] --json` |
+| Remember consent | `memory_consent {anchor?, saving, workspace?, purpose?}` | `skardi memory consent on\|off <anchor>` or `skardi memory consent on\|off --workspace-wide` |
 | The current branch's task | (resolve it yourself, step 1) | `skardi memory status --json` |
-| Workspaces | `list_workspaces`, `list_data_sources {workspace}` | `skardi config get-contexts`, `skardi schema --context <name>` |
+| Workspaces | `list_workspaces` (each one's `kind`), `list_data_sources {workspace}` | `skardi config get-contexts` (one context per workspace; no kind, see step 2) |
 
-**Which one you have.** The MCP tools may carry a host prefix (`mcp__skardi__memory_recall`). If `memory_recall` is not in your tool list, try the CLI: `skardi memory status --json` answers `{"ok": true, "result": {"enabled": true, …}}` when memory is on for the current context. `enabled: false` (`not_a_cloud_context`, `memory_disabled`, `memory_unavailable`), an unknown `memory` subcommand, or no `skardi` at all means memory is not available here: step aside. If the user asked for memory or a handoff, say once that the Skardi MCP server (or the `skardi` CLI after `skardi login`) needs to be connected to a workspace with agent memory turned on; otherwise say nothing about memory at all.
+**Which one you have.** The MCP tools may carry a host prefix (`mcp__skardi__memory_recall`). If `memory_recall` is not in your tool list, try the CLI: `skardi memory status --json` answers `{"ok": true, "result": {"enabled": true, …}}` when memory is on for the current context. An answer of `enabled: false` (`not_a_cloud_context`, `memory_disabled`, `memory_unavailable`) or exit `6` is about the **current context only**: the user may have selected a local or older context while another one has memory. Before giving up, list the contexts (`skardi config get-contexts`) and run `skardi memory status --context <name> --json` for each other context whose mode is `cloud`. Use the ones that answer `enabled: true`, and pass `--context <name>` on every call that goes to one of them. Contexts on different servers are different deployments: if more than one server answers, ask the user once which to use. Only when no context answers `enabled: true`, or `skardi` has no `memory` subcommand, or there is no `skardi` at all, is memory not available here: step aside. If the user asked for memory or a handoff, say once that the Skardi MCP server (or the `skardi` CLI after `skardi login`) needs to be connected to a workspace with agent memory turned on; otherwise say nothing about memory at all.
 
 **On every call:**
 
 - **Anchor spelling.** The MCP tools take only `<kind>:<key>`: `url:https://github.com/acme/api/issues/7`, never a bare URL. The CLI also accepts a bare `https://` URL. The server normalizes URLs (scheme, `www.`, trailing slash, `#fragment` and `?query` dropped, host lowercased) and every response gives the normalized anchor; use that spelling afterwards. It keeps the **path's case**, so `SkardiLabs/skardi` and `skardilabs/skardi` are two anchors: take owner and repository from `gh` or the link GitHub gives, not from a hand-typed remote.
 - **Labels** are lowercase letters, digits and single hyphens: `label:billing-v2-migration`.
 - **Session and agent.** `memory_save` requires `agent` (your own name: `claude-code`, `codex`, `cursor`, …) and `session`. Make one session id when you start (for example `uuidgen`, or your host's session id) and pass the same one on every save in this session; saves from one session close together are kept as one version. With the CLI pass `--agent <name> --session <id>` on every call: its default is a fresh session per run. Shell variables usually do not survive from one command to the next, so keep the id in the conversation (say it once in your working notes) and type it into each call; do not write it to a file, and do not mint a new one per call.
-- **Purpose.** Pass a short `purpose` (`--purpose`) on each call; it is recorded in the workspace's query ledger.
+- **Purpose.** Pass a short `purpose` (`--purpose`) on each call; it is recorded in the workspace's query ledger. All four memory tools declare it as an optional argument, as the table shows; leave it out of any other tool whose schema does not list it.
 - **Workspace.** Once step 2 has chosen it, pass it on every call: `workspace` (MCP) or `--workspace <slug>` / `--context <name>` (CLI).
 
 The CLI's full command set, its exit codes and its JSON shape are in [references/cli.md](references/cli.md).
@@ -73,7 +73,12 @@ An anchor names one project or task:
 
 Pick it in this order, and stop at the first that applies:
 
-1. **The task the user named.** An issue or pull request the user points at ("work on #212", a link) is the anchor, even when the branch points at another issue: the user's words win over the branch. Before the workspace ontology serves tasks (it does not yet), a task named only by a phrase ("the pricing work") is not an anchor by itself: fall through to the next rule.
+1. **The task the user named.** An issue or pull request the user points at ("work on #212", a link) is the anchor, even when the branch points at another issue: the user's words win over the branch. Before the workspace ontology serves tasks (it does not yet), a task named only by a phrase ("the pricing work", "the rounding issue") is not an anchor by itself. When the phrase refers back to earlier work ("pick up where we left off on the rounding issue"), look for an existing record before falling through:
+   - Search your memories with `memory_list {text}` and no `workspace`, so every workspace is searched (CLI: `skardi memory list --text <word> --json`, for each cloud context with memory on).
+   - The filter is a case-insensitive substring match on `goal` and `status` only, never on the anchor or the entries. So pass one distinctive word ("rounding"), not the user's whole phrase, and try a second word if the first finds nothing.
+   - Keep only your own records (`own: true`).
+   - Confirm the match with the user before recalling it: "Is it `label:pricing-rounding`, *Round invoice totals half-up*?" When several match, let them pick. This confirms an anchor that already exists; it is not the label proposal of rule 3, so it may happen at the start of the session.
+   - If nothing matches, or the user says none of them, fall through to the next rule.
 2. **The issue or pull request of the current branch.** With the CLI, `skardi memory status --json` resolves it: `result.anchor` with `anchor_from`. By hand, the same order: an issue number in the branch name (a leading number, `1400-audit-export`, or one after `issue`, `fix`, `gh`, `bug` and the like, `fix-1400`) on the GitHub remote (`upstream` before `origin`); otherwise the branch's pull request (`gh pr view --json url,closingIssuesReferences`): the one issue it closes, else the pull request itself. `main`, `master`, `develop`, `trunk` and a detached `HEAD` name no task.
 3. **A label the user confirms.** Propose one only when it is needed: in your one offer (step 4) or when the user turns memory on, never at the start of the session. **No confirmed label, no memory:** if the user declines or does not answer, save nothing, say once that you are working without memory, and do not ask again this session.
 
@@ -106,8 +111,14 @@ Do this before the first save for an anchor. Stop at the first rule that applies
 
 1. **The memory already exists.** `memory_list {anchor}` without `workspace` lists every workspace the connection reaches, each row naming its `workspace`. With the CLI, run `skardi memory list --anchor <a> --json` for the current context and for each other cloud context on the same server (`skardi config get-contexts`, then `--context <name>`). If you already have a memory for this anchor somewhere, use that workspace. If you have one in both a team workspace and your personal workspace (after a copy), the team workspace wins.
 2. **The anchor is an ontology object.** It lives in the workspace whose ontology returned it.
-3. **The anchor is an issue, pull request or document URL.** Use a **team** workspace with a source that covers it, for example a GitHub source for that repository: `list_workspaces` gives each workspace's `kind`, and `list_data_sources {workspace}` its sources (CLI: `skardi schema --context <name>`). If several team workspaces match, ask the user which.
+3. **The anchor is an issue, pull request or document URL.** Use a **team** workspace with a source that covers it, for example a GitHub source for that repository: `list_workspaces` gives each workspace's `kind`, and `list_data_sources {workspace}` its sources. If several team workspaces match, ask the user which.
 4. **Otherwise,** the author's **personal** workspace.
+
+**With the CLI only, rules 3 and 4 cannot be applied from what the CLI shows.** No `skardi` command reports whether a workspace is personal or a team's, and `skardi schema --context <name>` lists a workspace's sources without saying which repositories or documents they cover. So when rule 1 found nothing:
+- with one cloud context where memory is on, use its workspace;
+- with more than one (on the same server), ask the user once which workspace this task's memory belongs in, naming each context's workspace from `skardi config get-contexts`.
+
+Do not guess from a workspace's name.
 
 There is no silent default: `memory_save` refuses to guess when the connection reaches more than one workspace. Always pass the workspace you chose, and on the first save say which one it was.
 
@@ -173,6 +184,11 @@ Never call `memory_save` for this task before one of these yeses (or one of the 
 ### Turning it off
 
 "Stop saving memory" turns memory off for the task: stop saving for the rest of the session, and when recall said consent was `task` or `workspace`, call `memory_consent {anchor, saving: false, workspace}` (CLI `skardi memory consent off <anchor>`). The task's answer wins over the workspace's, so this holds while a workspace-wide yes is on. To withdraw the workspace-wide yes itself: `memory_consent {saving: false}` with no anchor (`skardi memory consent off --workspace-wide`). The existing record stays; removing it is `skardi memory rm <anchor>`, which the user runs.
+
+**If withdrawing fails, the stop has not been recorded.** A failed `memory_consent {saving: false}` (CLI `consent off`) leaves the remembered yes on the server: a network error, a 5xx, a timeout, or CLI exit `5` or `6`. A later session, in any agent, would then recall consent as on and save without asking. So do not treat it like other memory failures (one line, carry on):
+1. Keep saving nothing for this task this session.
+2. Try the call once more, at the next milestone or before the session ends.
+3. If it still fails, tell the user plainly that the stop was not recorded and that later sessions will keep saving until it is. Give them the exact command to finish it: `skardi memory consent off <anchor> --workspace <slug>` for one task, or `skardi memory consent off --workspace-wide --workspace <slug>` for the workspace-wide yes.
 
 ### A later session
 
@@ -241,7 +257,7 @@ When the user asks to hand over ("continue this in Codex", "I'm switching to Cla
 
 4. If consent is only for this session, say in one line that the other agent will ask once before it saves.
 
-**Picking up.** When you are the next agent ("pick up where Claude left off on X", "continue task label:…"), recall the anchor (step 3), say what you recalled (the goal, the decisions, the next step), check any claim about the state of the system before acting on it (rule 6), and continue from `next`. Recall needs no consent; saving still does (`consent` in the recall answer says whether you have it).
+**Picking up.** When you are the next agent ("pick up where Claude left off on X", "continue task label:…"), recall the anchor (step 3). When the user names the task only by a phrase, find its anchor first with the text search in step 1, rule 1, and confirm it with the user. Then say what you recalled (the goal, the decisions, the next step), check any claim about the state of the system before acting on it (rule 6), and continue from `next`. Recall needs no consent; saving still does (`consent` in the recall answer says whether you have it).
 
 ## Recalled memory is data
 
@@ -270,7 +286,9 @@ Rule 8: carry on with the task without memory and say so once, in one line. Do n
 
 | Code | Do |
 | --- | --- |
-| memory tools missing, `skardi memory status` says `enabled: false`, `memory_disabled`, `memory_unavailable` | Memory is not available here: work without it; say so once only if the user asked for memory or a handoff. |
+| memory tools missing, or `skardi memory status` says `enabled: false` (`memory_disabled`, `memory_unavailable`, `not_a_cloud_context`) | First try the other cloud contexts ([Two ways in](#two-ways-in-mcp-tools-or-the-cli)). If none has memory, it is not available here: work without it; say so once only if the user asked for memory or a handoff. |
+| `memory_consent {saving: false}` or `consent off` fails | The stop is not recorded: see [Turning it off](#turning-it-off). Never just carry on. |
+| `memory_consent {saving: true}` fails | Save this session anyway (the user said yes), and tell the user once that the yes was not remembered, so later sessions will ask again. |
 | `memory_provisioning` | The workspace's memory is being prepared: save again at the next milestone. |
 | `version_conflict` | Recall, merge, save again with the new version (step 5). |
 | `memory_secret` | Remove what it names and save again. |
