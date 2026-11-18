@@ -42,7 +42,8 @@ skardi memory consent on <anchor>                 # "this task from now on"
 skardi memory consent on --workspace-wide         # "all my work in this workspace"
 skardi memory consent off <anchor>                # "stop saving memory" for one task
 skardi memory consent off --workspace-wide        # withdraw the workspace-wide yes
-# if a `consent off` fails, the stop is NOT recorded: retry, and give the user this exact command
+# if a `consent off` fails, the stop is NOT recorded: retry it once (at once or at the next milestone);
+# if that fails too, tell the user and give them this exact command
 ```
 
 **`status`** finds the anchor without being told: an issue number in the branch name on a GitHub remote (`upstream` before `origin`), else the branch's pull request through `gh pr view` (the one issue it closes, else the pull request), else none (`main`, `master`, `develop`, `trunk`, detached `HEAD`). Its `result`:

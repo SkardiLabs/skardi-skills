@@ -192,8 +192,8 @@ Never call `memory_save` for this task before one of these yeses (or one of the 
 
 **If withdrawing fails, the stop has not been recorded.** A failed `memory_consent {saving: false}` (CLI `consent off`) leaves the remembered yes on the server: a network error, a 5xx, a timeout, or CLI exit `5` or `6`. A later session, in any agent, would then recall consent as on and save without asking. So do not treat it like other memory failures (one line, carry on):
 1. Keep saving nothing for this task this session, and do not tell the user the stop is done.
-2. Try the call once more, at the next milestone or before the session ends, whichever comes first.
-3. If it still fails, tell the user plainly that the stop was not recorded and that later sessions will keep saving until it is. Give them the exact command to finish it: `skardi memory consent off <anchor> --workspace <slug>` for one task, or `skardi memory consent off --workspace-wide --workspace <slug>` for the workspace-wide yes.
+2. Try the call exactly once more: at once, or at the next milestone (or before the session ends, if that comes first). Do not retry again after that.
+3. If that retry fails too, tell the user plainly that the stop was not recorded and that later sessions will keep saving until it is. Give them the exact command to finish it: `skardi memory consent off <anchor> --workspace <slug>` for one task, or `skardi memory consent off --workspace-wide --workspace <slug>` for the workspace-wide yes.
 
 ### A later session
 
