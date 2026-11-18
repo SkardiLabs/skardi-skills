@@ -267,7 +267,7 @@ Executable scripts, per-backend YAML templates, and reference docs the skill inv
 | Path | Purpose |
 |---|---|
 | `references/cli.md` | The `skardi memory` commands for an agent that has the CLI and not the MCP tools: common options (`--session`, `--workspace`, `--purpose`; `--agent` on `save` only), exit codes, the `--json` envelope, what `status` resolves from the branch, and the commands only a person runs (`rm`, `history`, `redact`, `copy`, `share`) |
-| `evals/evals.json` | 29 cases (22 run in Claude Code against a dev cluster, results in `_runs`) across the topics the agent memory plan names: anchor choice, workspace choice, consent (including a run with the skill absent, where only the MCP server's instructions carry the rule), destructive premise, handoff in both directions between the CLI and MCP, save content (links, not copies), and four trigger cases. `_runs` records which were run, where, and how they scored |
+| `evals/evals.json` | 29 cases (25 run in Claude Code against a dev cluster, results in `_runs`) across the topics the agent memory plan names: anchor choice, workspace choice, consent (including a run with the skill absent, where only the MCP server's instructions carry the rule), destructive premise, handoff in both directions between the CLI and MCP, save content (links, not copies), and four trigger cases. `_runs` records which were run, where, and how they scored |
 
 ### `skills/retrieval/`
 
