@@ -6,15 +6,18 @@ For an agent that has the `skardi` CLI and not the MCP tools, and for the comman
 
 ## Common options
 
+Every `skardi memory` command takes these:
+
 | Option | Meaning |
 | --- | --- |
 | `--json` | Print one object: `{"ok": true, "result": …, "next": …}` or `{"ok": false, "error": {"code", "message", …}, "next": …}`. Always pass it when an agent reads the output. |
 | `--context <name>` | A context from `~/.skardi/config.yaml` (`skardi config get-contexts` lists them, each with its workspace). |
 | `--workspace <slug>` | Another workspace the context's token reaches. |
 | `--server <url>` | Override the context's gateway, for example a port-forward. |
-| `--agent <name>` | The agent saving, shown to the next reader. Default `$SKARDI_AGENT`, else `skardi-cli`: pass your own name. |
-| `--session <id>` | Groups calls in the query ledger and labels saves; versions saved in one session within ten minutes merge. Default `$SKARDI_SESSION_ID`, else **a fresh one per run**: pass the same id on every call of a session. |
+| `--session <id>` | Groups calls in the query ledger and labels saves. A save replaces the newest kept version when that version came from the same session less than ten minutes earlier. Default `$SKARDI_SESSION_ID`, else **a fresh one per run**: pass the same id on every call of a session, typed as it is (a shell variable from an earlier command is usually gone). |
 | `--purpose <text>` | Why the call is made, recorded in the query ledger. |
+
+`--agent <name>` is **not** one of them: only `save` (and `copy`) take it, and any other subcommand refuses it with exit `2`. It is the agent saving, shown to the next reader; default `$SKARDI_AGENT`, else `skardi-cli`. Pass your own name on `save`.
 
 `next` in the JSON is the command to run after this one: `recall`'s `next` is the save that continues your record (`skardi memory save <anchor> --if-version <v> --file -`), and a `version_conflict`'s `next` is the recall.
 
@@ -23,9 +26,9 @@ For an agent that has the `skardi` CLI and not the MCP tools, and for the comman
 | Exit | Meaning |
 | --- | --- |
 | `0` | ok |
-| `2` | usage error (a malformed anchor is one: anything without `url:`, `label:`, `ontology:` or `https://`) |
-| `3` | refused by the server (4xx): `version_conflict`, `memory_secret`, `memory_too_large`, `memory_limit`, `invalid_anchor`, … |
-| `5` | unreachable, 5xx, or a gateway without memory (`memory_unavailable`), or sharing not served (`memory_share_unavailable`) |
+| `2` | usage error: a flag the subcommand does not take (`--agent` on anything but `save` or `copy`), a malformed anchor (anything without `url:`, `label:`, `ontology:` or `https://`), or a record that is not a JSON object (`invalid_content`). Fix the command; it says nothing about whether memory is available. |
+| `3` | refused by the server (4xx): `version_conflict`, `memory_secret`, `memory_too_large`, `memory_limit`, `memory_not_found`, `memory_disabled`, `invalid_anchor`, `invalid_content`, … |
+| `5` | unreachable, 5xx (`memory_provisioning`, `memory_failed`), a gateway without memory (`memory_unavailable`), or sharing not served (`memory_share_unavailable`) |
 | `6` | no usable query token (not a cloud context, no token, expired, revoked): `next` is `skardi login` |
 
 ## The agent's commands
@@ -54,7 +57,7 @@ skardi memory consent off --workspace-wide        # withdraw the workspace-wide 
 **`save`** reads the record itself (goal, status, done, decisions, findings, next, notes) from the file or stdin, not a request envelope:
 
 ```bash
-skardi memory save label:pricing-rounding --workspace my-workspace --agent codex --session "$SESSION" \
+skardi memory save label:pricing-rounding --workspace my-workspace --agent codex --session 6f1c2b7e-0d4a-4c1e-9b3f-5a8e2d7c41b0 \
   --if-version 2 --purpose "milestone: fix committed" --json --file - <<'EOF'
 {
   "goal": "Round invoice totals half-up to the cent",
@@ -79,4 +82,4 @@ Agents do not delete, redact or bulk-move memory. When one of these is the answe
 | `skardi memory recall <anchor> --version <n>` | One kept version. |
 | `skardi memory redact <anchor> --version <n>` | Empty one kept version for good, for something that got past the secret scan. Redacting the current version empties the record; save a clean version first. |
 | `skardi memory copy <anchor> --to <workspace\|context> [--as <anchor>] [--replace]` | Copy your memory to a team workspace, or under another anchor (`--as`), keeping each entry's `at`, `source` and `cites`. Private on arrival; the original stays. Refuses an existing target without `--replace`. |
-| `skardi memory share <anchor> [--confirm \| --off]` | Phase 2, not served yet (`memory_share_unavailable`, exit `5`). Without `--confirm` it only shows what sharing would expose. |
+| `skardi memory share <anchor> [--confirm \| --off]` | Not served yet (`memory_share_unavailable`, exit `5`). Without `--confirm` it only shows what sharing would expose. |

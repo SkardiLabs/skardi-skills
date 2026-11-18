@@ -41,7 +41,12 @@ Use whichever this agent has. Every step below names both.
 
 - **Anchor spelling.** The MCP tools take only `<kind>:<key>`: `url:https://github.com/acme/api/issues/7`, never a bare URL. The CLI also accepts a bare `https://` URL. The server normalizes URLs (scheme, `www.`, trailing slash, `#fragment` and `?query` dropped, host lowercased) and every response gives the normalized anchor; use that spelling afterwards. It keeps the **path's case**, so `SkardiLabs/skardi` and `skardilabs/skardi` are two anchors: take owner and repository from `gh` or the link GitHub gives, not from a hand-typed remote.
 - **Labels** are lowercase letters, digits and single hyphens: `label:billing-v2-migration`.
-- **Session and agent.** `memory_save` requires `agent` (your own name: `claude-code`, `codex`, `cursor`, …) and `session`. Make one session id when you start (for example `uuidgen`, or your host's session id) and pass the same one on every save in this session; saves from one session close together are kept as one version. With the CLI pass `--agent <name> --session <id>` on every call: its default is a fresh session per run. Shell variables usually do not survive from one command to the next, so keep the id in the conversation (say it once in your working notes) and type it into each call; do not write it to a file, and do not mint a new one per call.
+- **Session id.** Make one session id when you start (for example `uuidgen`, or your host's session id) and use the same one on every call of this session; do not mint a new one per call. Shell variables usually do not survive from one command to the next, so keep the id in the conversation (say it once in your working notes) and type it into each call as it is; do not write it to a file. A save replaces the newest kept version when that version came from the same session less than ten minutes earlier; otherwise it is a new version.
+  - MCP: `memory_save` requires `session` (and `agent`, below).
+  - CLI: `--session <id>` is accepted by every `skardi memory` command. Pass it on every call: without it each run is a fresh session.
+- **Agent name.** Your own name: `claude-code`, `codex`, `cursor`, … It is shown to the next reader.
+  - MCP: `memory_save` requires `agent`.
+  - CLI: `--agent <name>` exists on `save` only (and `copy`, which the user runs). Any other subcommand refuses it as a usage error (exit `2`). Without it a save is labelled `$SKARDI_AGENT`, else `skardi-cli`.
 - **Purpose.** Pass a short `purpose` (`--purpose`) on each call; it is recorded in the workspace's query ledger. All four memory tools declare it as an optional argument, as the table shows; leave it out of any other tool whose schema does not list it.
 - **Workspace.** Once step 2 has chosen it, pass it on every call: `workspace` (MCP) or `--workspace <slug>` / `--context <name>` (CLI).
 
@@ -186,8 +191,8 @@ Never call `memory_save` for this task before one of these yeses (or one of the 
 "Stop saving memory" turns memory off for the task: stop saving for the rest of the session, and when recall said consent was `task` or `workspace`, call `memory_consent {anchor, saving: false, workspace}` (CLI `skardi memory consent off <anchor>`). The task's answer wins over the workspace's, so this holds while a workspace-wide yes is on. To withdraw the workspace-wide yes itself: `memory_consent {saving: false}` with no anchor (`skardi memory consent off --workspace-wide`). The existing record stays; removing it is `skardi memory rm <anchor>`, which the user runs.
 
 **If withdrawing fails, the stop has not been recorded.** A failed `memory_consent {saving: false}` (CLI `consent off`) leaves the remembered yes on the server: a network error, a 5xx, a timeout, or CLI exit `5` or `6`. A later session, in any agent, would then recall consent as on and save without asking. So do not treat it like other memory failures (one line, carry on):
-1. Keep saving nothing for this task this session.
-2. Try the call once more, at the next milestone or before the session ends.
+1. Keep saving nothing for this task this session, and do not tell the user the stop is done.
+2. Try the call once more, at the next milestone or before the session ends, whichever comes first.
 3. If it still fails, tell the user plainly that the stop was not recorded and that later sessions will keep saving until it is. Give them the exact command to finish it: `skardi memory consent off <anchor> --workspace <slug>` for one task, or `skardi memory consent off --workspace-wide --workspace <slug>` for the workspace-wide yes.
 
 ### A later session
@@ -204,7 +209,7 @@ While memory is on for a task, save without being asked:
 - at the latest every 10 turns of work, so a session that ends without warning loses little (a turn is one reply of yours; it counts as work when you edited a file or ran a command in it);
 - before the session ends, when you can tell.
 
-Each save rewrites the one record, and saves within one session merge into one kept version, so saving often costs little.
+Each save rewrites the one record. A save from the session that wrote the newest kept version, less than ten minutes after it, replaces that version instead of adding one, so saving often costs little. When two sessions save in turn, each save is its own version.
 
 ```text
 memory_save {anchor, workspace, content, if_version, agent, session, purpose}
@@ -220,10 +225,12 @@ With the CLI the record is JSON on stdin:
 
 ```bash
 skardi memory save url:github.com/acme/api/issues/7 --workspace acme-eng \
-  --if-version 3 --agent claude-code --session "$SESSION" --purpose "milestone: PR opened" --json --file - <<'EOF'
+  --if-version 3 --agent claude-code --session 6f1c2b7e-0d4a-4c1e-9b3f-5a8e2d7c41b0 --purpose "milestone: PR opened" --json --file - <<'EOF'
 {"goal": "…", "status": "…", "done": [...], "decisions": [...], "findings": [...], "next": [...], "notes": ""}
 EOF
 ```
+
+The session id is typed as it is, the same on every call of the session (a shell variable set in an earlier command is usually gone by this one).
 
 ### What to write
 
@@ -272,7 +279,7 @@ A memory says what an agent believed when it wrote it. It may have gone stale (t
 
 ## Sharing (not served yet)
 
-Sharing a memory with the other members of a team workspace is phase 2 of agent memory. Today `memory_share` is not listed and `skardi memory share` fails with `memory_share_unavailable`: say that the memory stays private, and stop.
+Sharing a memory with the other members of a team workspace is coming in a later release. Today `memory_share` is not listed and `skardi memory share` fails with `memory_share_unavailable`: say that the memory stays private, and stop.
 
 When it is served:
 
@@ -289,15 +296,20 @@ Rule 8: carry on with the task without memory and say so once, in one line. Do n
 | memory tools missing, or `skardi memory status` says `enabled: false` (`memory_disabled`, `memory_unavailable`, `not_a_cloud_context`) | First try the other cloud contexts ([Two ways in](#two-ways-in-mcp-tools-or-the-cli)). If none has memory, it is not available here: work without it; say so once only if the user asked for memory or a handoff. |
 | `memory_consent {saving: false}` or `consent off` fails | The stop is not recorded: see [Turning it off](#turning-it-off). Never just carry on. |
 | `memory_consent {saving: true}` fails | Save this session anyway (the user said yes), and tell the user once that the yes was not remembered, so later sessions will ask again. |
+| `memory_disabled` from recall, save, list or consent (CLI exit `3`) | Memory is turned off for that workspace: do not call it there again this session, and work without memory. Say so once only if the user asked for memory or a handoff. |
 | `memory_provisioning` | The workspace's memory is being prepared: save again at the next milestone. |
 | `version_conflict` | Recall, merge, save again with the new version (step 5). |
+| `memory_not_found` on a save with `if_version` | The record you recalled is gone since: the user deleted it (`skardi memory rm`). Do not recreate it on your own. Tell the user once, and save again without `if_version` (a new record) only if they say to. |
 | `memory_secret` | Remove what it names and save again. |
 | `memory_too_large` | Summarize and save again. |
-| `memory_limit` | The workspace is at its cap. Tell the user once: they can list memories and remove old ones with `skardi memory rm`, or ask an admin to raise the cap. |
+| `invalid_content` | The record or the call is malformed: not a JSON object, an empty `goal` or `status`, an entry without `text`, a field the record does not have, or a query string the route does not take. Fix what the message names and call again, once. |
+| `memory_limit` | The workspace is at its cap of memories. Tell the user once: they can list memories (`skardi memory list`) and remove old ones with `skardi memory rm`. The cap is not a workspace setting; raising it is a request to Skardi support. |
 | `invalid_anchor`, an MCP `-32602` "is not an anchor" | Fix the spelling (`url:` or `label:` prefix, label characters) and call again. |
 | `workspace_required` | Pass the workspace chosen in step 2. |
+| CLI exit `2` (usage error) | The command is wrong, not memory: a flag that subcommand does not take (`--agent` on anything but `save`), a malformed anchor, or a record that is not JSON. Fix the command ([references/cli.md](references/cli.md)) and run it again. Never read exit `2` as memory being unavailable. |
 | `credential_required`, `token_unknown_or_revoked`, CLI exit `6` | The connection needs signing in again (`skardi login`, or reconnect the MCP server): say so once. |
-| network errors, 5xx, CLI exit `5` | Work on without memory; try again at the next milestone. |
+| `memory_failed`, network errors, other 5xx, CLI exit `5` | Work on without memory; try again at the next milestone. |
+| `memory_share_unavailable` | Sharing is not served yet ([Sharing](#sharing-not-served-yet)): the memory stays private. |
 
 ## Reporting
 
