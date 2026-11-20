@@ -28,8 +28,8 @@ Every `skardi memory` command takes these:
 | `0` | ok |
 | `2` | usage error: a flag the subcommand does not take (`--agent` on anything but `save` or `copy`), a malformed anchor (anything without `url:`, `label:`, `ontology:` or `https://`), or a record that is not a JSON object (`invalid_content`). Fix the command; it says nothing about whether memory is available. |
 | `3` | refused by the server (4xx): `version_conflict`, `memory_secret`, `memory_too_large`, `memory_limit`, `memory_not_found`, `memory_disabled`, `invalid_anchor`, `invalid_content`, … |
-| `5` | unreachable, 5xx (`memory_provisioning`, `memory_failed`), a gateway without memory (`memory_unavailable`), or sharing not served (`memory_share_unavailable`) |
-| `6` | no usable query token (not a cloud context, no token, expired, revoked): `next` is `skardi login` |
+| `5` | unreachable, 5xx (`memory_provisioning`, `memory_failed`), a gateway without memory (`memory_unavailable`), or one that does not serve sharing (`memory_share_unavailable`) |
+| `6` | no usable query token. `not_a_cloud_context`: the command ran against a context that is not a cloud one; pass `--context <name>` of the one that has memory. No token, expired or revoked: `next` is `skardi login`. |
 
 ## The agent's commands
 
@@ -43,7 +43,7 @@ skardi memory consent on --workspace-wide         # "all my work in this workspa
 skardi memory consent off <anchor>                # "stop saving memory" for one task
 skardi memory consent off --workspace-wide        # withdraw the workspace-wide yes
 # if a `consent off` fails, the stop is NOT recorded: retry it once (at once or at the next milestone);
-# if that fails too, tell the user and give them this exact command
+# if that fails too, tell the user and give them this exact command, with the --context you used, if any
 ```
 
 **`status`** finds the anchor without being told: an issue number in the branch name on a GitHub remote (`upstream` before `origin`), else the branch's pull request through `gh pr view` (the one issue it closes, else the pull request), else none (`main`, `master`, `develop`, `trunk`, detached `HEAD`). Its `result`:
@@ -83,4 +83,4 @@ Agents do not delete, redact or bulk-move memory. When one of these is the answe
 | `skardi memory recall <anchor> --version <n>` | One kept version. |
 | `skardi memory redact <anchor> --version <n>` | Empty one kept version for good, for something that got past the secret scan. Redacting the current version empties the record; save a clean version first. |
 | `skardi memory copy <anchor> --to <workspace\|context> [--as <anchor>] [--replace]` | Copy your memory to a team workspace, or under another anchor (`--as`), keeping each entry's `at`, `source` and `cites`. Private on arrival; the original stays. Refuses an existing target without `--replace`. |
-| `skardi memory share <anchor> [--confirm \| --off]` | Not served yet (`memory_share_unavailable`, exit `5`). Without `--confirm` it only shows what sharing would expose. |
+| `skardi memory share <anchor> [--confirm \| --off]` | Share your memory with every member of a team workspace, or unshare it (`--off`). Without `--confirm` it only shows the warning and changes nothing. A personal workspace refuses with `share_personal_workspace` (exit `3`); a gateway that does not serve sharing answers `memory_share_unavailable` (exit `5`). |
