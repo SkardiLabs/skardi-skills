@@ -6,15 +6,15 @@
   },
   "metadata": {
     "description": "Agent Skills for working with Skardi — SQL pipelines as HTTP endpoints. Teaches AI coding agents Skardi's patterns for building searchable context, hybrid search, graph queries, connectors, and reusing the queries that already worked instead of rewriting them.",
-    "version": "0.5.2"
+    "version": "0.6.0"
   },
   "plugins": [
     {
       "name": "skardi",
       "source": "./",
-      "description": "Build searchable context over documents or your own datastore, answer questions from live data, query a property graph through SQL, read cached documents by section, and reuse the queries that already worked instead of rewriting them. Bundles the auto-context, retrieval, graph-source, graph-rag, document-cache, and skardi-query-log skills.",
+      "description": "Build searchable context over documents or your own datastore, answer questions from live data, query a property graph through SQL, read cached documents by section, keep a working memory of a task that another agent can pick up, and reuse the queries that already worked instead of rewriting them. Bundles the auto-context, retrieval, graph-source, graph-rag, document-cache, memory, and skardi-query-log skills.",
       "category": "rag",
-      "keywords": ["skardi", "context", "rag", "retrieval", "graph", "hybrid-search", "skardi-server", "query-audit", "pipelines"]
+      "keywords": ["skardi", "context", "rag", "retrieval", "graph", "hybrid-search", "skardi-server", "query-audit", "pipelines", "agent-memory"]
     }
   ]
 }
