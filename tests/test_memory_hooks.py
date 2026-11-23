@@ -529,6 +529,7 @@ def test_ten_turns_that_edit_files_block_once_with_the_offer(skardi, home):
     out = work_turn(1)
     assert out["decision"] == "block"
     assert "10 turns of work" in out["reason"] and "one offer is due now" in out["reason"]
+    assert "milestone" not in out["reason"]      # ten turns of work is not a milestone to report
     assert state(home)["anchors"][A]["offer_made"] is True
     assert work_turn(30) is None                 # offered: never again in this session
 
@@ -673,6 +674,20 @@ def test_git_switch_to_another_issues_branch_puts_the_new_anchor_in_context(skar
     assert "branch changed" in skardi.calls()[-1]
 
 
+def test_a_switch_right_after_a_save_owes_the_old_task_nothing(skardi, home, repo):
+    skardi.status(consent="task", memories=[OWN])
+    hook("SessionStart", source="startup", cwd=str(repo))
+    bash("git commit -m done", cwd=str(repo))
+    save(A, version=5)
+    repo.git("switch", "-q", "-c", "fix-9-export")
+    skardi.status(anchor=B, branch="fix-9-export")
+    text = context(bash("git switch -c fix-9-export", cwd=str(repo))[1])
+    assert "whose task is `%s`" % B in text and "unsaved work" not in text
+    # The switch itself is the new task's first step, not work left unsaved on the old one.
+    s = state(home)
+    assert s["anchors"][A]["turn_work"] is False and s["anchors"][B]["turn_work"] is True
+
+
 def test_a_checkout_that_keeps_the_branch_asks_nobody(skardi, home, repo):
     skardi.status()
     hook("SessionStart", source="startup", cwd=str(repo))
@@ -713,11 +728,13 @@ def test_unreachable_mid_session_is_said_once(skardi, home, repo):
     repo.git("switch", "-q", "-c", "fix-11-more")
     assert bash("git switch fix-11-more", cwd=str(repo))[0] == ""
     assert hook("SessionStart", source="resume", cwd=str(repo))[0] == ""
-    # The books go on: work is still counted, and a memory call that works clears the notice.
+    # The books go on: work is still counted. And once is once, even after a memory call
+    # worked in between (an agent on MCP may reach a server the CLI's context cannot).
     work_turn(1)
     assert state(home)["anchors"][A]["work_turns"] == 1
     recall(A)
-    assert "unreachable" not in state(home)["notices"]
+    repo.git("switch", "-q", "-c", "fix-13-again")
+    assert bash("git switch fix-13-again", cwd=str(repo))[0] == ""
 
 
 # --------------------------------------------------------------------------

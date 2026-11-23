@@ -37,7 +37,7 @@ Then, per session, the hooks act only once the session is **active**: `skardi me
 
 - no `skardi`, no login, a context that is not a cloud one, a `skardi` without `memory`: nothing;
 - memory off for the workspace (`enabled: false`): nothing;
-- Skardi unreachable: nothing, except that someone who has used memory on this machine in the last 30 days is told once ("Skardi working memory could not be reached; carrying on without it") and the agent is told not to repeat it;
+- Skardi unreachable: nothing, except that someone who has used memory on this machine in the last 30 days, or whose session is already active, is told once per session ("Skardi working memory could not be reached; carrying on without it") and the agent is told not to repeat it;
 - any failure inside a hook (a corrupt state file, a `skardi` that hangs past 10 seconds, unreadable input): nothing, exit 0.
 
 `SKARDI_MEMORY_HOOKS=off` in the environment turns the hooks off altogether.
@@ -91,7 +91,7 @@ The save therefore comes right after compaction, written from the summary and th
 - **Claude Code only.** Codex and Cursor get the MCP server's instructions and the skill; what hooks they support is a separate question.
 - **Needs `sh` and `python3`** (3.8 or later, standard library only). Without `python3` the hooks are silent. On Windows they run under Git Bash; where Claude Code falls back to PowerShell because Git Bash is missing, `sh` is not found and each hook shows a non-blocking error. Not verified on Windows.
 - **The hooks' own `skardi memory status` uses the CLI's current context.** An agent that reaches memory through `--context <name>` or through MCP only still gets the milestone, cadence and compaction reminders (its calls make the session active), but no `SessionStart` note and no branch-change note.
-- **Shell commands are read from the command line, not from the shell.** `git commit`, `git push`, `gh pr create` and the branch commands are recognized at the start of a command or after `;`, `&&`, `||`, `|`, `(`, a newline, `then` and the like, with `git -C <dir>` and leading `VAR=value`. A `git push` inside a quoted string after a `;` is taken for a push; the cost is one reminder too many. An alias or a script that commits is not seen.
+- **Shell commands are read from the command line, not from the shell.** `git commit`, `git push`, `gh pr create` and the branch commands are recognized at the start of a command or after `;`, `&&`, `||`, `|`, `(`, a newline, `then` and the like, with `git -C <dir>` and leading `VAR=value`. A `git push` inside a quoted string after a `;` is taken for a push; the cost is one reminder too many. An alias or a script that commits is not seen. A command that fails goes to `PostToolUseFailure` and is not a milestone, but one that hides the failure (`git commit -m x; echo $?`) exits 0 and is taken for a commit.
 - **Task lists:** only `TaskUpdate` and `TodoWrite`. Models without those tools, and hosts that keep the task list in another tool, give no "item marked done" milestone.
 - **A turn is counted when `Stop` fires.** A turn the user interrupts is counted at the next prompt. A reply that a stop hook continues is one turn.
 
@@ -107,4 +107,4 @@ It covers the hook tests of the agent-memory spec (one offer per task, the offer
 
 ## Verification in Claude Code
 
-See [VERIFICATION.md](VERIFICATION.md) for which of the spec's hook tests were run in a real Claude Code session, with what result, and which were not.
+Eight of the spec's nine hook tests passed in a live Claude Code session on 2026-11-23, one of them with the turn count set by hand. The ninth (the offer after an approved plan or a finished task-list item) and compaction were not run live. [VERIFICATION.md](VERIFICATION.md) has each result, how it was run, and what is still unverified.

@@ -539,10 +539,11 @@ def milestone_note(state, what):
     return NOTE + happened + offer_words(anchor, e)
 
 
-def offer_words(anchor, e):
-    ask = ("the `memory` skill's one offer is due now, after reporting the milestone: ask the user once whether to "
+def offer_words(anchor, e, at_milestone=True):
+    ask = ("the `memory` skill's one offer is due now%s: ask the user once whether to "
            "keep a working memory of this task in Skardi (%s). Nothing is saved before a yes; a no, or no answer, "
-           "closes the question for this session." % OFFER_CHOICES)
+           "closes the question for this session."
+           % (", after reporting the milestone" if at_milestone else "", OFFER_CHOICES))
     if not anchor:
         return (" on a task that has no anchor yet. If saving is not already on for it, %s The offer names a "
                 "proposed label, as the skill describes." % ask)
@@ -712,18 +713,21 @@ def on_post_tool(hook):
     with books(session) as state:
         if not state or not state.get("active"):
             return
+        if status:
+            # Before this command is booked as work: the command that changes
+            # the branch is the first step of the new task, not unsaved work
+            # on the one being left.
+            kind, result = status
+            if kind == "enabled" and result.get("ready") is not False:
+                notes.append(branch_note(state, result))
+            elif kind == "unreachable" and not state["notices"].get("unreachable"):
+                state["notices"]["unreachable"] = say_unreachable = True
         if work:
             entry(state, state.get("current") or NO_ANCHOR)["turn_work"] = True
         if tool in TASK_TOOLS and newly_done(state, tool, args):
             milestones = ["a task-list item was marked done"]
         if in_subagent:
             return
-        if status:
-            kind, result = status
-            if kind == "enabled" and result.get("ready") is not False:
-                notes.append(branch_note(state, result))
-            elif kind == "unreachable" and not state["notices"].get("unreachable"):
-                state["notices"]["unreachable"] = say_unreachable = True
         if milestones:
             notes.append(milestone_note(state, milestones))
     notes = [n for n in notes if n]
@@ -785,7 +789,6 @@ def memory_call(session, kind, anchor, saving, content, response):
         return
     with books(session, create=True) as state:
         state["active"] = True
-        state["notices"].pop("unreachable", None)
         if kind == "consent":
             if anchor:
                 e = set_current(state, anchor) if state.get("current") in (None, NO_ANCHOR) else entry(state, anchor)
@@ -850,7 +853,8 @@ def on_stop(hook):
                       % (turns, anchor, version_words(e)))
         elif not e["offer_made"] and e["session_consent"] is not False:
             e["offer_made"] = True
-            reason = "Skardi working memory: %d turns of work%s Then end the reply." % (turns, offer_words(anchor, e))
+            reason = "Skardi working memory: %d turns of work%s Then end the reply." % (
+                turns, offer_words(anchor, e, at_milestone=False))
         else:
             return
         e["blocked_at"] = turns
