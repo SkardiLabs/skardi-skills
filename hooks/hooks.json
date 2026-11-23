@@ -1,0 +1,98 @@
+{
+  "description": "Working memory (the memory skill): reminds the agent to recall, to make the one offer and to save on the cadence, and keeps the per-session books that make \"offer once\" and \"every 10 turns of work\" hold. Idle, with no output, in any session that does not use Skardi working memory.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" start",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" active",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" active",
+            "timeout": 20
+          },
+          {
+            "type": "command",
+            "if": "Bash(skardi memory *)",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" fresh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit|ExitPlanMode|TaskUpdate|TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" active",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__.+__memory_(recall|save|consent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" always",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" active",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" active",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" active",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -10,6 +10,7 @@ runs to stop that; these cases are written from that requirement:
   * a skill changed, version unchanged  -> fails
   * a skill changed, version raised     -> passes
   * a skill changed, version lowered    -> fails
+  * a hook changed, version unchanged   -> fails (hooks ship with the plugin too)
   * only files the plugin does not ship changed (README, tests) -> passes
 
 Each case builds a throwaway git repository holding the real script, a base
@@ -86,6 +87,18 @@ def test_changed_skill_bumped_version_passes():
 def test_changed_skill_lowered_version_fails():
     code, out = run_case({**NEW_SKILL, ".claude-plugin/plugin.json": manifest("0.3.9")})
     assert code != 0, out
+
+
+def test_changed_hook_same_version_fails():
+    code, out = run_case({"hooks/hooks.json": '{"hooks": {}}\n'})
+    assert code != 0, out
+    assert "hooks/hooks.json" in out, out
+
+
+def test_changed_hook_bumped_version_passes():
+    code, out = run_case({"hooks/hooks.json": '{"hooks": {}}\n',
+                          ".claude-plugin/plugin.json": manifest("0.5.0")})
+    assert code == 0, out
 
 
 def test_docs_only_change_passes():
