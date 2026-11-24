@@ -51,7 +51,7 @@ skardi memory consent off --workspace-wide        # withdraw the workspace-wide 
 - `{"enabled": false, "reason": "not_a_cloud_context" | "memory_disabled" | "memory_unavailable"}`: memory does not apply to **this context** (exit `0`). Try the other cloud contexts with `skardi memory status --context <name> --json` before concluding memory is unavailable;
 - `{"enabled": true, "ready": false, "reason": "memory_provisioning"}`: try again at the next milestone;
 - `{"enabled": true, "anchor": null, "reason": "no_anchor", "branch": …}`: no task from the branch; use rule 1 or 3 of the anchor order;
-- otherwise `anchor`, `anchor_from` (`flag`, `branch_issue`, `pull_request_issue`, `pull_request`), `branch`, `consent`, `hint`, up to five `memories` (goal, status, first `next` steps, clipped), `workspace_used` and `workspace_cap`.
+- otherwise `workspace` (the slug the call ran in), `anchor`, `anchor_from` (`flag`, `branch_issue`, `pull_request_issue`, `pull_request`), `branch`, `consent`, `hint`, up to five `memories` (goal, status, first `next` steps, clipped), and the workspace's count of memories against its cap, `workspace_used` and `workspace_cap`.
 
 `status` gives the owner and repository as the git remote spells them, and the server keeps a URL path's case. If the remote is spelled `acme/API` and GitHub says `acme/api`, they are two anchors: use the spelling `gh` reports.
 

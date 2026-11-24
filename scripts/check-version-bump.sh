@@ -11,9 +11,10 @@
 # (#57): it landed under 0.4.0, and updates kept reporting 0.4.0 as current.
 #
 # Everything the plugin ships counts as a change that needs a new version:
-# anything under skills/, and the host manifests (their descriptions and
-# keywords are what a host shows). Changes elsewhere (README, tests, CI,
-# scripts/) do not reach an installed plugin and pass without a bump.
+# anything under skills/ or hooks/ (the Claude Code hooks run from the
+# installed copy), and the host manifests (their descriptions and keywords
+# are what a host shows). Changes elsewhere (README, tests, CI, scripts/) do
+# not reach an installed plugin and pass without a bump.
 #
 # Usage:
 #   scripts/check-version-bump.sh <base-ref>
@@ -31,7 +32,7 @@ base="$1"
 
 cd "$(dirname "$0")/.."
 
-shipped=(skills .claude-plugin gemini-extension.json package.json)
+shipped=(skills hooks .claude-plugin gemini-extension.json package.json)
 manifest=".claude-plugin/plugin.json"
 
 changed="$(git diff --name-only "$base" -- "${shipped[@]}")"

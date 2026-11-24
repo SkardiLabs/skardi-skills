@@ -24,7 +24,7 @@ Check out our demo [here](https://www.youtube.com/watch?v=Cx5jG0OtUuk).
 
 > **Each skill states the oldest Skardi it runs on**, as `metadata.skardi-min-version` in its `SKILL.md`: a release number, or `"main"` while no release has what it needs. Skardi's `install.sh` reads it and skips a skill the installed `skardi` is too old for. A `main` build still reports the last release's version number, so a skill marked `"main"` is installed only when you pass `--with-unreleased`. A skill marked `"main"` also names what it waits for, as `metadata.skardi-needs`: an identifier that appears in the skardi source once the capability exists. CI looks for it in the latest Skardi release every day and fails once a release ships it, which is the signal to change `"main"` to that version; CI also rejects a `SKILL.md` without `skardi-min-version`.
 
-> **`memory` talks to Skardi Cloud, and needs agent memory turned on for the workspace.** It is marked `skardi-min-version: "main"`: the `skardi memory` commands it uses from the CLI are not in a Skardi release yet (v0.8.0 has none), and the MCP memory tools are served only where a deployment turns agent memory on. With the MCP tools it needs nothing from the CLI; with neither, it steps aside. Sharing a memory with a team workspace works where the deployment serves the `memory_share` tool; elsewhere the memory stays private.
+> **`memory` talks to Skardi Cloud, and needs agent memory turned on for the workspace.** It is marked `skardi-min-version: "main"`: the `skardi memory` commands it uses from the CLI are not in a Skardi release yet (v0.8.0 has none), and the MCP memory tools are served only where a deployment turns agent memory on. With the MCP tools it needs nothing from the CLI; with neither, it steps aside. Sharing a memory with a team workspace works where the deployment serves the `memory_share` tool; elsewhere the memory stays private. In Claude Code the plugin also installs [hooks](#claude-code-hooks-for-memory) that remind the agent to recall, offer and save at the right moments; they are idle in any session that does not use working memory.
 
 > **`skardi-query-log` requires Skardi v0.6.0 or later, on a server you host yourself; Skardi Cloud is not supported yet.** The audit ledger it reads is written by `skardi-server --query-audit-db`, which v0.6.0 is the first release to carry (`git grep query_audit_db v0.5.0` is empty). What was measured against it, and what was not, is in the skill's own Verification section. `auto-context` and `retrieval` run on v0.5.0 too; only `retrieval`'s `--purpose` / `--session-id` / `--task` flags need v0.6.0.
 
@@ -41,7 +41,7 @@ From inside any Claude Code session:
 
 That's it — all seven skills are now available across all your projects, and `/plugin marketplace update skardi-skills` pulls future versions.
 
-> **Changing a skill? Raise the version in the same PR.** Claude Code compares only the plugin version when it looks for updates, so a skill merged without a new version never reaches anyone who already installed the plugin: `claude plugin update skardi@skardi-skills` reports it is already at the latest version. Run `scripts/bump-version.sh <x.y.z>` (minor for a new skill, patch for a fix); it sets every host manifest at once. CI fails a PR that changes `skills/` or a manifest without a higher version than the base branch.
+> **Changing a skill? Raise the version in the same PR.** Claude Code compares only the plugin version when it looks for updates, so a skill merged without a new version never reaches anyone who already installed the plugin: `claude plugin update skardi@skardi-skills` reports it is already at the latest version. Run `scripts/bump-version.sh <x.y.z>` (minor for a new skill, patch for a fix); it sets every host manifest at once. CI fails a PR that changes `skills/`, `hooks/` or a manifest without a higher version than the base branch.
 
 > **Upgrading from an earlier version:** the individual plugins are now one, named `skardi`, so that every host can install this repository with its own one-line plugin command instead of a manual directory copy. Installed copies of the old per-skill plugins are not removed automatically — run `/plugin uninstall auto-context`, `/plugin uninstall retrieval`, `/plugin uninstall graph-source` and `/plugin uninstall graph-rag`, then install `skardi`. Further back: `auto-knowledge-base` and `auto-rag` were merged into `auto-context`; `skardi-deploy-and-patterns` and `feishu-connector` were retired, and Feishu cloud docs are now raw material for `auto-context`.
 
@@ -235,6 +235,17 @@ drift apart with nothing to show for it. That is the failure dsh and OpenClaw
 catch and these hosts do not, which is why every skill here keeps `name:` in
 kebab-case and identical to its directory name, and why CI asserts both on every
 pull request rather than trusting an install to complain.
+
+## Claude Code hooks for `memory`
+
+The `skardi` plugin ships hooks ([`hooks/`](hooks/README.md)) that make the `memory` skill's routine happen without the agent having to remember it. They only apply to Claude Code, and only when the plugin is installed (a manual copy of `skills/memory` gets the skill without them).
+
+- **At session start** they run `skardi memory status` and tell the agent the anchor of the current branch's issue or pull request, the remembered consent and whether a memory exists.
+- **At a milestone** (`git commit`, `git push`, `gh pr create`, an approved plan, a task-list item marked done) they say the one offer is due when saving is off and none was made for that task in the session, or that a save is due when saving is on.
+- **After 10 turns of work without a save** (or without an offer) they stop the agent from ending its reply once, so it saves (or asks). The count is kept in a small state file per session, `~/.skardi/memory/sessions/<session_id>.json`.
+- **On a branch change** they put the new branch's anchor in context; **around a compaction** they carry the anchor and the owed save across it.
+
+They never save, delete, redact or share by themselves: nothing is saved before your yes, and the agent still writes every save. In a session that does not use Skardi working memory (no `skardi` login, memory off for the workspace, Skardi unreachable) they print nothing and exit 0. `SKARDI_MEMORY_HOOKS=off` turns them off. They need `sh` and `python3` on the machine. What each hook does, the state file, the limits and how they were verified are in [`hooks/README.md`](hooks/README.md).
 
 ## Bundled resources per skill
 
