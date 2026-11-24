@@ -41,6 +41,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import namedtuple
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -208,8 +209,9 @@ def normalize_anchor(raw):
 
 def entry(state, anchor):
     return state["anchors"].setdefault(anchor, {
-        "consent": None,          # remembered, as status or recall reported it: task | workspace | off
-        "session_consent": None,  # set in this session: True after a save or a yes, False after "stop saving"
+        "consent": None,          # as status or recall reported it, or as a consent call left it: task | workspace | off
+        "session_consent": None,  # this session's own answer: True after a yes for the session, False after "stop saving"
+        "workspace": None,        # the workspace the calls about this task named, when they named one
         "offer_made": False,
         "turn_work": False,       # the turn in progress edited a file or ran a command
         "work_turns": 0,          # turns of work since the last save
@@ -248,11 +250,7 @@ def memory_on(state, anchor):
     e = state["anchors"].get(anchor) or {}
     if e.get("session_consent") is not None:   # this session's answer about the task wins
         return e["session_consent"]
-    if e.get("consent") == "task":
-        return True
-    if state.get("workspace_consent") is not None:
-        return state["workspace_consent"]
-    return e.get("consent") == "workspace"
+    return e.get("consent") in ("task", "workspace")
 
 
 def fold_work(state):
@@ -309,14 +307,18 @@ def run_status(cwd, session_id, why):
     return "none", None
 
 
-def git_branch(cwd):
+def git_head(directory):
+    """(repository root, branch) of a directory; (None, None) outside a repository or on a detached HEAD."""
     try:
-        done = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd or None,
+        done = subprocess.run(["git", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],
+                              cwd=directory if directory and os.path.isdir(directory) else None,
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
-        return None
-    branch = done.stdout.strip()
-    return branch if done.returncode == 0 and branch and branch != "HEAD" else None
+        return None, None
+    lines = done.stdout.split("\n")
+    if done.returncode != 0 or len(lines) < 2 or not lines[0] or lines[1] in ("", "HEAD"):
+        return None, None
+    return lines[0], lines[1]
 
 
 def documents(response):
@@ -363,43 +365,90 @@ def refused(docs):
 
 
 SEGMENT_START = r"(?:^|[;&|({]|\n)\s*(?:(?:then|do|else|time|command|sudo|exec)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
-GIT = re.compile(
-    SEGMENT_START + r"git(?:\s+(?:-C\s+\S+|-c\s+\S+|--[a-z-]+(?:=\S+)?|-[pP]))*\s+(commit|push|checkout|switch)(?![\w-])([^;&|\n]*)")
-GH = re.compile(SEGMENT_START + r"gh\s+pr\s+(create|checkout)(?![\w-])([^;&|\n]*)")
-SKARDI = re.compile(
-    SEGMENT_START + r"\S*skardi\S*\b[^\n;&|]*?\smemory\s+(recall|save|consent)(?![\w-])([^\n;&|]*)")
+ARGS = r"((?:>&|&>|[^\n;&|])*)"   # the rest of one simple command; `2>&1` does not end it
+GIT = re.compile(SEGMENT_START + r"git((?:\s+(?:-C\s+\S+|-c\s+\S+|--[a-z-]+(?:=\S+)?|-[pP]))*)"
+                 r"\s+(commit|push|checkout|switch)(?![\w-])" + ARGS)
+GH = re.compile(SEGMENT_START + r"gh\s+pr\s+(create|checkout)(?![\w-])" + ARGS)
+CD = re.compile(SEGMENT_START + r"cd\s+([^\s;&|)]+)")
+SKARDI = re.compile(SEGMENT_START + r"\S*skardi\S*\b((?:>&|&>|[^\n;&|])*?)\smemory\s+(recall|save|consent)(?![\w-])"
+                    + ARGS + r"(?:\s*\|(?!\|)(?:>&|&>|[^\n;&|])*)*")
+HEREDOC = re.compile(r"(<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2[^\n]*)\n(?:.*?\n)?[ \t]*\3[ \t]*(?=\n|$)", re.S)
+NOTHING = re.compile(r"\s*(cd|echo|true|exit|:)(\s|$)")
+
+MemoryCall = namedtuple("MemoryCall", "kind anchor saving workspace span")
+
+
+def without_heredocs(command):
+    """A command line without the bodies of its here-documents.
+
+    A body is data (a commit message, the record being saved), and a line of
+    it that happens to read `; git push` is not a push.
+    """
+    return HEREDOC.sub(lambda found: found.group(1), command)
+
+
+def git_commands(command):
+    """The git and gh calls the routine cares about, as (verb, where it starts, git's own options)."""
+    for found in GIT.finditer(command):
+        options, verb, rest = found.groups()
+        if re.search(r"(^|\s)(--help|-h|--dry-run)(\s|$)", rest) or (verb == "push" and re.search(r"(^|\s)-n(\s|$)", rest)):
+            continue
+        yield "git " + verb, found.start(), options
+    for found in GH.finditer(command):
+        verb, rest = found.groups()
+        if not re.search(r"(^|\s)(--help|-h)(\s|$)", rest):
+            yield "gh pr " + verb, found.start(), ""
 
 
 def shell_actions(command):
     """What a shell command did that the routine cares about.
 
     Returns (milestones, branch_changed): the milestones as the user would
-    name them, and whether the command may have changed the branch. It reads
+    name them, and whether the command may have changed a branch. It reads
     the command line, not the shell's mind: a `git push` inside a quoted
     string after a `;` is taken for a push. A reminder too many is the cost.
     """
-    milestones, branch = [], False
-    for verb, rest in GIT.findall(command):
-        if re.search(r"(^|\s)(--help|-h|--dry-run)(\s|$)", rest) or (verb == "push" and re.search(r"(^|\s)-n(\s|$)", rest)):
+    verbs = [verb for verb, _, _ in git_commands(command)]
+    milestones = [verb for verb in dict.fromkeys(verbs) if verb in ("git commit", "git push", "gh pr create")]
+    return milestones, any(verb in ("git checkout", "git switch", "gh pr checkout") for verb in verbs)
+
+
+def branch_places(command, cwd):
+    """The directories whose branch a command may have changed, in the order it names them.
+
+    `git -C sub switch x` and `cd sub; git switch x` change the branch of
+    another repository than the one the hook was started in. The hook's own
+    `cwd` may or may not have followed a `cd` by the time it runs, so a `cd`
+    target that does not exist under `cwd` is taken as already entered.
+    """
+    places = []
+    for verb, start, options in git_commands(command):
+        if verb not in ("git checkout", "git switch", "gh pr checkout"):
             continue
-        if verb in ("commit", "push"):
-            milestones.append("git " + verb)
-        else:
-            branch = True
-    for verb, rest in GH.findall(command):
-        if re.search(r"(^|\s)(--help|-h)(\s|$)", rest):
-            continue
-        if verb == "create":
-            milestones.append("gh pr create")
-        else:
-            branch = True
-    return sorted(set(milestones), key=milestones.index), branch
+        place = cwd or os.getcwd()
+        moved = [found.group(1) for found in CD.finditer(command) if found.start() < start]
+        if moved:
+            there = os.path.join(place, os.path.expanduser(moved[-1].strip("'\"")))
+            if os.path.isdir(there):
+                place = there
+        named = re.search(r"-C\s+(\S+)", options)
+        if named:
+            place = os.path.join(place, os.path.expanduser(named.group(1).strip("'\"")))
+        place = os.path.normpath(place)
+        if place not in places:
+            places.append(place)
+    return places
 
 
 def cli_memory_calls(command):
-    """The `skardi memory recall|save|consent` calls in a shell command, as (kind, anchor, saving)."""
+    """The `skardi memory recall|save|consent` calls in a shell command.
+
+    Each is (kind, anchor, saving, workspace, span). The workspace is the
+    `--workspace` slug, or `context:<name>` for `--context`, or None.
+    """
     calls = []
-    for kind, rest in SKARDI.findall(command):
+    for found in SKARDI.finditer(command):
+        before, kind, rest = found.groups()
         anchor = None
         for word in rest.split():
             anchor = normalize_anchor(word)
@@ -413,8 +462,37 @@ def cli_memory_calls(command):
             saving = answer.group(1) == "on"
         elif not anchor:
             continue
-        calls.append((kind, anchor, saving))
+        flags = before + " " + rest
+        slug = re.search(r"(?:^|\s)--workspace[\s=]+(\S+)", flags)
+        context = re.search(r"(?:^|\s)--context[\s=]+(\S+)", flags)
+        workspace = None
+        if slug:
+            workspace = slug.group(1).strip("'\"")
+        elif context:
+            workspace = "context:" + context.group(1).strip("'\"")
+        calls.append(MemoryCall(kind, anchor, saving, workspace, found.span()))
     return calls
+
+
+def beside_memory(command, calls):
+    """What a shell command did besides its memory calls.
+
+    `skardi memory save … && git commit -m x` is a save and then a commit the
+    save does not hold, so the commit is read as any other. What ran before a
+    save is in that save, and is left out.
+    """
+    at = max((call.span[1] for call in calls if call.kind == "save"), default=0)
+    rest = ""
+    for call in calls:
+        if call.span[0] >= at:
+            rest += command[at:call.span[0]] + "\n"
+        at = max(at, call.span[1])
+    return rest + command[at:]
+
+
+def does_something(code):
+    """Whether shell text runs anything beyond `cd`, `echo`, `true` and the like."""
+    return any(part.strip() and not NOTHING.match(part) for part in re.split(r"[;&|\n(){}]+", code))
 
 
 def goal_in(content):
@@ -565,6 +643,7 @@ def apply_status(state, result):
         return None
     e = entry(state, anchor)
     e["consent"] = result.get("consent") if result.get("consent") in ("task", "workspace") else "off"
+    e["workspace"] = result.get("workspace") or e.get("workspace")
     e["from"] = result.get("anchor_from")
     memories = [m for m in result.get("memories") or [] if isinstance(m, dict)]
     mine = next((m for m in memories if m.get("own")), None)
@@ -601,7 +680,10 @@ def on_session_start(hook):
 
     kind, result = run_status(hook.get("cwd"), session, "claude-code hook: session start")
     log("SessionStart", "status", kind=kind, source=source)
-    if kind in ("none", "disabled"):
+    if kind in ("none", "disabled") or (kind == "enabled" and result.get("ready") is False):
+        # No memory here, or its database is still being prepared: either way
+        # nothing can be recalled or saved yet, so there is nothing to remind
+        # anyone of. A memory call that works later makes the session active.
         return
     if kind == "unreachable":
         say = False
@@ -614,14 +696,14 @@ def on_session_start(hook):
             unreachable("SessionStart")
         return
 
+    top, branch = git_head(hook.get("cwd"))
     with books(session, create=True) as state:
         state["active"] = True
         state["cwd"] = hook.get("cwd")
-        if result.get("ready") is False:   # the workspace's memory is still being prepared
-            note = None
-        else:
-            apply_status(state, result)
-            note = session_note(state)
+        if top:
+            state.setdefault("branches", {})[top] = branch
+        apply_status(state, result)
+        note = session_note(state)
     prune()
     emit("SessionStart", context=note)
 
@@ -682,32 +764,39 @@ def on_post_tool(hook):
         kind = memory_tool.group(1)
         if kind == "consent" and not isinstance(args.get("saving"), bool):
             return
+        workspace = args.get("workspace") if isinstance(args.get("workspace"), str) else None
         if anchor or (kind == "consent" and args.get("anchor") is None):
             memory_call(session, kind, anchor, args.get("saving"), args.get("content"),
-                        hook.get("tool_response"))
+                        hook.get("tool_response"), workspace)
         return
 
     command = args.get("command") if tool in SHELL_TOOLS and isinstance(args.get("command"), str) else ""
-    calls = cli_memory_calls(command)
-    if calls:   # memory's own bookkeeping is not a turn of work
-        for kind, anchor, saving in calls:
-            memory_call(session, kind, anchor, saving, command, hook.get("tool_response"))
-        return
+    code = without_heredocs(command)
+    calls = cli_memory_calls(code)
+    for call in calls:
+        memory_call(session, call.kind, call.anchor, call.saving, command, hook.get("tool_response"), call.workspace)
+    if calls:
+        code = beside_memory(code, calls)
+        if not does_something(code):
+            return   # memory's own bookkeeping is not a turn of work
 
     work = tool in SHELL_TOOLS or tool in EDIT_TOOLS
-    milestones, branch_changed = shell_actions(command) if command else ([], False)
+    milestones, branch_changed = shell_actions(code) if code else ([], False)
     if tool == "ExitPlanMode":
         milestones = ["the user approved a plan"]
 
     # Asking the server is slow, so it happens outside the lock and only when
-    # the branch really is another one.
-    status = None
+    # a branch really is another one than the books have for its repository.
+    status = moved = None
     if branch_changed and not in_subagent:
         seen = read_state(state_path(session))
-        branch = git_branch(hook.get("cwd"))
-        if seen and seen.get("active") and branch and branch != seen.get("branch"):
-            status = run_status(hook.get("cwd"), session, "claude-code hook: branch changed")
-            log("PostToolUse", "status", kind=status[0], branch=branch)
+        if seen and seen.get("active"):
+            for place in branch_places(code, hook.get("cwd")):
+                top, branch = git_head(place)
+                if top and (seen.get("branches") or {}).get(top) != branch:
+                    status, moved = run_status(place, session, "claude-code hook: branch changed"), (top, branch)
+                    log("PostToolUse", "status", kind=status[0], branch=branch)
+                    break
 
     notes, say_unreachable = [], False
     with books(session) as state:
@@ -722,6 +811,8 @@ def on_post_tool(hook):
                 notes.append(branch_note(state, result))
             elif kind == "unreachable" and not state["notices"].get("unreachable"):
                 state["notices"]["unreachable"] = say_unreachable = True
+            if kind != "unreachable":   # unanswered: ask again at the next branch command
+                state.setdefault("branches", {})[moved[0]] = moved[1]
         if work:
             entry(state, state.get("current") or NO_ANCHOR)["turn_work"] = True
         if tool in TASK_TOOLS and newly_done(state, tool, args):
@@ -776,7 +867,7 @@ def newly_done(state, tool, args):
     return bool(new)
 
 
-def memory_call(session, kind, anchor, saving, content, response):
+def memory_call(session, kind, anchor, saving, content, response, workspace=None):
     """Bookkeeping for a recall, save or consent call that worked (MCP tool or CLI).
 
     A call that worked is also what makes a session active when status could
@@ -794,13 +885,14 @@ def memory_call(session, kind, anchor, saving, content, response):
                 e = set_current(state, anchor) if state.get("current") in (None, NO_ANCHOR) else entry(state, anchor)
                 e["session_consent"] = bool(saving)
                 e["consent"] = "task" if saving else "off"
+                e["workspace"] = workspace or e.get("workspace")
                 e["offer_made"] = True
             else:
-                state["workspace_consent"] = bool(saving)
-                entry(state, state.get("current") or NO_ANCHOR)["offer_made"] = True
+                workspace_consent(state, bool(saving), workspace)
         elif kind == "recall":
             doc = next((d for d in docs if "consent" in d or "memories" in d), {})
             e = set_current(state, normalize_anchor(doc.get("anchor")) or anchor)
+            e["workspace"] = workspace or e.get("workspace")
             if doc.get("consent") in ("task", "workspace", "off"):
                 e["consent"] = doc["consent"]
             memories = [m for m in doc.get("memories") or [] if isinstance(m, dict)]
@@ -815,15 +907,43 @@ def memory_call(session, kind, anchor, saving, content, response):
                 e["updated_at"] = mine.get("updated_at")
         else:   # save
             doc = next((d for d in docs if "version" in d and ("anchor" in d or "created" in d)), {})
-            e = set_current(state, normalize_anchor(doc.get("anchor")) or anchor)
-            e.update(session_consent=True, offer_made=True, work_turns=0, turn_work=False, blocked_at=None,
+            target = normalize_anchor(doc.get("anchor")) or anchor
+            e = set_current(state, target)
+            if not memory_on(state, target):
+                # A save with saving off is the user's yes for this session. A
+                # save that remembered consent already allowed says nothing
+                # new: it must not outlive that consent being withdrawn.
+                e["session_consent"] = True
+            e.update(offer_made=True, work_turns=0, turn_work=False, blocked_at=None,
                      save_due=False, has_memory=True, last_saved_at=now())
             if doc.get("version") is not None:
                 e["version"] = doc["version"]
+            e["workspace"] = doc.get("workspace") or workspace or e.get("workspace")
             if doc.get("workspace"):
                 state["workspace"] = doc["workspace"]
             e["goal"] = clean(goal_in(content), GOAL_CHARS) or e.get("goal")
     log("PostToolUse", "memory-" + kind, anchor=anchor)
+
+
+def workspace_consent(state, saving, workspace):
+    """A yes for all the user's work in a workspace, or that yes withdrawn.
+
+    The server remembers it, so every later recall reports it; the books only
+    need to catch up for the tasks already recalled. They do so per workspace:
+    a yes for one workspace says nothing about a task whose memory lives in
+    another. Turning on asks for the same workspace by name; turning off also
+    covers a task whose workspace the calls never named, since saying less
+    is the safe side.
+    """
+    for anchor, e in state["anchors"].items():
+        if not anchor:
+            continue
+        if saving and e.get("consent") != "task" and e.get("workspace") == workspace:
+            e["consent"] = "workspace"
+        elif not saving and e.get("consent") == "workspace" and (
+                workspace is None or e.get("workspace") in (None, workspace)):
+            e["consent"] = "off"
+    entry(state, state.get("current") or NO_ANCHOR)["offer_made"] = True
 
 
 def on_stop(hook):

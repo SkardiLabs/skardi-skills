@@ -33,7 +33,7 @@ FAKE_SKARDI = """#!/usr/bin/env python3
 import os, sys
 d = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(d, "calls.log"), "a") as f:
-    f.write(" ".join(sys.argv[1:]) + "\\n")
+    f.write(" ".join(sys.argv[1:]) + " cwd=" + os.path.realpath(os.getcwd()) + "\\n")
 sys.stdout.write(open(os.path.join(d, "stdout")).read())
 sys.exit(int(open(os.path.join(d, "exit")).read()))
 """
@@ -137,10 +137,15 @@ def bash(command, session=SESSION, stdout="", **extra):
                 tool_response={"stdout": stdout, "stderr": "", "interrupted": False}, **extra)
 
 
-def recall(anchor, consent="off", memories=(), session=SESSION, server="skardi"):
+def recall(anchor, consent="off", memories=(), session=SESSION, server="skardi", **more):
     return tool("mcp__%s__memory_recall" % server, session=session, anchor=anchor,
                 response=[{"type": "text", "text": json.dumps(
-                    {"anchor": anchor, "memories": list(memories), "consent": consent})}])
+                    {"anchor": anchor, "memories": list(memories), "consent": consent})}], **more)
+
+
+def workspace_wide(saving, **more):
+    """`memory_consent` with no anchor: all the user's work in a workspace."""
+    return tool("mcp__skardi__memory_consent", saving=saving, response=json.dumps({"saving": saving}), **more)
 
 
 def save(anchor, version=1, goal="Round totals half-up", session=SESSION):
@@ -253,8 +258,11 @@ def test_gate_runs_nothing_where_skardi_was_never_used(home, no_skardi, tmp_path
     (shim / "python3").write_text("#!/bin/sh\ntouch '%s'\n" % marker)
     (shim / "python3").chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
-    for mode in ("start", "active", "nonsense"):
+    for mode in ("start", "active", "shell", "nonsense"):
         assert gate(mode, {"hook_event_name": "Stop", "session_id": SESSION}) == ""
+    # A shell command that has nothing to do with Skardi memory, on a machine that never used it.
+    assert gate("shell", {"hook_event_name": "PostToolUse", "session_id": SESSION, "tool_name": "Bash",
+                          "tool_input": {"command": "git commit -m 'skardi docs'"}, "tool_response": {}}) == ""
     assert not marker.exists(), "no interpreter may start for a user who never logged in to Skardi"
     assert gate("always", {"hook_event_name": "Stop", "session_id": SESSION}) == ""
     assert marker.exists()
@@ -267,9 +275,26 @@ def test_gate_start_runs_once_the_cli_is_logged_in(skardi, home):
     out = gate("start", {"hook_event_name": "SessionStart", "session_id": SESSION, "source": "startup",
                          "cwd": os.getcwd()})
     assert A in context(json.loads(out))
-    # ... and from then on the per-event hooks run too, while `fresh` stands down.
+    # ... and from then on the per-event hooks run too.
     assert "current task anchor" in gate("active", {"hook_event_name": "UserPromptSubmit", "session_id": SESSION})
-    assert gate("fresh", {"hook_event_name": "UserPromptSubmit", "session_id": SESSION}) == ""
+    assert "current task anchor" in gate("shell", {"hook_event_name": "UserPromptSubmit", "session_id": SESSION})
+
+
+@pytest.mark.parametrize("tool_name,command", [
+    ("Bash", "skardi memory recall label:x --json"),
+    ("Bash", "skardi --context dev memory recall label:x --json"),
+    ("Bash", "SKARDI_SESSION_ID=s /usr/local/bin/skardi memory recall label:x --json"),
+    ("PowerShell", "skardi --context dev memory recall label:x --json"),
+])
+def test_the_first_cli_memory_call_on_a_machine_starts_the_books(no_skardi, home, tool_name, command):
+    """Whatever way the command is spelled: nothing else would notice it where memory was never used."""
+    answer = {"ok": True, "result": {"anchor": "label:x", "memories": [], "consent": "off"}, "next": None}
+    out = gate("shell", {"hook_event_name": "PostToolUse", "session_id": SESSION, "tool_name": tool_name,
+                         "tool_input": {"command": command},
+                         "tool_response": {"stdout": json.dumps(answer), "stderr": ""}})
+    assert out == ""
+    s = state(home)
+    assert s["active"] is True and s["current"] == "label:x" and s["anchors"]["label:x"]["consent"] == "off"
 
 
 def test_gate_can_be_switched_off(skardi, home):
@@ -306,9 +331,11 @@ def test_manifest_covers_the_six_events_and_only_calls_the_gate():
         for group in groups:
             for handler in group["hooks"]:
                 assert handler["type"] == "command"
-                assert re.fullmatch(r'sh "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/memory-hook\.sh" (start|active|fresh|always)',
+                assert re.fullmatch(r'sh "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/memory-hook\.sh" (start|active|shell|always)',
                                     handler["command"])
                 assert handler["timeout"] <= 20
+                # `if` holds one permission rule, and no one rule covers every way to spell a command.
+                assert "if" not in handler
     assert hooks["SessionStart"][0]["hooks"][0]["command"].endswith(" start")
 
 
@@ -363,10 +390,25 @@ def test_session_start_without_an_anchor_says_so_briefly(skardi, home):
     assert state(home)["current"] == ""
 
 
-def test_session_start_while_memory_is_being_prepared_is_silent(skardi, home):
+def test_while_memory_is_being_prepared_the_session_stays_out_of_it(skardi, home):
+    """Nothing can be recalled or saved yet, so there is nothing to offer and nothing to count."""
     skardi.answer({"ok": True, "result": {"enabled": True, "ready": False, "reason": "memory_provisioning"}})
     assert hook("SessionStart", source="startup")[0] == ""
     assert hook("UserPromptSubmit", prompt="hi")[0] == ""
+    assert bash("git commit -m a")[0] == ""
+    assert work_turn(12) is None
+    assert_untouched(home)
+    # Once a memory call works, memory is there, and the session is in.
+    recall(A)
+    assert "one offer is due now" in context(bash("git commit -m b")[1])
+
+
+def test_a_resumed_session_keeps_its_books_while_memory_is_being_prepared(skardi, home):
+    start(skardi, consent="task")
+    work_turn(2)
+    skardi.answer({"ok": True, "result": {"enabled": True, "ready": False, "reason": "memory_provisioning"}})
+    assert hook("SessionStart", source="resume")[0] == ""
+    assert state(home)["current"] == A and state(home)["anchors"][A]["work_turns"] == 2
 
 
 def test_state_file_is_private_and_holds_no_more_than_the_books(skardi, home):
@@ -376,9 +418,10 @@ def test_state_file_is_private_and_holds_no_more_than_the_books(skardi, home):
     assert stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode) == 0o700
     s = state(home)
     assert s["current"] == A and s["active"] is True
-    assert set(s["anchors"][A]) == {"consent", "session_consent", "offer_made", "turn_work", "work_turns",
-                                     "blocked_at", "save_due", "goal", "has_memory", "version", "last_saved_at",
-                                     "from", "shared", "updated_at"}
+    assert set(s["anchors"][A]) == {"consent", "session_consent", "workspace", "offer_made", "turn_work",
+                                     "work_turns", "blocked_at", "save_due", "goal", "has_memory", "version",
+                                     "last_saved_at", "from", "shared", "updated_at"}
+    assert s["anchors"][A]["workspace"] == "acme-eng"     # status names the workspace as `workspace`
     # Of the memory's content only the goal is kept: not its status, its next steps or its author.
     text = json.dumps(s)
     assert "fix committed" not in text and "export.py" not in text and "u-1" not in text
@@ -614,11 +657,59 @@ def test_a_yes_for_this_session_turns_reminders_into_saves(skardi, home):
     assert "saving is on" in context(hook("UserPromptSubmit", prompt="next")[1])
 
 
-def test_a_workspace_wide_yes_covers_the_next_task_too(skardi, home):
-    start(skardi)
-    tool("mcp__skardi__memory_consent", saving=True, response='{"saving": true}')
-    recall(B)
+def test_a_workspace_wide_yes_covers_the_tasks_of_that_workspace(skardi, home):
+    start(skardi)                                        # A, in acme-eng, consent off
+    workspace_wide(True, workspace="acme-eng")
+    assert state(home)["anchors"][A]["consent"] == "workspace"
+    assert "calls for a save now" in context(bash("git commit -m a")[1])
+    recall(B, consent="workspace", workspace="acme-eng")   # the server remembers it for the next task
     assert "calls for a save now" in context(bash("git commit -m b")[1])
+
+
+def test_a_workspace_wide_yes_says_nothing_about_another_workspace(skardi, home):
+    """A yes for all work in one workspace must not turn saving on for a task whose memory lives in another."""
+    start(skardi)
+    workspace_wide(True, workspace="acme-eng")
+    recall(B, consent="off", workspace="other-team")
+    assert state(home)["anchors"][B]["workspace"] == "other-team"
+    text = context(bash("git commit -m b")[1])
+    assert "one offer is due now" in text and "save now" not in text
+    assert "saving is off" in context(hook("UserPromptSubmit", prompt="next")[1])
+    assert work_turn(9) is None
+    # Nor does it reach a task recalled before it in another workspace.
+    recall("label:third", consent="off", workspace="other-team")
+    workspace_wide(True, workspace="acme-eng")
+    assert state(home)["anchors"]["label:third"]["consent"] == "off"
+
+
+def test_withdrawing_the_workspace_wide_yes_stops_tasks_it_alone_covered(skardi, home):
+    """Also for a task already saved in this session: that save was allowed by the yes, it was not a new one."""
+    start(skardi, consent="workspace", memories=[OWN])
+    bash("git commit -m a")
+    save(A, version=5)
+    assert state(home)["anchors"][A]["session_consent"] is None
+    hook("Stop", stop_hook_active=False)
+    assert "calls for a save now" in context(bash("git commit -m b")[1])
+    workspace_wide(False, workspace="acme-eng")
+    assert state(home)["anchors"][A]["consent"] == "off"
+    hook("Stop", stop_hook_active=False)
+    assert bash("git commit -m c")[0] == ""                 # no save reminder, and no offer either
+    assert "saving is off" in context(hook("UserPromptSubmit", prompt="next")[1])
+    assert work_turn(12) is None
+
+
+def test_withdrawing_the_workspace_wide_yes_leaves_a_task_yes_and_a_session_yes(skardi, home):
+    start(skardi, consent="task")                          # A: remembered for the task
+    recall(B, consent="off", workspace="acme-eng")
+    bash("git commit -m b")
+    save(B)                                                # B: the user's yes for this session
+    assert state(home)["anchors"][B]["session_consent"] is True
+    workspace_wide(False, workspace="acme-eng")
+    hook("Stop", stop_hook_active=False)
+    assert "calls for a save now" in context(bash("git commit -m b2")[1])
+    recall(A, consent="task")
+    hook("Stop", stop_hook_active=False)
+    assert "calls for a save now" in context(bash("git commit -m a")[1])
 
 
 def test_a_refused_save_changes_nothing(skardi, home):
@@ -686,6 +777,37 @@ def test_a_switch_right_after_a_save_owes_the_old_task_nothing(skardi, home, rep
     # The switch itself is the new task's first step, not work left unsaved on the old one.
     s = state(home)
     assert s["anchors"][A]["turn_work"] is False and s["anchors"][B]["turn_work"] is True
+
+
+@pytest.mark.parametrize("command,from_sub", [
+    ("git -C sub switch -c fix-9-export", False),
+    ("cd sub; git switch -c fix-9-export", False),       # the hook still runs in the outer repository
+    ("cd sub && git switch -c fix-9-export", True),      # the hook's cwd has already followed the cd
+])
+def test_a_branch_change_in_another_repository_is_looked_up_there(skardi, home, repo, command, from_sub):
+    sub = Repo(os.path.join(str(repo), "sub"))
+    skardi.status()
+    hook("SessionStart", source="startup", cwd=str(repo))
+    sub.git("switch", "-q", "-c", "fix-9-export")
+    skardi.status(anchor=B, branch="fix-9-export")
+    text = context(bash(command, cwd=str(sub) if from_sub else str(repo))[1])
+    assert "the branch changed to `fix-9-export`, whose task is `%s`" % B in text
+    assert skardi.calls()[-1].endswith("cwd=" + os.path.realpath(str(sub))), "status must be asked in the repository that moved"
+    assert state(home)["current"] == B
+    # The outer repository did not move: a checkout there asks nobody, and neither does the same branch again.
+    before = len(skardi.calls())
+    assert bash("git checkout -- a.py", cwd=str(repo))[0] == ""
+    assert bash("git -C sub checkout -- b.py", cwd=str(repo))[0] == ""
+    assert len(skardi.calls()) == before
+
+
+def test_branch_places():
+    places = memory_hook.branch_places
+    assert places("git switch x", "/r") == ["/r"]
+    assert places("git -C /abs/sub checkout -b x", "/r") == ["/abs/sub"]
+    assert places("git commit -m x && git push", "/r") == []
+    assert places("gh pr checkout 12", "/r") == ["/r"]
+    assert places("git switch a && git -C /abs/sub switch b", "/r") == ["/r", "/abs/sub"]
 
 
 def test_a_checkout_that_keeps_the_branch_asks_nobody(skardi, home, repo):
@@ -789,6 +911,45 @@ def test_cli_memory_commands_in_bash_are_bookkeeping(skardi, home):
     assert state(home)["anchors"]["label:other"]["consent"] == "workspace"
 
 
+def test_a_commit_after_a_save_in_one_command_is_still_a_commit(skardi, home):
+    start(skardi, consent="task", memories=[OWN])
+    text = context(bash("skardi memory save %s --file r.json >/dev/null 2>&1 && git commit -m x" % A)[1])
+    assert "milestone was just reached (git commit)" in text and "save now" in text
+    e = state(home)["anchors"][A]
+    assert e["last_saved_at"] and e["turn_work"] is True, "the commit came after the save, so it is work not yet saved"
+
+
+@pytest.mark.parametrize("command", [
+    "git add -A && git commit -m x && skardi memory save %s --file r.json" % A,     # the save holds the commit
+    "cd repo && skardi memory save %s --file r.json 2>&1 | tail -1" % A,
+    "skardi memory save %s --file r.json || true" % A,
+    "skardi memory save %s --file r.json; echo \"exit: $?\"" % A,
+])
+def test_a_command_that_ends_in_a_save_is_bookkeeping(skardi, home, command):
+    start(skardi, consent="task", memories=[OWN])
+    tool("Edit", file_path="a.py")
+    assert bash(command)[0] == ""
+    e = state(home)["anchors"][A]
+    assert e["last_saved_at"] and e["turn_work"] is False and e["save_due"] is False
+
+
+def test_a_commit_beside_a_recall_is_still_a_milestone(skardi, home):
+    start(skardi)
+    text = context(bash("git commit -m x && skardi memory recall %s --json | jq .result.consent" % B)[1])
+    assert "one offer is due now" in text
+    assert state(home)["current"] == B
+
+
+def test_a_heredoc_body_is_data_not_commands(skardi, home):
+    start(skardi, consent="task", memories=[OWN])
+    record = '{"goal": "g", "status": "s", "next": [{"text": "run the tests; git push when green"}]}'
+    assert bash("skardi memory save %s --file - <<'EOF'\n%s\nEOF" % (A, record))[0] == ""
+    assert state(home)["anchors"][A]["turn_work"] is False
+    message = "git commit -F - <<'EOF'\nfix rounding\n\n; gh pr create is next\nEOF"
+    assert memory_hook.shell_actions(memory_hook.without_heredocs(message)) == (["git commit"], False)
+    assert memory_hook.without_heredocs("cat <<EOF\nEOF\ngit push") == "cat <<EOF\ngit push"
+
+
 def test_a_cli_save_that_was_refused_changes_nothing(skardi, home):
     start(skardi)
     work_turn(2)
@@ -824,12 +985,16 @@ def test_what_a_shell_command_did(command, milestones, branch):
 
 
 @pytest.mark.parametrize("command,calls", [
-    ("skardi memory recall url:github.com/acme/api/issues/7 --json", [("recall", A, None)]),
-    ("skardi memory recall https://github.com/acme/api/issues/7#issuecomment-1", [("recall", A, None)]),
+    ("skardi memory recall url:github.com/acme/api/issues/7 --json", [("recall", A, None, None)]),
+    ("skardi memory recall https://github.com/acme/api/issues/7#issuecomment-1", [("recall", A, None, None)]),
     ("SKARDI_SESSION_ID=s /usr/local/bin/skardi --context dev memory save label:x --file -",
-     [("save", "label:x", None)]),
-    ("skardi memory consent on label:x", [("consent", "label:x", True)]),
-    ("skardi memory consent off --workspace-wide", [("consent", None, False)]),
+     [("save", "label:x", None, "context:dev")]),
+    ("skardi memory save label:x --workspace acme-eng --if-version 2 --file r.json",
+     [("save", "label:x", None, "acme-eng")]),
+    ("skardi memory consent on label:x", [("consent", "label:x", True, None)]),
+    ("skardi memory consent off --workspace-wide --workspace=acme-eng", [("consent", None, False, "acme-eng")]),
+    ("skardi memory recall label:a --json 2>&1 | jq . && skardi memory recall label:b",
+     [("recall", "label:a", None, None), ("recall", "label:b", None, None)]),
     ("skardi memory status --json", []),
     ("skardi memory list --text rounding --json", []),
     ("skardi memory rm label:x", []),
@@ -838,7 +1003,7 @@ def test_what_a_shell_command_did(command, milestones, branch):
     ("skardi memory save", []),
 ])
 def test_cli_memory_calls_in_a_command(command, calls):
-    assert memory_hook.cli_memory_calls(command) == calls
+    assert [tuple(call[:4]) for call in memory_hook.cli_memory_calls(command)] == calls
 
 
 @pytest.mark.parametrize("raw,anchor", [

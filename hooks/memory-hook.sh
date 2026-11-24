@@ -9,8 +9,10 @@
 #   start   a session is starting: worth a look only where the skardi CLI has
 #           been logged in, or memory was used on this machine before
 #   active  everything after that: only where some session has used memory
-#   fresh   a `skardi memory …` command on a machine that has never used
-#           memory (the one case `active` would miss)
+#   shell   a shell command: as `active`, and also on a machine that has
+#           never used memory when the command itself mentions skardi and
+#           memory (`skardi --context dev memory recall …`, a full path to
+#           skardi, PowerShell), which is how a first CLI call gets noticed
 #   always  a Skardi memory MCP tool was called, which is use of memory
 #
 # SKARDI_MEMORY_HOOKS=off turns the hooks off altogether.
@@ -23,7 +25,17 @@ sessions="$dir/memory/sessions"
 case "$1" in
   start)  [ -f "$dir/config.yaml" ] || [ -d "$sessions" ] || exit 0 ;;
   active) [ -d "$sessions" ] || exit 0 ;;
-  fresh)  [ -d "$sessions" ] && exit 0 ;;
+  shell)
+    if [ ! -d "$sessions" ]; then
+      payload="$(cat)"
+      case "$payload" in
+        *skardi*memory*) ;;
+        *) exit 0 ;;
+      esac
+      command -v python3 >/dev/null 2>&1 || exit 0
+      printf '%s' "$payload" | python3 "$(dirname "$0")/memory_hook.py"
+      exit 0
+    fi ;;
   always) ;;
   *)      exit 0 ;;
 esac

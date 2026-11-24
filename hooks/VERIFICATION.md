@@ -4,7 +4,7 @@ Three levels, from the cheapest to the one that needs a person.
 
 ## 1. Automated (every pull request)
 
-`python3 -m pytest tests/test_memory_hooks.py -q`: 150 cases, 2026-11-23, Python 3.13 on macOS. Each feeds a hook the JSON Claude Code puts on its stdin and checks the output and the state file, with a stand-in `skardi`. Eight mutations of `memory_hook.py` (ignoring `stop_hook_active`, dropping the once-per-task offer, dropping the once-per-10-turns rule, letting a subagent be told to offer, a world-readable state file, speaking when memory is off, recording a refused save, not cleaning a recalled goal) each made at least one case fail.
+`python3 -m pytest tests/test_memory_hooks.py -q`: 171 cases, 2026-11-24, Python 3.13 on macOS. Each feeds a hook the JSON Claude Code puts on its stdin and checks the output and the state file, with a stand-in `skardi`. Eight mutations of `memory_hook.py` (ignoring `stop_hook_active`, dropping the once-per-task offer, dropping the once-per-10-turns rule, letting a subagent be told to offer, a world-readable state file, speaking when memory is off, recording a refused save, not cleaning a recalled goal) each made at least one case fail, and so did undoing each of the seven changes made in review (listed at the end of level 3).
 
 ## 2. Loaded by a real Claude Code, without a model
 
@@ -52,6 +52,15 @@ What it found, fixed in the same change:
 - right after a save, a branch switch still said the task being left had unsaved work, because the `git switch` command itself was booked as work on it. The switch is now booked on the new task;
 - the "unreachable" notice was cleared by any memory call that worked, so it could repeat. It is now said once per session;
 - the offer made from `Stop` spoke of "reporting the milestone" where there was none.
+
+Changed in review after the live run (2026-11-24), and so covered by automated cases only:
+
+- a save that remembered consent already allowed no longer counts as a yes for the session, so withdrawing the workspace-wide yes stops the reminders for a task saved earlier in the session;
+- a yes for all work in a workspace, or its withdrawal, reaches only the tasks of that workspace;
+- a session whose workspace memory is still being prepared stays out of the books until a memory call works;
+- a shell command that mixes a memory call with other work is read for both, and here-document bodies are not read as commands;
+- a branch command is looked up in the repository it names (`git -C <dir>`, or after a `cd`), with the last branch kept per repository;
+- the first `skardi memory …` call on a machine is noticed however the command is spelled, by the gate instead of an `if` rule.
 
 Still not verified in a live session:
 

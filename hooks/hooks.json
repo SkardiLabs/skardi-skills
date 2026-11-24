@@ -29,14 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" active",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" shell",
             "timeout": 20
-          },
-          {
-            "type": "command",
-            "if": "Bash(skardi memory *)",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-hook.sh\" fresh",
-            "timeout": 5
           }
         ]
       },
