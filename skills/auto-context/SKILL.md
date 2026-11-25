@@ -1,6 +1,6 @@
 ---
 name: auto-context
-description: 'Turn a folder of documents, a table you already have, or documents still inside a service (a wiki, cloud docs, a mailbox) into governed searchable context an agent can query — hybrid search (vector + full-text) served over HTTP by skardi-server. Three raw-material entries, one flow: ingest a folder; ingest an existing table (SQLite read directly and read-only, any other datastore piped in as NDJSON); or fetch service-resident documents via the fetch-and-land process — list, fetch, reconcile (listed vs fetched vs missing, by name), land in a table, ingest — where your agent writes the per-source fetch code and this skill fixes the flow and the acceptance criteria. Independently of the entry, two storage paths for the index. Default: the skill creates and owns a local SQLite file. Override: point it at a database the user already runs (PostgreSQL+pgvector, MongoDB, or Lance), where the user owns the schema and the skill never creates it. Use this skill whenever the user wants to build a knowledge base, index a corpus or a table for search, make documents queryable by an agent, answer questions over a document set, set up RAG or hybrid search, expose retrieval as a REST endpoint, share retrieval across several agents or processes, plug Skardi into an existing production datastore, or make wiki / cloud-doc / SaaS content searchable. Trigger on phrases like build a RAG system, index my docs, index this table, index the documents in our database, local knowledge base, make this folder searchable, make our wiki searchable, index our Feishu or Notion or Confluence docs, agent-native wiki, search API over my postgres, hybrid search service, expose vector search as HTTP, production RAG on our existing DB, or ground answers in a document set. Requires a running skardi-server built with --features rag (the published skardi-server-full:0.7.0 image, or a source build from the v0.7.0 tag); the skardi CLI is optional and holds no engine of its own.'
+description: 'Turn a folder of documents, a table you already have, or documents still inside a service (a wiki, cloud docs, a mailbox) into searchable context an agent can query: hybrid vector + full-text search served over HTTP by skardi-server. The index lives in a local SQLite file the skill creates, or in a database the user already runs (PostgreSQL+pgvector, MongoDB or Lance), where the skill never creates schema itself. Use when the user wants to build a knowledge base, index a corpus or a table for search, set up RAG or hybrid search, expose search as a REST endpoint, share retrieval across agents, or make wiki, Feishu, Notion or Confluence content searchable. Trigger on: build a RAG system, index my docs, index this table, make this folder searchable, search API over my postgres, production RAG on our existing DB. Requires a skardi-server built with --features rag (the skardi-server-full:0.7.0 image or a v0.7.0 source build).'
 metadata:
   skardi-min-version: "0.5.0"
 ---
@@ -120,19 +120,7 @@ One SQL statement per document does the whole job: `chunk()` splits, the embeddi
 
 ## Platforms this runs on
 
-Verified on exactly one platform so far. Native Windows is refused at the entry point of every script; everywhere else the scripts try, and this table says how much confidence that deserves. Only the row marked verified has been run end to end; the rest are expectations.
-
-| Platform | Status | What to expect |
-|---|---|---|
-| macOS Apple Silicon (arm64) | **Verified 2026-10-16 on v0.7.0** | Local path end to end with a server built from the v0.7.0 tag (create → ingest → all three searches → stop), plus `--runtime docker` with the `skardi-server-full:0.7.0` image for the postgres override path. Needs homebrew Python — system Python cannot load SQLite extensions (next section). |
-| Linux x86_64 / arm64 | **Not verified**, no known blocker | The `skardi-server-full` image is published for `linux/amd64` and `linux/arm64`, so `--runtime docker` should be the smoothest path here. The local path additionally needs a `sqlite-vec` wheel for the arch — pip will tell you; do not assume. |
-| macOS Intel (x86_64) | **Not verified**, and no prebuilt `skardi` CLI | The release workflow builds the CLI for `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and (from v0.7.0) `x86_64-pc-windows-msvc` only. `setup_context.py` looks for `skardi` on PATH, so on Intel macs it has to be built from source. |
-| Windows (native) | **Not supported — scripts exit 2 with an explanation** | Structural, not a missing flag: `start_new_session=True` raises `ValueError`, `os.kill(pid, 0)` *terminates* a process on Windows instead of probing it, `signal.SIGKILL` does not exist, and no Windows `skardi-server` is published. Use **WSL2** and run the whole flow from the Linux side. The reasoning is in `scripts/_platform.py`. |
-
-Two facts that shape every row:
-
-- **There is no `skardi-server` release binary on any platform.** The release workflow ships the `skardi` CLI as an archive for the targets above, and skardi-server *only* as `linux/amd64` + `linux/arm64` container images. So `--runtime local-process` means either a binary you built yourself (`shutil.which("skardi-server")`) or `cargo run` — budget for a Rust build on first start, on Linux as much as on macOS.
-- **A rendered workspace is not portable across platforms.** `SQLITE_VEC_PATH` points at a native `.dylib` / `.so`, so a workspace built on a mac cannot be served by a Linux box. Copy the corpus, not the workspace, and re-run `setup_context.py` on the new host.
+Verified end to end only on macOS Apple Silicon (v0.7.0, 2026-10-16). Native Windows is refused by every script; use WSL2. There is no `skardi-server` release binary on any platform, so `--runtime local-process` means a binary you built or `cargo run`; a rendered workspace is not portable across platforms. Before running on Linux or an Intel mac, read [references/platforms.md](references/platforms.md).
 
 ## Two prerequisites the local path needs — check these first
 
@@ -324,24 +312,7 @@ python scripts/stop_server.py --workspace ./context
 
 ## Upgrading from auto-knowledge-base / auto-rag
 
-This skill replaced two earlier plugins, `auto-knowledge-base` (local SQLite, driven through the CLI) and `auto-rag` (server in front of a datastore the user ran). A workspace either of them rendered still exists on disk after the plugin update. All of the following was tested on 2026-08-04 against real pre-merge workspaces rebuilt from the deleted code — it is measured behaviour, not an expectation.
-
-**A legacy workspace is served as-is; it is not a migration.** `start_server.py --runtime local-process` starts on an `auto-knowledge-base` workspace, registers all five pipelines, and the rows that were already ingested stay queryable over the new HTTP surface (`/search-fulltext/execute` returned them). `ingest_corpus.py` also talks to it correctly. Nothing needs converting to read what is already there.
-
-**What actually differs:**
-
-| | `auto-knowledge-base` | `auto-rag` | current |
-|---|---|---|---|
-| `.embedding.txt` keys | udf, model_path, embedding_args, dim, chunk_mode | udf, model_path, embedding_args, dim, table, schema | all of those **plus `backend` and `db_path`** |
-| extra files | `aliases.yaml` (nothing reads it now — harmless) | — | — |
-| storage | `kb.db` inside the workspace | user's database | either |
-
-The missing `backend` key is the one that mattered. `start_server.py` used to default it to `postgres`, which mislabelled every legacy knowledge-base workspace: `--runtime docker` then skipped the sqlite refusal and started a container that dies later on an opaque extension error. It now decides from the workspace itself — a workspace that owns a `kb.db` is the sqlite kind — and prints a one-off note saying the workspace is pre-merge and which backend was inferred.
-
-**Migrating, when the user wants a current workspace:**
-
-- **sqlite path — do not re-run setup in place.** `setup_context.py` correctly refuses an existing `kb.db` without `--force`, and the refusal leaves the data alone (verified: rows still present afterwards). But `--force` deletes the `.db`, which is everything they ingested. Render a *new* workspace in a fresh directory and re-ingest the corpus; keep the old directory until the new one answers queries.
-- **override path — re-running setup is safe**, because it never touches a database the user owns. The user has to supply `--backend postgres --connection-string ... --table ...` again: the old breadcrumb never recorded them.
+A workspace rendered by either earlier plugin is served as-is: start it with `start_server.py` and the rows already ingested stay queryable. To migrate a local SQLite workspace, render a **new** workspace in a fresh directory and re-ingest; never re-run setup in place with `--force`, which deletes the `.db`. What differs and why is in [references/upgrading.md](references/upgrading.md); read it before touching a legacy workspace.
 
 ## References
 
@@ -351,6 +322,8 @@ The missing `backend` key is the one that mattered. `start_server.py` used to de
 - [references/pipeline_patterns.md](references/pipeline_patterns.md) — pipeline shapes, including the SQLite FTS5 + vec0 mirror design.
 - [references/troubleshooting.md](references/troubleshooting.md) — server and override-path failures.
 - [references/troubleshooting_sqlite.md](references/troubleshooting_sqlite.md) — local-path failures: sqlite-vec loading, extension paths, model download.
+- [references/platforms.md](references/platforms.md) — what has been verified on which platform, and why native Windows is refused.
+- [references/upgrading.md](references/upgrading.md) — serving and migrating workspaces from `auto-knowledge-base` / `auto-rag`.
 
 ## Boundaries
 
